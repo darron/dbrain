@@ -843,6 +843,59 @@ func TestSyncFamilyHumanRefreshFailureShowsCommittedSourceAndBoundedError(t *tes
 	}
 }
 
+func TestSyncFamilySemanticProgressFailureDoesNotRenderCompletion(t *testing.T) {
+	root := t.TempDir()
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		return syncSemanticTestStats(), nil
+	}
+	run := store.SemanticRefreshRun{RunID: "run-progress-failure", Stage: store.SemanticRefreshEmbedding}
+	refreshErr := semanticrefresh.NewError(
+		semanticrefresh.ErrorEmbedding,
+		run,
+		"not_ready",
+		semanticrefresh.Debt{PendingEmbeddings: 75},
+		errors.New("private embedding failure"),
+	)
+	deps := successfulSyncSemanticDeps(func(
+		_ context.Context,
+		_ semanticrefresh.RunLedger,
+		_ semanticrefresh.StageExecutor,
+		request semanticrefresh.Request,
+	) (semanticrefresh.Result, error) {
+		if request.Progress == nil {
+			t.Fatal("semantic refresh omitted progress callback")
+		}
+		if err := request.Progress(semanticrefresh.Progress{
+			Stage: store.SemanticRefreshEmbedding,
+			Work:  semanticrefresh.StageWork{Current: 25, Total: 100, TotalKnown: true},
+			Debt:  semanticrefresh.Debt{PendingEmbeddings: 75},
+		}); err != nil {
+			t.Fatalf("progress callback: %v", err)
+		}
+		return semanticrefresh.Result{Run: &run}, refreshErr
+	})
+
+	cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
+	var stderr bytes.Buffer
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&stderr)
+	cmd.SilenceUsage = true
+	cmd.SetArgs(syncSemanticTestArgs(false))
+	if err := cmd.ExecuteContext(t.Context()); err == nil {
+		t.Fatal("ExecuteContext succeeded, want semantic refresh failure")
+	}
+
+	got := stderr.String()
+	if !strings.Contains(got, "Semantic embedding failed:") {
+		t.Fatalf("semantic progress failure omitted terminal failure:\n%s", got)
+	}
+	if strings.Contains(got, "Semantic embedding complete:") || strings.Contains(got, "✓ Semantic embedding") {
+		t.Fatalf("semantic progress failure rendered completion:\n%s", got)
+	}
+}
+
 func TestSyncFamilySupportedBrokenAndCancellationReturnTypedNonzeroErrors(t *testing.T) {
 	tests := []struct {
 		name     string

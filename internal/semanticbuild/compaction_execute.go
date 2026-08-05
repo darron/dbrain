@@ -26,6 +26,7 @@ type CompactionStore interface {
 type CompactionOptions struct {
 	Profile                                           embedding.Profile
 	Backend, BackendVersion, DistanceMetric, CacheDir string
+	Progress                                          func(WorkProgress) error
 }
 
 // CompactionResult records the pure selection outcome. Later fields are added
@@ -115,7 +116,12 @@ func Compact(ctx context.Context, st CompactionStore, builder StreamingSegmentPa
 			}
 		}
 	}()
-	outputIndex, outputOffset := 0, 0
+	if opts.Progress != nil {
+		if err := opts.Progress(WorkProgress{Total: expectedLive}); err != nil {
+			return CompactionResult{Plan: plan}, fmt.Errorf("report semantic compaction plan: %w", err)
+		}
+	}
+	outputIndex, outputOffset, visited := 0, 0, 0
 	streamed, err := st.StreamRetrievalActiveSegmentMembers(ctx, store.RetrievalActiveSegmentMemberStreamRequest{ProfileID: profileID, ExpectedActiveGenerationID: snapshot.Profile.ActiveGenerationID, ExpectedPurgeEpoch: snapshot.Profile.PurgeEpoch, ExpectedActiveSnapshotRevision: snapshot.Profile.ActiveSnapshotRevision, SegmentHashes: hashes}, func(member store.RetrievalActiveSegmentMember) error {
 		for outputIndex < len(builds) && outputOffset == builds[outputIndex].output.LiveCount {
 			outputIndex++
@@ -134,6 +140,12 @@ func Compact(ctx context.Context, st CompactionStore, builder StreamingSegmentPa
 			build.rows = append(build.rows, store.RetrievalIndexSegmentMember{Ordinal: ordinal, ChunkID: member.Embedding.ChunkID, Revision: member.Embedding.Revision, VectorHash: member.Embedding.VectorHash})
 		}
 		outputOffset++
+		visited++
+		if opts.Progress != nil && shouldReportWorkProgress(visited, expectedLive) {
+			if err := opts.Progress(WorkProgress{Current: visited, Total: expectedLive}); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {

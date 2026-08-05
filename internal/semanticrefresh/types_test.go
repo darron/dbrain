@@ -13,6 +13,29 @@ import (
 	"github.com/darron/dbrain/internal/store"
 )
 
+func TestStageWorkValidateRejectsMalformedMeasurements(t *testing.T) {
+	for _, work := range []StageWork{
+		{Current: -1},
+		{Total: -1},
+		{Pass: -1},
+		{Current: 2, Total: 1, TotalKnown: true},
+	} {
+		if err := work.Validate(); err == nil {
+			t.Fatalf("StageWork.Validate(%+v) unexpectedly succeeded", work)
+		}
+	}
+
+	for _, work := range []StageWork{
+		{},
+		{Current: 2, Total: 2, TotalKnown: true},
+		{Current: 2, Pass: 1},
+	} {
+		if err := work.Validate(); err != nil {
+			t.Fatalf("StageWork.Validate(%+v) = %v", work, err)
+		}
+	}
+}
+
 func TestRequestValidateRejectsInvalidInputs(t *testing.T) {
 	valid := Request{
 		ProfileID:           "profile",
@@ -245,7 +268,7 @@ func TestResultJSONUsesBoundedAggregateDebt(t *testing.T) {
 
 type compileStageExecutor struct{}
 
-func (compileStageExecutor) Execute(context.Context, store.SemanticRefreshRun) (StageOutcome, error) {
+func (compileStageExecutor) Execute(context.Context, store.SemanticRefreshRun, StageProgressCallback) (StageOutcome, error) {
 	return StageOutcome{}, nil
 }
 

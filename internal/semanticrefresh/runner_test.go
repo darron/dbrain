@@ -236,6 +236,7 @@ type runnerExecuteStep struct {
 	outcome StageOutcome
 	err     error
 	check   func(context.Context, store.SemanticRefreshRun)
+	work    *StageWork
 }
 
 type runnerExecutor struct {
@@ -247,6 +248,7 @@ type runnerExecutor struct {
 func (e *runnerExecutor) Execute(
 	ctx context.Context,
 	run store.SemanticRefreshRun,
+	progress StageProgressCallback,
 ) (StageOutcome, error) {
 	e.mu.Lock()
 	call := len(e.runs)
@@ -259,6 +261,11 @@ func (e *runnerExecutor) Execute(
 	e.mu.Unlock()
 	if step.check != nil {
 		step.check(ctx, run)
+	}
+	if step.work != nil && progress != nil {
+		if err := progress(*step.work); err != nil {
+			return StageOutcome{}, err
+		}
 	}
 	return step.outcome, step.err
 }
@@ -431,6 +438,96 @@ func TestRunnerStartsAtProjectionPersistsBeforeNextExecuteAndCompletes(t *testin
 	defer callbackMu.Unlock()
 	if got, want := strings.Join(callbackCheckpoints, ","), ",projection:parent-10,readiness:ready"; got != want {
 		t.Fatalf("published checkpoints = %q, want %q", got, want)
+	}
+}
+
+func TestRunPublishesFinalStageWorkBeforeResettingNextStage(t *testing.T) {
+	ledger := newRunnerLedger()
+	projectionWork := StageWork{Current: 2, Total: 2, TotalKnown: true}
+	embeddingWork := StageWork{Current: 1, Total: 1, TotalKnown: true}
+	executor := &runnerExecutor{steps: []runnerExecuteStep{
+		{
+			work: &projectionWork,
+			outcome: StageOutcome{
+				NextStage:  store.SemanticRefreshEmbedding,
+				Checkpoint: "projection:complete",
+			},
+		},
+		{
+			work: &embeddingWork,
+			outcome: StageOutcome{
+				NextStage:  store.SemanticRefreshReadiness,
+				Checkpoint: "readiness:ready",
+				Readiness:  "ready",
+				Complete:   true,
+			},
+		},
+	}}
+	request := runnerRequest(func() (string, error) { return firstRunnerRunID, nil })
+	var events []Progress
+	request.Progress = func(progress Progress) error {
+		events = append(events, progress)
+		return nil
+	}
+
+	if _, err := Run(t.Context(), ledger, executor, request); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := []struct {
+		stage store.SemanticRefreshStage
+		work  StageWork
+	}{
+		{stage: store.SemanticRefreshProjection, work: StageWork{}},
+		{stage: store.SemanticRefreshProjection, work: projectionWork},
+		{stage: store.SemanticRefreshEmbedding, work: StageWork{}},
+		{stage: store.SemanticRefreshEmbedding, work: embeddingWork},
+		{stage: store.SemanticRefreshReadiness, work: StageWork{}},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("progress event count = %d, want %d: %+v", len(events), len(want), events)
+	}
+	for index := range want {
+		if events[index].Stage != want[index].stage || events[index].Work != want[index].work {
+			t.Fatalf("progress event %d = stage=%s work=%+v, want stage=%s work=%+v", index, events[index].Stage, events[index].Work, want[index].stage, want[index].work)
+		}
+	}
+}
+
+func TestRunDoesNotPublishStageTransitionWhenExecutorReturnsError(t *testing.T) {
+	ledger := newRunnerLedger()
+	stageErr := errors.New("release semantic stage lock")
+	projectionWork := StageWork{Current: 2, Total: 2, TotalKnown: true}
+	executor := &runnerExecutor{steps: []runnerExecuteStep{{
+		work: &projectionWork,
+		outcome: StageOutcome{
+			NextStage:  store.SemanticRefreshEmbedding,
+			Checkpoint: "embedding:revision=2",
+		},
+		err: stageErr,
+	}}}
+	request := runnerRequest(func() (string, error) { return firstRunnerRunID, nil })
+	var events []Progress
+	request.Progress = func(progress Progress) error {
+		events = append(events, progress)
+		return nil
+	}
+
+	_, err := Run(t.Context(), ledger, executor, request)
+	_ = assertRefreshError(t, err, ErrorProjection, stageErr)
+	if len(events) != 2 {
+		t.Fatalf("progress events=%+v, want initial projection and final projection work only", events)
+	}
+	for index, event := range events {
+		if event.Stage != store.SemanticRefreshProjection {
+			t.Fatalf("event %d published failed transition: %+v", index, event)
+		}
+	}
+	if events[1].Work != projectionWork {
+		t.Fatalf("final projection work=%+v want=%+v", events[1].Work, projectionWork)
+	}
+	updates := ledger.snapshotUpdates()
+	if len(updates) != 2 || updates[0].Stage != store.SemanticRefreshEmbedding || updates[1].State != store.SemanticRefreshRunFailed {
+		t.Fatalf("durable partial outcome was not preserved: %+v", updates)
 	}
 }
 

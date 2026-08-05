@@ -34,9 +34,13 @@ func (t *semanticStageTracker) Wrap(executor semanticrefresh.StageExecutor) sema
 	return semanticStageMeasuringExecutor{delegate: executor, tracker: t}
 }
 
-func (e semanticStageMeasuringExecutor) Execute(ctx context.Context, run store.SemanticRefreshRun) (semanticrefresh.StageOutcome, error) {
+func (e semanticStageMeasuringExecutor) Execute(
+	ctx context.Context,
+	run store.SemanticRefreshRun,
+	progress semanticrefresh.StageProgressCallback,
+) (semanticrefresh.StageOutcome, error) {
 	startedAt := e.tracker.now()
-	outcome, err := e.delegate.Execute(ctx, run)
+	outcome, err := e.delegate.Execute(ctx, run, progress)
 	e.tracker.record(run, outcome, err, nonnegativeDuration(e.tracker.now().Sub(startedAt)))
 	return outcome, err
 }

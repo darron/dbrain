@@ -218,6 +218,116 @@ func TestProgressEmitterHeartbeatsContinueWhileDurableTouchBlockedAndCoalesce(t 
 	}
 }
 
+func TestProgressEmitterPublishesWorkAndHeartbeatRepeatsIt(t *testing.T) {
+	t0 := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	clock := &fakeProgressClock{now: t0}
+	ticker := newFakeProgressTicker()
+	events := make(chan Progress, 4)
+	emitter, err := startProgressEmitter(
+		context.Background(),
+		&recordingProgressLedger{},
+		persistedProgressRun("run-1", "profile-1", "projection", 0),
+		Debt{DirtyParents: 5},
+		func(progress Progress) error {
+			events <- progress
+			return nil
+		},
+		progressEmitterOptions{now: clock.Now, newTicker: func(time.Duration) progressTicker { return ticker }},
+	)
+	if err != nil {
+		t.Fatalf("startProgressEmitter: %v", err)
+	}
+	t.Cleanup(func() { _ = emitter.Stop() })
+	if initial := receiveProgress(t, events); initial.Work != (StageWork{}) {
+		t.Fatalf("initial work = %+v, want unknown", initial.Work)
+	}
+
+	want := StageWork{Current: 3, Total: 5, TotalKnown: true, Pass: 1}
+	if err := emitter.PublishWork(want); err != nil {
+		t.Fatalf("PublishWork: %v", err)
+	}
+	if event := receiveProgress(t, events); event.Work != want || event.Debt.DirtyParents != 5 {
+		t.Fatalf("work event = %+v, want work=%+v with persisted debt", event, want)
+	}
+
+	clock.Set(t0.Add(ProgressInterval))
+	ticker.ticks <- clock.Now()
+	if heartbeat := receiveProgress(t, events); heartbeat.Work != want {
+		t.Fatalf("heartbeat work = %+v, want %+v", heartbeat.Work, want)
+	}
+}
+
+func TestProgressEmitterStageTransitionResetsWorkToUnknown(t *testing.T) {
+	events := make(chan Progress, 4)
+	initial := persistedProgressRun("run-1", "profile-1", "projection", 0)
+	emitter, err := startProgressEmitter(context.Background(), &recordingProgressLedger{}, initial, Debt{}, func(progress Progress) error {
+		events <- progress
+		return nil
+	}, progressEmitterOptions{})
+	if err != nil {
+		t.Fatalf("startProgressEmitter: %v", err)
+	}
+	t.Cleanup(func() { _ = emitter.Stop() })
+	_ = receiveProgress(t, events)
+	if err := emitter.PublishWork(StageWork{Current: 4, Total: 4, TotalKnown: true}); err != nil {
+		t.Fatalf("PublishWork: %v", err)
+	}
+	_ = receiveProgress(t, events)
+
+	next := initial
+	next.Stage = store.SemanticRefreshEmbedding
+	if err := emitter.Publish(next, Debt{PendingEmbeddings: 7}); err != nil {
+		t.Fatalf("Publish transition: %v", err)
+	}
+	transition := receiveProgress(t, events)
+	if transition.Stage != store.SemanticRefreshEmbedding || transition.Work != (StageWork{}) {
+		t.Fatalf("transition = %+v, want embedding with unknown work", transition)
+	}
+}
+
+func TestProgressEmitterRejectsMalformedWork(t *testing.T) {
+	emitter, err := startProgressEmitter(
+		context.Background(),
+		&recordingProgressLedger{},
+		persistedProgressRun("run-1", "profile-1", "projection", 0),
+		Debt{},
+		nil,
+		progressEmitterOptions{},
+	)
+	if err != nil {
+		t.Fatalf("startProgressEmitter: %v", err)
+	}
+	t.Cleanup(func() { _ = emitter.Stop() })
+	if err := emitter.PublishWork(StageWork{Current: 2, Total: 1, TotalKnown: true}); err == nil {
+		t.Fatal("PublishWork unexpectedly accepted a known total below current")
+	}
+}
+
+func TestProgressEmitterWorkCallbackFailureCancelsExecution(t *testing.T) {
+	wantErr := errors.New("stage work output closed")
+	var calls atomic.Int64
+	emitter, err := startProgressEmitter(
+		context.Background(),
+		&recordingProgressLedger{},
+		persistedProgressRun("run-1", "profile-1", "projection", 0),
+		Debt{},
+		func(Progress) error {
+			if calls.Add(1) == 2 {
+				return wantErr
+			}
+			return nil
+		},
+		progressEmitterOptions{},
+	)
+	if err != nil {
+		t.Fatalf("startProgressEmitter: %v", err)
+	}
+	if err := emitter.PublishWork(StageWork{Current: 1, Total: 2, TotalKnown: true}); !errors.Is(err, wantErr) {
+		t.Fatalf("PublishWork error = %v, want %v", err, wantErr)
+	}
+	receiveSignal(t, emitter.Context().Done(), "derived work context cancellation")
+}
+
 func TestProgressEmitterAsynchronousTouchFailureCancelsAndReturnsErrorOnce(t *testing.T) {
 	wantErr := errors.New("durable heartbeat failed")
 	t0 := time.Date(2026, 7, 28, 9, 30, 0, 0, time.UTC)

@@ -882,10 +882,23 @@ func (n *refreshNative) Build(
 	}, nil
 }
 
-func (*refreshNative) Begin(
-	context.Context,
-	int,
+func (n *refreshNative) Begin(
+	_ context.Context,
+	total int,
 ) (semanticbuild.StreamingSegmentPayloadSession, error) {
+	n.mu.Lock()
+	n.builds++
+	if n.events != nil {
+		n.events.record(fmt.Sprintf("build-%d", n.builds))
+	}
+	expectedBuildRows := n.expectedBuildRows
+	n.mu.Unlock()
+	if expectedBuildRows == 0 {
+		expectedBuildRows = store.RetrievalSegmentTarget
+	}
+	if total != expectedBuildRows {
+		return nil, fmt.Errorf("native streaming build rows=%d want=%d", total, expectedBuildRows)
+	}
 	return pipelineTestNativeSession{}, nil
 }
 

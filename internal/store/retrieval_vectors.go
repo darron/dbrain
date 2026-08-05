@@ -24,6 +24,25 @@ type RetrievalVectorRow struct {
 	Revision                      int64
 }
 
+func (s *Store) CountRetrievalVectors(ctx context.Context, profileID string) (int, error) {
+	return s.CountRetrievalVectorsAfter(ctx, profileID, "")
+}
+
+func (s *Store) CountRetrievalVectorsAfter(ctx context.Context, profileID, afterChunkID string) (int, error) {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return 0, fmt.Errorf("retrieval embedding profile is required")
+	}
+	var count int
+	if err := s.queryer().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM retrieval_embeddings
+		WHERE profile_id=? AND status='ready' AND chunk_id>?`, profileID, afterChunkID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count retrieval vectors: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Store) ListRetrievalVectors(ctx context.Context, profileID string, page VectorPage) ([]RetrievalVectorRow, error) {
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {

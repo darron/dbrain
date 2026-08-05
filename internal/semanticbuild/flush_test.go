@@ -3,6 +3,7 @@ package semanticbuild
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"testing"
@@ -139,6 +140,71 @@ func TestFlushLeavesStoreUntouchedWhenBuilderFails(t *testing.T) {
 	_, err = Flush(context.Background(), st, failingFlushBuilder{}, FlushOptions{Profile: profile, Backend: "usearch", BackendVersion: "2.26.0", DistanceMetric: "cosine", CacheDir: t.TempDir()})
 	if err == nil || st.completeCalls != 0 {
 		t.Fatalf("err=%v complete_calls=%d", err, st.completeCalls)
+	}
+}
+
+func TestFlushStreamingProgressIsThrottledAndFinal(t *testing.T) {
+	t.Parallel()
+	const limit = 600
+	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &flushFakeStore{databaseID: "db-1", window: store.RetrievalFlushWindow{
+		Profile: store.RetrievalEmbeddingProfileRow{ProfileID: profileID, L0ReadyCount: limit + 1},
+		Rows:    flushRows(profileID, limit), SnapshotRevision: limit,
+	}}
+	builder := &trackingFlushStreamingBuilder{}
+	updates := make([]WorkProgress, 0)
+	_, err = Flush(t.Context(), st, builder, FlushOptions{
+		Profile: profile, Backend: "usearch", BackendVersion: "2.26.0", DistanceMetric: "cosine",
+		CacheDir: t.TempDir(), Limit: limit,
+		Progress: func(progress WorkProgress) error {
+			updates = append(updates, progress)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []WorkProgress{{Current: 256, Total: limit}, {Current: 512, Total: limit}, {Current: limit, Total: limit}}
+	if len(updates) != len(want) {
+		t.Fatalf("updates=%+v want=%+v", updates, want)
+	}
+	for i := range want {
+		if updates[i] != want[i] {
+			t.Fatalf("updates[%d]=%+v want=%+v", i, updates[i], want[i])
+		}
+	}
+	if builder.session == nil || !builder.session.closed || builder.session.added != limit {
+		t.Fatalf("session=%+v", builder.session)
+	}
+}
+
+func TestFlushProgressFailureClosesSessionWithoutPublishing(t *testing.T) {
+	t.Parallel()
+	const limit = 300
+	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &flushFakeStore{databaseID: "db-1", window: store.RetrievalFlushWindow{
+		Profile: store.RetrievalEmbeddingProfileRow{ProfileID: profileID, L0ReadyCount: limit},
+		Rows:    flushRows(profileID, limit), SnapshotRevision: limit,
+	}}
+	builder := &trackingFlushStreamingBuilder{}
+	_, err = Flush(t.Context(), st, builder, FlushOptions{
+		Profile: profile, Backend: "usearch", BackendVersion: "2.26.0", DistanceMetric: "cosine",
+		CacheDir: t.TempDir(), Limit: limit,
+		Progress: func(progress WorkProgress) error { return errors.New("stop progress") },
+	})
+	if err == nil || st.completeCalls != 0 {
+		t.Fatalf("err=%v complete_calls=%d", err, st.completeCalls)
+	}
+	if builder.session == nil || !builder.session.closed {
+		t.Fatalf("session not closed: %+v", builder.session)
 	}
 }
 
@@ -349,6 +415,41 @@ type failingFlushBuilder struct{}
 
 func (failingFlushBuilder) Build(context.Context, []store.RetrievalEmbeddingRow) (func(io.Writer) error, error) {
 	return nil, errors.New("builder failed")
+}
+
+type trackingFlushStreamingBuilder struct {
+	session *trackingFlushStreamingSession
+}
+
+func (b *trackingFlushStreamingBuilder) Build(context.Context, []store.RetrievalEmbeddingRow) (func(io.Writer) error, error) {
+	return nil, errors.New("single-shot build should not be used")
+}
+
+func (b *trackingFlushStreamingBuilder) Begin(_ context.Context, total int) (StreamingSegmentPayloadSession, error) {
+	b.session = &trackingFlushStreamingSession{total: total}
+	return b.session, nil
+}
+
+type trackingFlushStreamingSession struct {
+	total, added int
+	closed       bool
+}
+
+func (s *trackingFlushStreamingSession) Add(context.Context, store.RetrievalEmbeddingRow) error {
+	s.added++
+	return nil
+}
+
+func (s *trackingFlushStreamingSession) Finish(context.Context) (func(io.Writer) error, error) {
+	if s.added != s.total {
+		return nil, fmt.Errorf("added %d rows, want %d", s.added, s.total)
+	}
+	return func(writer io.Writer) error { _, err := io.WriteString(writer, "streamed payload"); return err }, nil
+}
+
+func (s *trackingFlushStreamingSession) Close() error {
+	s.closed = true
+	return nil
 }
 
 func TestFlushRootPathsAreCacheRelative(t *testing.T) {

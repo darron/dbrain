@@ -30,6 +30,7 @@ type FlushOptions struct {
 	Profile                                           embedding.Profile
 	Backend, BackendVersion, DistanceMetric, CacheDir string
 	Limit                                             int
+	Progress                                          func(WorkProgress) error
 }
 
 type FlushResult struct {
@@ -80,7 +81,7 @@ func Flush(ctx context.Context, st FlushStore, builder SegmentPayloadBuilder, op
 	if window.SnapshotRevision == window.Profile.ActiveSnapshotRevision {
 		activationMode = store.RetrievalGenerationRewriteSnapshot
 	}
-	payload, err := builder.Build(ctx, append([]store.RetrievalEmbeddingRow(nil), window.Rows...))
+	payload, err := buildFlushPayload(ctx, builder, window.Rows, opts.Progress)
 	if err != nil {
 		return FlushResult{}, fmt.Errorf("build semantic segment payload: %w", err)
 	}
@@ -138,6 +139,42 @@ func Flush(ctx context.Context, st FlushStore, builder SegmentPayloadBuilder, op
 		L0Ready:          max(window.Profile.L0ReadyCount-len(window.Rows), 0),
 		SnapshotRevision: window.SnapshotRevision,
 	}, nil
+}
+
+func buildFlushPayload(ctx context.Context, builder SegmentPayloadBuilder, rows []store.RetrievalEmbeddingRow, progress func(WorkProgress) error) (func(io.Writer) error, error) {
+	streaming, ok := builder.(StreamingSegmentPayloadBuilder)
+	if !ok {
+		payload, err := builder.Build(ctx, append([]store.RetrievalEmbeddingRow(nil), rows...))
+		if err != nil {
+			return nil, err
+		}
+		if progress != nil && len(rows) > 0 {
+			if err := progress(WorkProgress{Current: len(rows), Total: len(rows)}); err != nil {
+				return nil, err
+			}
+		}
+		return payload, nil
+	}
+	session, err := streaming.Begin(ctx, len(rows))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = session.Close() }()
+	for index, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := session.Add(ctx, row); err != nil {
+			return nil, err
+		}
+		current := index + 1
+		if progress != nil && shouldReportWorkProgress(current, len(rows)) {
+			if err := progress(WorkProgress{Current: current, Total: len(rows)}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return session.Finish(ctx)
 }
 
 func validateFlushWindow(profileID string, dimensions int, window store.RetrievalFlushWindow, limit int) error {

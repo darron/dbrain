@@ -43,6 +43,7 @@ func (t wallProgressTicker) Stop()                  { t.ticker.Stop() }
 type progressDispatch struct {
 	run    store.SemanticRefreshRun
 	debt   Debt
+	work   StageWork
 	result chan error
 }
 
@@ -71,6 +72,7 @@ type ProgressEmitter struct {
 	stateMu        sync.Mutex
 	run            store.SemanticRefreshRun
 	debt           Debt
+	work           StageWork
 	queue          []progressDispatch
 	callbackActive bool
 	stopped        bool
@@ -178,11 +180,6 @@ func (e *ProgressEmitter) Publish(run store.SemanticRefreshRun, debt Debt) error
 		return fmt.Errorf("semantic refresh progress requires a running run")
 	}
 
-	request := progressDispatch{
-		run:    run,
-		debt:   debt,
-		result: make(chan error, 1),
-	}
 	if e.testHooks.beforePublishLock != nil {
 		e.testHooks.beforePublishLock()
 	}
@@ -192,12 +189,63 @@ func (e *ProgressEmitter) Publish(run store.SemanticRefreshRun, debt Debt) error
 		return context.Canceled
 	}
 	reentrant := e.callbackActive
-	e.run, e.debt = run, debt
+	work := e.work
+	if run.RunID != e.run.RunID || run.Stage != e.run.Stage {
+		work = StageWork{}
+	}
+	request := progressDispatch{
+		run:    run,
+		debt:   debt,
+		work:   work,
+		result: make(chan error, 1),
+	}
+	e.run, e.debt, e.work = run, debt, work
 	e.queue = append(e.queue, request)
 	e.stateMu.Unlock()
 	if e.testHooks.afterPublishEnqueue != nil {
 		e.testHooks.afterPublishEnqueue()
 	}
+	e.signal()
+	if reentrant {
+		return nil
+	}
+
+	err := <-request.result
+	if err == nil {
+		return nil
+	}
+	if progressErr := e.takeError(); progressErr != nil {
+		return progressErr
+	}
+	return err
+}
+
+// PublishWork serializes a transient stage-local measurement against the most
+// recent persisted run and debt snapshot. The measurement is retained for
+// heartbeats but is never written into the refresh run ledger.
+func (e *ProgressEmitter) PublishWork(work StageWork) error {
+	if e == nil {
+		return fmt.Errorf("semantic refresh progress emitter is required")
+	}
+	if err := work.Validate(); err != nil {
+		return err
+	}
+
+	e.stateMu.Lock()
+	if e.stopped {
+		e.stateMu.Unlock()
+		return context.Canceled
+	}
+	reentrant := e.callbackActive
+	request := progressDispatch{
+		run:    e.run,
+		debt:   e.debt,
+		work:   work,
+		result: make(chan error, 1),
+	}
+	e.work = work
+	e.queue = append(e.queue, request)
+	e.stateMu.Unlock()
 	e.signal()
 	if reentrant {
 		return nil
@@ -243,7 +291,7 @@ func (e *ProgressEmitter) runDispatcher() {
 	defer e.failQueued(context.Canceled)
 	for {
 		if request, ok := e.nextQueued(); ok {
-			if err := e.dispatchVisible(request.run, request.debt); err != nil {
+			if err := e.dispatchVisible(request.run, request.debt, request.work); err != nil {
 				e.handleDispatchError(err)
 				request.result <- err
 				return
@@ -264,7 +312,7 @@ func (e *ProgressEmitter) runDispatcher() {
 			if stopped {
 				return
 			}
-			if err := e.dispatchVisible(request.run, request.debt); err != nil {
+			if err := e.dispatchVisible(request.run, request.debt, request.work); err != nil {
 				e.handleDispatchError(err)
 				if queued {
 					request.result <- err
@@ -309,19 +357,19 @@ func (e *ProgressEmitter) dispatchInitial(run store.SemanticRefreshRun, debt Deb
 	if err := e.ledger.TouchSemanticRefreshRunProgress(e.workCtx, run.RunID, at); err != nil {
 		return err
 	}
-	return e.invokeCallback(run, debt, at)
+	return e.invokeCallback(run, debt, StageWork{}, at)
 }
 
-func (e *ProgressEmitter) dispatchVisible(run store.SemanticRefreshRun, debt Debt) error {
+func (e *ProgressEmitter) dispatchVisible(run store.SemanticRefreshRun, debt Debt, work StageWork) error {
 	at := e.now().UTC()
 	// The visible heartbeat must not wait behind a SQLite writer. The durable
 	// last_progress_at value may therefore lag while a compaction or other
 	// write lease blocks the coalescing touch worker.
 	e.queueTouch(run.RunID, at)
-	return e.invokeCallback(run, debt, at)
+	return e.invokeCallback(run, debt, work, at)
 }
 
-func (e *ProgressEmitter) invokeCallback(run store.SemanticRefreshRun, debt Debt, at time.Time) error {
+func (e *ProgressEmitter) invokeCallback(run store.SemanticRefreshRun, debt Debt, work StageWork, at time.Time) error {
 	if e.callback == nil {
 		return nil
 	}
@@ -336,6 +384,7 @@ func (e *ProgressEmitter) invokeCallback(run store.SemanticRefreshRun, debt Debt
 		Stage:     run.Stage,
 		Counters:  run.Counters,
 		Debt:      debt,
+		Work:      work,
 		At:        at,
 	}
 	e.stateMu.Lock()
@@ -394,7 +443,7 @@ func (e *ProgressEmitter) nextTickDispatch() (progressDispatch, bool, bool) {
 	if e.testHooks.afterTickQueueCheck != nil {
 		e.testHooks.afterTickQueueCheck()
 	}
-	return progressDispatch{run: e.run, debt: e.debt}, false, false
+	return progressDispatch{run: e.run, debt: e.debt, work: e.work}, false, false
 }
 
 func (e *ProgressEmitter) isStopped() bool {

@@ -19,7 +19,14 @@ type semanticProgressSnapshot struct {
 	stage     store.SemanticRefreshStage
 	counters  store.SemanticRefreshCounters
 	debt      semanticrefresh.Debt
+	work      semanticrefresh.StageWork
 	readiness string
+}
+
+type semanticProgressTarget interface {
+	startSemanticProgress(semanticProgressSnapshot) error
+	updateSemanticProgress(semanticProgressSnapshot) error
+	finishSemanticProgress(semanticProgressSnapshot, bool) error
 }
 
 // semanticProgressReporter turns the refresh runner's durable snapshots into
@@ -115,16 +122,16 @@ func (r *semanticProgressReporter) Report(progress semanticrefresh.Progress) err
 	return nil
 }
 
-// Finish closes the active semantic stage. It is safe to call when no progress
-// arrived and safe to call more than once.
-func (r *semanticProgressReporter) Finish() error {
+// Finish closes the active semantic stage with the caller's actual outcome. It
+// is safe to call when no progress arrived and safe to call more than once.
+func (r *semanticProgressReporter) Finish(success bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.finished || !r.started {
 		return nil
 	}
-	if err := r.writeComplete(r.lastObserved); err != nil {
+	if err := r.writeTerminal(r.lastObserved, success); err != nil {
 		return err
 	}
 	r.finished = true
@@ -136,6 +143,7 @@ func newSemanticProgressSnapshot(progress semanticrefresh.Progress) semanticProg
 		stage:     knownSemanticProgressStage(progress.Stage),
 		counters:  progress.Counters,
 		debt:      progress.Debt,
+		work:      progress.Work,
 		readiness: safeSemanticRefreshOutputField(progress.Readiness, 64),
 	}
 }
@@ -162,11 +170,17 @@ func semanticProgressStageName(stage store.SemanticRefreshStage) string {
 }
 
 func (r *semanticProgressReporter) writeStageStart(snapshot semanticProgressSnapshot) error {
+	if target, ok := r.out.(semanticProgressTarget); ok {
+		return target.startSemanticProgress(snapshot)
+	}
 	_, err := fmt.Fprintf(r.out, "==> semantic %s\n", semanticProgressStageName(snapshot.stage))
 	return err
 }
 
 func (r *semanticProgressReporter) writeProgress(snapshot semanticProgressSnapshot) error {
+	if target, ok := r.out.(semanticProgressTarget); ok {
+		return target.updateSemanticProgress(snapshot)
+	}
 	_, err := fmt.Fprintf(
 		r.out,
 		"Semantic %s progress: %s\n",
@@ -177,10 +191,22 @@ func (r *semanticProgressReporter) writeProgress(snapshot semanticProgressSnapsh
 }
 
 func (r *semanticProgressReporter) writeComplete(snapshot semanticProgressSnapshot) error {
+	return r.writeTerminal(snapshot, true)
+}
+
+func (r *semanticProgressReporter) writeTerminal(snapshot semanticProgressSnapshot, success bool) error {
+	if target, ok := r.out.(semanticProgressTarget); ok {
+		return target.finishSemanticProgress(snapshot, success)
+	}
+	status := "failed"
+	if success {
+		status = "complete"
+	}
 	_, err := fmt.Fprintf(
 		r.out,
-		"Semantic %s complete: %s\n",
+		"Semantic %s %s: %s\n",
 		semanticProgressStageName(snapshot.stage),
+		status,
 		semanticProgressFields(snapshot),
 	)
 	return err

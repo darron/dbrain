@@ -51,7 +51,25 @@ func TestCompactRewritesRootAndRetainsUnselectedSegment(t *testing.T) {
 		snapshot:   store.RetrievalActiveSegmentCompactionSnapshot{Profile: store.RetrievalEmbeddingProfileRow{ProfileID: profileID, ActiveGenerationID: "root", PurgeEpoch: 1, ActiveSnapshotRevision: 1}, Segments: []store.RetrievalActiveSegmentCompactionSegment{{RetrievalIndexSegmentRow: store.RetrievalIndexSegmentRow{SegmentHash: "selected"}, CreatedOrder: 1, LiveCount: 5_000, TombstoneCount: 51}, {RetrievalIndexSegmentRow: retainedRow, CreatedOrder: 2, LiveCount: 1}}},
 		streamRows: rows, existing: []store.RetrievalIndexSegmentRow{{SegmentHash: "selected", ProfileID: profileID, Backend: "test", BackendVersion: "v1", Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 5_051, RelativeCachePath: "old"}, retainedRow},
 	}
-	result, err := Compact(context.Background(), &st, testStreamingBuilder{}, CompactionOptions{Profile: profile, Backend: "test", BackendVersion: "v1", DistanceMetric: "cosine", CacheDir: cache})
+	failingBuilder := &trackingCompactionBuilder{}
+	_, err = Compact(context.Background(), &st, failingBuilder, CompactionOptions{
+		Profile: profile, Backend: "test", BackendVersion: "v1", DistanceMetric: "cosine", CacheDir: cache,
+		Progress: func(WorkProgress) error { return fmt.Errorf("stop progress") },
+	})
+	if err == nil || st.completeCalls != 0 {
+		t.Fatalf("progress failure err=%v complete_calls=%d", err, st.completeCalls)
+	}
+	if failingBuilder.session == nil || !failingBuilder.session.closed {
+		t.Fatalf("progress failure left session open: %+v", failingBuilder.session)
+	}
+	updates := make([]WorkProgress, 0)
+	result, err := Compact(context.Background(), &st, testStreamingBuilder{}, CompactionOptions{
+		Profile: profile, Backend: "test", BackendVersion: "v1", DistanceMetric: "cosine", CacheDir: cache,
+		Progress: func(progress WorkProgress) error {
+			updates = append(updates, progress)
+			return nil
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +78,9 @@ func TestCompactRewritesRootAndRetainsUnselectedSegment(t *testing.T) {
 	}
 	if _, err := semanticsegment.OpenRoot(cache, "db", profileID, result.GenerationID); err != nil {
 		t.Fatal(err)
+	}
+	if len(updates) == 0 || updates[0] != (WorkProgress{Current: 0, Total: 5_000}) || updates[len(updates)-1] != (WorkProgress{Current: 5_000, Total: 5_000}) {
+		t.Fatalf("updates=%+v", updates)
 	}
 }
 
@@ -145,3 +166,25 @@ func (testStreamingSession) Finish(context.Context) (func(io.Writer) error, erro
 	return func(w io.Writer) error { _, err := io.WriteString(w, "payload"); return err }, nil
 }
 func (testStreamingSession) Close() error { return nil }
+
+type trackingCompactionBuilder struct {
+	session *trackingCompactionSession
+}
+
+func (b *trackingCompactionBuilder) Begin(context.Context, int) (StreamingSegmentPayloadSession, error) {
+	b.session = &trackingCompactionSession{}
+	return b.session, nil
+}
+
+type trackingCompactionSession struct {
+	closed bool
+}
+
+func (*trackingCompactionSession) Add(context.Context, store.RetrievalEmbeddingRow) error { return nil }
+func (*trackingCompactionSession) Finish(context.Context) (func(io.Writer) error, error) {
+	return func(writer io.Writer) error { _, err := io.WriteString(writer, "payload"); return err }, nil
+}
+func (s *trackingCompactionSession) Close() error {
+	s.closed = true
+	return nil
+}

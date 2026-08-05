@@ -152,6 +152,23 @@ func (s *Store) ListDirtyRetrievalParents(ctx context.Context, watermark int64, 
 	return work, nil
 }
 
+func (s *Store) CountDirtyRetrievalParents(ctx context.Context, watermark int64) (int, error) {
+	if watermark < 0 {
+		return 0, fmt.Errorf("retrieval projection watermark must not be negative")
+	}
+	if watermark == 0 {
+		return 0, nil
+	}
+	var count int
+	if err := s.queryer().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM retrieval_parent_projections
+		WHERE dirty_revision <= ? AND projected_revision < dirty_revision`, watermark).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count dirty retrieval parents: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Store) ApplyRetrievalProjection(ctx context.Context, input ApplyRetrievalProjectionInput) (ChunkReplaceResult, error) {
 	if err := validateRetrievalProjectionApplyInput(&input); err != nil {
 		return ChunkReplaceResult{}, err

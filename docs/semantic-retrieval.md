@@ -73,10 +73,18 @@ errors fail closed rather than being hidden.
 
 ## Output and recovery
 
-Human sync output writes the ordinary source summary, streams bounded semantic
-refresh progress, and finishes with one semantic completion, skip, or error
-line. Scheduled runs log the same bounded progress plus one terminal semantic
-line, and record semantic failures as scheduler errors.
+Interactive human `sync all` output writes the ordinary source summary, then
+renders projection, embedding, flush, compaction, verification, and readiness
+as stage-local in-place progress bars. Once a stage has a known denominator and
+positive measured throughput, its bar shows completed/total units, percentage,
+elapsed time, and an approximate ETA. Totals may expand when retry work or a
+new compaction pass becomes eligible, so percentage and ETA can adjust during a
+run. A known zero-work stage is distinct from a stage that is still planning.
+
+Redirected human output and scheduled runs retain bounded, sanitized semantic
+progress lines plus one terminal semantic line. A failed or cancelled stage
+does not render successful completion. These display measurements are
+process-local and do not change durable refresh counters or recovery state.
 
 `dbrain sync all --json` emits exactly one flattened JSON document. It retains
 the normal top-level sync fields and contains exactly one of:
@@ -86,8 +94,8 @@ the normal top-level sync fields and contains exactly one of:
 
 `dbrain semantic refresh`, `semantic status`, `semantic chunk`, `semantic
 embed`, and `semantic verify` remain diagnostics and recovery tools. They are
-not a manual step required after normal sync, and query, research, MCP, and web
-paths never start maintenance.
+not a manual step required after normal sync, retain their existing text output,
+and query, research, MCP, and web paths never start maintenance.
 
 ## Scope of this stack
 

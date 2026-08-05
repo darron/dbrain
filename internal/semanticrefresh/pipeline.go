@@ -53,6 +53,8 @@ type PipelineStore interface {
 	ProjectionWorkRevision(context.Context) (int64, error)
 	RetrievalPurgeEpoch(context.Context) (int64, error)
 	RetrievalDatabaseID(context.Context) (string, error)
+	CountDirtyRetrievalParents(context.Context, int64) (int, error)
+	CountRetrievalVectorsAfter(context.Context, string, string) (int, error)
 	RetrievalEmbeddingProfile(context.Context, string) (store.RetrievalEmbeddingProfileRow, error)
 	RetrievalDanglingGenerationRecovery(context.Context, string) (*store.RetrievalDanglingGenerationRecovery, error)
 	ReactivateRetrievalDanglingGeneration(context.Context, store.RetrievalDanglingGenerationRecovery) error
@@ -65,6 +67,7 @@ type pipeline struct {
 	profileID                 string
 	effectiveSegmentTarget    int
 	effectiveSegmentHardLimit int
+	progressTracker           pipelineProgressTracker
 
 	runProjection func(context.Context, semanticbuild.ChunkStore, semanticbuild.ProjectionBatchOptions) (semanticbuild.ChunkProgress, error)
 	runEmbed      func(context.Context, semanticbuild.EmbedStore, embedding.Provider, semanticbuild.EmbedBatchOptions) (semanticbuild.EmbedBatchResult, error)
@@ -129,7 +132,11 @@ func NewPipeline(st PipelineStore, options PipelineOptions) (StageExecutor, erro
 	}, nil
 }
 
-func (p *pipeline) Execute(ctx context.Context, run store.SemanticRefreshRun) (StageOutcome, error) {
+func (p *pipeline) Execute(
+	ctx context.Context,
+	run store.SemanticRefreshRun,
+	progress StageProgressCallback,
+) (StageOutcome, error) {
 	if ctx == nil {
 		return StageOutcome{}, fmt.Errorf("semantic refresh pipeline context is required")
 	}
@@ -150,17 +157,17 @@ func (p *pipeline) Execute(ctx context.Context, run store.SemanticRefreshRun) (S
 	}
 	switch run.Stage {
 	case store.SemanticRefreshProjection:
-		return p.executeProjection(ctx, run)
+		return p.executeProjection(ctx, run, progress)
 	case store.SemanticRefreshEmbedding:
-		return p.executeEmbedding(ctx, run)
+		return p.executeEmbedding(ctx, run, progress)
 	case store.SemanticRefreshFlush:
-		return p.executeFlush(ctx, run)
+		return p.executeFlush(ctx, run, progress)
 	case store.SemanticRefreshCompaction:
-		return p.executeCompaction(ctx, run)
+		return p.executeCompaction(ctx, run, progress)
 	case store.SemanticRefreshVerify:
-		return p.executeVerify(ctx, run)
+		return p.executeVerify(ctx, run, progress)
 	case store.SemanticRefreshReadiness:
-		return p.executeReadiness(ctx, run)
+		return p.executeReadiness(ctx, run, progress)
 	default:
 		return StageOutcome{}, NewError(
 			ErrorRunConflict,
@@ -175,9 +182,21 @@ func (p *pipeline) Execute(ctx context.Context, run store.SemanticRefreshRun) (S
 func (p *pipeline) executeProjection(
 	ctx context.Context,
 	run store.SemanticRefreshRun,
+	progress StageProgressCallback,
 ) (StageOutcome, error) {
 	outcome := nextPipelineOutcome(run, store.SemanticRefreshProjection)
 	outcome.Checkpoint = projectionCheckpoint(run.ProjectionWatermark)
+	remaining, err := p.store.CountDirtyRetrievalParents(ctx, run.ProjectionWatermark)
+	if err != nil {
+		return outcome, pipelineStageError(ErrorProjection, run, outcome, err)
+	}
+	base, err := p.progressTracker.begin(run, int64(remaining), true)
+	if err != nil {
+		return outcome, pipelineStageError(ErrorProjection, run, outcome, err)
+	}
+	if err := publishStageWork(progress, base); err != nil {
+		return outcome, pipelineStageError(ErrorProjection, run, outcome, err)
+	}
 	page, err := p.runProjection(ctx, p.store, semanticbuild.ProjectionBatchOptions{
 		Watermark:          run.ProjectionWatermark,
 		ExpectedPurgeEpoch: run.PurgeEpoch,
@@ -200,6 +219,16 @@ func (p *pipeline) executeProjection(
 	if err != nil {
 		return outcome, pipelineStageError(ErrorProjection, run, outcome, err)
 	}
+	work, workErr := advanceStageWork(base, int64(page.Scanned), 0, false)
+	if workErr != nil {
+		return outcome, pipelineStageError(ErrorProjection, run, outcome, workErr)
+	}
+	if err := p.progressTracker.commit(run, work); err != nil {
+		return outcome, pipelineStageError(ErrorProjection, run, outcome, err)
+	}
+	if err := publishStageWork(progress, work); err != nil {
+		return outcome, pipelineStageError(ErrorProjection, run, outcome, err)
+	}
 	if page.Scanned == 0 && page.Checkpoint == nil && !page.HasMore && page.Remaining == 0 {
 		outcome.NextStage = store.SemanticRefreshEmbedding
 		outcome.Checkpoint = embeddingCheckpoint(run.EmbeddingRevision)
@@ -210,9 +239,21 @@ func (p *pipeline) executeProjection(
 func (p *pipeline) executeEmbedding(
 	ctx context.Context,
 	run store.SemanticRefreshRun,
+	progress StageProgressCallback,
 ) (StageOutcome, error) {
 	outcome := nextPipelineOutcome(run, store.SemanticRefreshEmbedding)
 	outcome.Checkpoint = embeddingCheckpoint(run.EmbeddingRevision)
+	remaining, err := p.store.CountChunksNeedingEmbeddingForProfileAt(ctx, p.options.Profile, p.options.Now())
+	if err != nil {
+		return outcome, pipelineStageError(ErrorEmbedding, run, outcome, err)
+	}
+	base, err := p.progressTracker.begin(run, int64(remaining), true)
+	if err != nil {
+		return outcome, pipelineStageError(ErrorEmbedding, run, outcome, err)
+	}
+	if err := publishStageWork(progress, base); err != nil {
+		return outcome, pipelineStageError(ErrorEmbedding, run, outcome, err)
+	}
 	beforeProvider := func(ctx context.Context, selected int) error {
 		if selected < 0 || selected > p.options.EmbeddingBatch {
 			return fmt.Errorf("semantic embedding selected count is outside the bounded batch")
@@ -241,7 +282,7 @@ func (p *pipeline) executeEmbedding(
 					ctx,
 					p.store,
 					p.options.Native,
-					p.flushOptions(),
+					p.flushOptions(nil),
 				)
 				return flushErr
 			},
@@ -292,18 +333,36 @@ func (p *pipeline) executeEmbedding(
 		}
 		return outcome, pipelineStageError(code, run, outcome, err)
 	}
+	work, workErr := advanceStageWork(base, int64(result.Scanned), 0, false)
+	if workErr != nil {
+		return outcome, pipelineStageError(ErrorEmbedding, run, outcome, workErr)
+	}
+	if err := p.progressTracker.commit(run, work); err != nil {
+		return outcome, pipelineStageError(ErrorEmbedding, run, outcome, err)
+	}
+	if err := publishStageWork(progress, work); err != nil {
+		return outcome, pipelineStageError(ErrorEmbedding, run, outcome, err)
+	}
 	return outcome, nil
 }
 
 func (p *pipeline) executeFlush(
 	ctx context.Context,
 	run store.SemanticRefreshRun,
+	progress StageProgressCallback,
 ) (StageOutcome, error) {
 	outcome := nextPipelineOutcome(run, store.SemanticRefreshFlush)
 	outcome.Checkpoint = flushCheckpoint(run.EmbeddingRevision)
 	profile, err := p.store.RetrievalEmbeddingProfile(ctx, p.profileID)
 	if err != nil {
 		if errors.Is(err, store.ErrRetrievalEmbeddingProfileNotFound) {
+			base, beginErr := p.progressTracker.begin(run, 0, true)
+			if beginErr != nil {
+				return outcome, pipelineStageError(ErrorFlush, run, outcome, beginErr)
+			}
+			if err := publishStageWork(progress, base); err != nil {
+				return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
+			}
 			outcome.NextStage = store.SemanticRefreshCompaction
 			outcome.Checkpoint = compactionCheckpoint(run.CurrentGenerationID)
 			return outcome, nil
@@ -314,12 +373,31 @@ func (p *pipeline) executeFlush(
 		err := fmt.Errorf("semantic embedding profile has a negative L0 count")
 		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
 	}
+	planned := ((profile.L0ReadyCount - 1) / p.effectiveSegmentTarget) * p.effectiveSegmentTarget
+	if profile.L0ReadyCount <= p.effectiveSegmentTarget {
+		planned = 0
+	}
+	base, err := p.progressTracker.begin(run, int64(planned), true)
+	if err != nil {
+		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
+	}
+	if err := publishStageWork(progress, base); err != nil {
+		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
+	}
 	if profile.L0ReadyCount <= p.effectiveSegmentTarget {
 		outcome.NextStage = store.SemanticRefreshCompaction
 		outcome.Checkpoint = compactionCheckpoint(run.CurrentGenerationID)
 		return outcome, nil
 	}
-	result, err := p.runFlush(ctx, p.store, p.options.Native, p.flushOptions())
+	latest := base
+	result, err := p.runFlush(ctx, p.store, p.options.Native, p.flushOptions(func(operation semanticbuild.WorkProgress) error {
+		work, workErr := advanceStageWork(base, int64(operation.Current), int64(operation.Total), true)
+		if workErr != nil {
+			return workErr
+		}
+		latest = work
+		return publishStageWork(progress, work)
+	}))
 	if err != nil {
 		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
 	}
@@ -333,18 +411,46 @@ func (p *pipeline) executeFlush(
 		outcome.EmbeddingRevision = result.SnapshotRevision
 		outcome.Checkpoint = flushCheckpoint(result.SnapshotRevision)
 	}
+	if latest.Current < base.Current+int64(result.Flushed) {
+		latest, err = advanceStageWork(base, int64(result.Flushed), int64(result.Flushed), true)
+		if err != nil {
+			return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
+		}
+	}
+	if err := p.progressTracker.commit(run, latest); err != nil {
+		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
+	}
+	if err := publishStageWork(progress, latest); err != nil {
+		return outcome, pipelineStageError(ErrorFlush, run, outcome, err)
+	}
 	return outcome, nil
 }
 
 func (p *pipeline) executeCompaction(
 	ctx context.Context,
 	run store.SemanticRefreshRun,
+	progress StageProgressCallback,
 ) (StageOutcome, error) {
 	outcome := nextPipelineOutcome(run, store.SemanticRefreshCompaction)
 	outcome.Checkpoint = compactionCheckpoint(run.CurrentGenerationID)
+	base, err := p.progressTracker.begin(run, 0, false)
+	if err != nil {
+		return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
+	}
+	if err := publishStageWork(progress, base); err != nil {
+		return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
+	}
 	_, profileErr := p.store.RetrievalEmbeddingProfile(ctx, p.profileID)
 	if profileErr != nil {
 		if errors.Is(profileErr, store.ErrRetrievalEmbeddingProfileNotFound) {
+			base.Total = base.Current
+			base.TotalKnown = true
+			if err := p.progressTracker.commit(run, base); err != nil {
+				return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
+			}
+			if err := publishStageWork(progress, base); err != nil {
+				return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
+			}
 			outcome.NextStage = store.SemanticRefreshVerify
 			outcome.Checkpoint = verifyCheckpoint("")
 			return outcome, nil
@@ -363,6 +469,8 @@ func (p *pipeline) executeCompaction(
 		}
 		return outcome, pipelineStageError(code, run, outcome, err)
 	}
+	latest := base
+	pass := base.Pass + 1
 	result, err := p.runCompact(
 		ctx,
 		p.store,
@@ -373,12 +481,30 @@ func (p *pipeline) executeCompaction(
 			BackendVersion: semanticindex.USearchVersion,
 			DistanceMetric: "cosine",
 			CacheDir:       p.options.CacheDir,
+			Progress: func(operation semanticbuild.WorkProgress) error {
+				work, workErr := advanceStageWork(base, int64(operation.Current), int64(operation.Total), true)
+				if workErr != nil {
+					return workErr
+				}
+				work.Pass = pass
+				latest = work
+				return publishStageWork(progress, work)
+			},
 		},
 	)
 	if err != nil {
 		return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
 	}
 	if result.Plan.Kind == semanticbuild.SegmentCompactionNone {
+		latest = base
+		latest.Total = latest.Current
+		latest.TotalKnown = true
+		if err := p.progressTracker.commit(run, latest); err != nil {
+			return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
+		}
+		if err := publishStageWork(progress, latest); err != nil {
+			return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
+		}
 		outcome.NextStage = store.SemanticRefreshVerify
 		outcome.Checkpoint = verifyCheckpoint("")
 		return outcome, nil
@@ -397,6 +523,19 @@ func (p *pipeline) executeCompaction(
 		&outcome.Counters.CompactedVectors,
 		result.StreamedLiveMembers,
 	); err != nil {
+		return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
+	}
+	if latest.Current < base.Current+int64(result.StreamedLiveMembers) {
+		latest, err = advanceStageWork(base, int64(result.StreamedLiveMembers), int64(result.StreamedLiveMembers), true)
+		if err != nil {
+			return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
+		}
+		latest.Pass = pass
+	}
+	if err := p.progressTracker.commit(run, latest); err != nil {
+		return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
+	}
+	if err := publishStageWork(progress, latest); err != nil {
 		return outcome, pipelineStageError(ErrorCompaction, run, outcome, err)
 	}
 	return outcome, nil
@@ -441,6 +580,7 @@ func (p *pipeline) recoverDanglingGeneration(ctx context.Context, run store.Sema
 func (p *pipeline) executeVerify(
 	ctx context.Context,
 	run store.SemanticRefreshRun,
+	progress StageProgressCallback,
 ) (StageOutcome, error) {
 	outcome := nextPipelineOutcome(run, store.SemanticRefreshVerify)
 	resume, err := parseVerifyCheckpoint(run.Checkpoint)
@@ -448,11 +588,31 @@ func (p *pipeline) executeVerify(
 		return outcome, pipelineStageError(ErrorVerify, run, outcome, err)
 	}
 	outcome.Checkpoint = verifyCheckpoint(resume)
+	remaining, err := p.store.CountRetrievalVectorsAfter(ctx, p.profileID, resume)
+	if err != nil {
+		return outcome, pipelineStageError(ErrorVerify, run, outcome, err)
+	}
+	base, err := p.progressTracker.begin(run, int64(remaining), true)
+	if err != nil {
+		return outcome, pipelineStageError(ErrorVerify, run, outcome, err)
+	}
+	if err := publishStageWork(progress, base); err != nil {
+		return outcome, pipelineStageError(ErrorVerify, run, outcome, err)
+	}
+	latest := base
 	page, err := p.runVerify(ctx, p.store, semanticbuild.VerifyOptions{
 		Profile:        p.options.Profile,
 		Limit:          maxVerifyBatch,
 		Resume:         resume,
 		RepairCounters: false,
+		Progress: func(operation semanticbuild.VerifyProgress) error {
+			work, workErr := advanceStageWork(base, int64(operation.Scanned), 0, false)
+			if workErr != nil {
+				return workErr
+			}
+			latest = work
+			return publishStageWork(progress, work)
+		},
 	})
 	if page.Scanned < 0 {
 		err = errors.Join(err, fmt.Errorf("semantic verify returned a negative scanned count"))
@@ -471,6 +631,18 @@ func (p *pipeline) executeVerify(
 		}
 	}
 	if err != nil {
+		return outcome, pipelineStageError(ErrorVerify, run, outcome, err)
+	}
+	if latest.Current < base.Current+int64(page.Scanned) {
+		latest, err = advanceStageWork(base, int64(page.Scanned), 0, false)
+		if err != nil {
+			return outcome, pipelineStageError(ErrorVerify, run, outcome, err)
+		}
+	}
+	if err := p.progressTracker.commit(run, latest); err != nil {
+		return outcome, pipelineStageError(ErrorVerify, run, outcome, err)
+	}
+	if err := publishStageWork(progress, latest); err != nil {
 		return outcome, pipelineStageError(ErrorVerify, run, outcome, err)
 	}
 	if page.HasMore {
@@ -557,8 +729,16 @@ func (p *pipeline) verifyActiveRoot(
 func (p *pipeline) executeReadiness(
 	ctx context.Context,
 	run store.SemanticRefreshRun,
+	progress StageProgressCallback,
 ) (StageOutcome, error) {
 	outcome := nextPipelineOutcome(run, store.SemanticRefreshReadiness)
+	base, err := p.progressTracker.begin(run, 1, true)
+	if err != nil {
+		return outcome, pipelineStageError(ErrorReadiness, run, outcome, err)
+	}
+	if err := publishStageWork(progress, base); err != nil {
+		return outcome, pipelineStageError(ErrorReadiness, run, outcome, err)
+	}
 	snapshot, err := p.store.SemanticReadinessSnapshotAt(
 		ctx,
 		p.options.Profile,
@@ -566,6 +746,16 @@ func (p *pipeline) executeReadiness(
 		p.options.Now(),
 	)
 	if err != nil {
+		return outcome, pipelineStageError(ErrorReadiness, run, outcome, err)
+	}
+	work, err := advanceStageWork(base, 1, 1, true)
+	if err != nil {
+		return outcome, pipelineStageError(ErrorReadiness, run, outcome, err)
+	}
+	if err := p.progressTracker.commit(run, work); err != nil {
+		return outcome, pipelineStageError(ErrorReadiness, run, outcome, err)
+	}
+	if err := publishStageWork(progress, work); err != nil {
 		return outcome, pipelineStageError(ErrorReadiness, run, outcome, err)
 	}
 	outcome.Debt = pipelineDebt(snapshot)
@@ -609,7 +799,7 @@ func (p *pipeline) executeReadiness(
 	return outcome, nil
 }
 
-func (p *pipeline) flushOptions() semanticbuild.FlushOptions {
+func (p *pipeline) flushOptions(progress func(semanticbuild.WorkProgress) error) semanticbuild.FlushOptions {
 	return semanticbuild.FlushOptions{
 		Profile:        p.options.Profile,
 		Backend:        semanticindex.BackendUSearch,
@@ -617,6 +807,7 @@ func (p *pipeline) flushOptions() semanticbuild.FlushOptions {
 		DistanceMetric: "cosine",
 		CacheDir:       p.options.CacheDir,
 		Limit:          p.effectiveSegmentTarget,
+		Progress:       progress,
 	}
 }
 

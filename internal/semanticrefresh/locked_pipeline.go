@@ -84,6 +84,7 @@ func newLockedPipeline(executor StageExecutor, locks refreshLockScope) (StageExe
 func (p *lockedPipeline) Execute(
 	ctx context.Context,
 	run store.SemanticRefreshRun,
+	progress StageProgressCallback,
 ) (outcome StageOutcome, resultErr error) {
 	if ctx == nil {
 		return StageOutcome{}, fmt.Errorf("semantic refresh pipeline context is required")
@@ -133,7 +134,7 @@ func (p *lockedPipeline) Execute(
 			}
 		}()
 	}
-	return p.executor.Execute(executeCtx, run)
+	return p.executor.Execute(executeCtx, run, progress)
 }
 
 func refreshStagePublishesGeneration(stage store.SemanticRefreshStage) bool {

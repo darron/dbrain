@@ -48,7 +48,7 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 				refreshDeps,
 				reporter.Callback(),
 			)
-			err = errors.Join(err, reporter.Finish())
+			err = errors.Join(err, reporter.Finish(err == nil))
 			elapsed := result.Duration
 			completed.stats = completeSyncStatsWithSemantic(completed.stats, result)
 			metricsErr = errors.Join(metricsErr, emitFullSyncCompletion(completed.metrics, completed.stats, result, err))

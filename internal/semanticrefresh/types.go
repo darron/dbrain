@@ -36,7 +36,27 @@ type Progress struct {
 	Stage                                   store.SemanticRefreshStage
 	Counters                                store.SemanticRefreshCounters
 	Debt                                    Debt
+	Work                                    StageWork
 	At                                      time.Time
+}
+
+// StageWork is a transient, stage-local measurement for interactive progress.
+// It is deliberately separate from the durable semantic refresh counters.
+type StageWork struct {
+	Current    int64 `json:"current"`
+	Total      int64 `json:"total"`
+	TotalKnown bool  `json:"total_known"`
+	Pass       int   `json:"pass"`
+}
+
+func (w StageWork) Validate() error {
+	if w.Current < 0 || w.Total < 0 || w.Pass < 0 {
+		return fmt.Errorf("semantic stage work values must not be negative")
+	}
+	if w.TotalKnown && w.Total < w.Current {
+		return fmt.Errorf("semantic stage work total must not be below current")
+	}
+	return nil
 }
 
 type Result struct {
@@ -77,6 +97,8 @@ type NativeLifecycle interface {
 }
 
 type ProgressCallback func(Progress) error
+
+type StageProgressCallback func(StageWork) error
 
 type Request struct {
 	ProfileID                       string
@@ -125,5 +147,5 @@ type StageOutcome struct {
 }
 
 type StageExecutor interface {
-	Execute(context.Context, store.SemanticRefreshRun) (StageOutcome, error)
+	Execute(context.Context, store.SemanticRefreshRun, StageProgressCallback) (StageOutcome, error)
 }

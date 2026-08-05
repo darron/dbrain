@@ -569,7 +569,7 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 			return nil
 		},
 	)
-	if finishErr := reporter.Finish(); finishErr != nil {
+	if finishErr := reporter.Finish(err == nil); finishErr != nil {
 		err = errors.Join(err, wrapScheduledSyncBoundary(scheduledBoundaryOutput, finishErr))
 	}
 	stats = completeSyncStatsWithSemantic(stats, result)
