@@ -1271,6 +1271,8 @@ dbrain semantic status
 dbrain semantic refresh
 dbrain semantic refresh --max-duration 30m
 dbrain semantic refresh --json
+dbrain semantic gc
+dbrain semantic gc --apply
 ```
 
 `semantic refresh` uses the configured embedding profile and does not change
@@ -1302,6 +1304,14 @@ macOS arm64 artifact statically includes the native backend; normal
 untagged/CGO-free builds and all other release targets remain explicitly
 unsupported for semantic refresh without failing ordinary sync or lexical
 retrieval.
+
+`semantic gc` is a dry-run by default. It retains active, resumable, recent,
+and rollback roots, then reports cache directories and SQLite membership rows
+that are unreachable from that retained set. Use `--apply` only after reviewing
+the plan. `--vacuum` additionally rebuilds SQLite so deleted pages return to the
+filesystem; archive first, ensure rewrite headroom, and stop the daemon and
+other writers. See the semantic-retrieval guide for the full retention, locking,
+and crash-ordering contract.
 
 See [Semantic retrieval](docs/semantic-retrieval.md) for the operational
 contract and [MCP.md](MCP.md) for agent-facing retrieval behavior.

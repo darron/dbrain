@@ -5,6 +5,18 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Reachability-based semantic garbage collection (2026-08-05)
+
+- **Safe cache and catalog reclamation**: Added dry-run-first `dbrain semantic
+  gc`, retaining active, resumable, recent, and rollback roots while pruning
+  only segments unreachable from every retained generation. Apply commits
+  SQLite catalog and membership deletion before unlinking immutable cache
+  directories and also sweeps aged filesystem-only artifacts.
+- **Explicit physical database compaction**: Optional `--vacuum` is gated behind
+  `--apply`, checkpoints the WAL, reports writer contention with recovery
+  guidance, and keeps the archive, disk-headroom, and daemon-stop requirements
+  explicit.
+
 ### Bounded native semantic admission (2026-08-05)
 
 - **Research stays lexical while native admission is busy**: Research-pack

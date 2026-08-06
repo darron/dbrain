@@ -286,7 +286,7 @@ func (s *Store) ensureRetrievalEmbeddingProfileDefinitions() error {
 	// their projection, chunker, purge-epoch, or revision-watermark provenance.
 	// Keep their completed metadata, but require an explicit post-migration
 	// activation/build before treating any of them as a usable root.
-	if _, err := s.db.Exec(`UPDATE retrieval_index_generations SET active=0, activated_at='' WHERE active=1`); err != nil {
+	if _, err := s.db.Exec(`UPDATE retrieval_index_generations SET active=0, activated_at='', updated_at=? WHERE active=1`, now); err != nil {
 		return fmt.Errorf("deactivate unverifiable pre-v19 retrieval generations: %w", err)
 	}
 	var mismatch string
