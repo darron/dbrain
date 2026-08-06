@@ -64,3 +64,40 @@ func TestSemanticSyncSummaryRowsShowsExplicitSkip(t *testing.T) {
 		t.Fatalf("rows = %#v", rows)
 	}
 }
+
+func TestWriteSyncStatsWithSemanticGCIncludesTerminalRowAndFullDuration(t *testing.T) {
+	stats := syncSemanticTestStats()
+	semantic := semanticrefresh.Result{
+		Outcome:  semanticrefresh.OutcomeCompleted,
+		Duration: 5 * time.Second,
+	}
+	gc := &syncSemanticGCResult{
+		Status:            syncSemanticGCStatusError,
+		Duration:          3 * time.Second,
+		GenerationsPruned: 4,
+		SegmentsPruned:    2,
+		MemberRowsPruned:  19,
+		FilesystemDeleted: 6,
+		DeletedBytes:      2048,
+		Error:             "filesystem_unlink",
+	}
+	stats = completeSyncStatsWithSemanticGC(stats, semantic, gc)
+	if stats.Duration != 10*time.Second {
+		t.Fatalf("full sync duration=%s, want 10s", stats.Duration)
+	}
+	var output bytes.Buffer
+	if err := writeSyncStatsWithSemantic(&output, stats, semantic, nil, gc); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Duration:  10.00s",
+		"Semantic GC",
+		"dirs=6 bytes=2048",
+		"status=error generations=4 segments=2 members=19",
+		"error=filesystem_unlink",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output omitted %q:\n%s", want, output.String())
+		}
+	}
+}

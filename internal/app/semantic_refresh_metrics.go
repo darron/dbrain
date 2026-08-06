@@ -82,6 +82,33 @@ func emitSemanticRefreshMetrics(
 	return emitErr
 }
 
+func emitSyncSemanticGCMetrics(run metrics.RunContext, result *syncSemanticGCResult) error {
+	if result == nil || !run.Enabled() {
+		return nil
+	}
+	event := metrics.Event{
+		"event":                 "semantic.gc.completed",
+		"status":                string(result.Status),
+		"duration_ms":           result.DurationMS,
+		"skip_reason":           result.SkipReason,
+		"generations_pruned":    result.GenerationsPruned,
+		"segments_pruned":       result.SegmentsPruned,
+		"member_rows_pruned":    result.MemberRowsPruned,
+		"filesystem_candidates": result.FilesystemCandidates,
+		"filesystem_deleted":    result.FilesystemDeleted,
+		"prunable_bytes":        result.PrunableBytes,
+		"deleted_bytes":         result.DeletedBytes,
+	}
+	if result.err != nil {
+		metricErr := any(result.err)
+		if result.Status == syncSemanticGCStatusError {
+			metricErr = result.Error
+		}
+		event["error"] = metrics.ErrorObject(metricErr)
+	}
+	return run.Emit(event)
+}
+
 func terminalSemanticRefreshCounters(result semanticrefresh.Result) store.SemanticRefreshCounters {
 	if result.Run == nil {
 		return store.SemanticRefreshCounters{}
@@ -96,6 +123,19 @@ func emitFullSyncCompletion(
 	runErr error,
 ) error {
 	emitErr := emitSemanticRefreshMetrics(run, result, runErr)
+	syncjob.EmitRunCompleted(run, stats, runErr)
+	return emitErr
+}
+
+func emitFullSyncCompletionWithGC(
+	run metrics.RunContext,
+	stats syncjob.Stats,
+	result semanticrefresh.Result,
+	gc *syncSemanticGCResult,
+	runErr error,
+) error {
+	emitErr := emitSemanticRefreshMetrics(run, result, runErr)
+	emitErr = errors.Join(emitErr, emitSyncSemanticGCMetrics(run, gc))
 	syncjob.EmitRunCompleted(run, stats, runErr)
 	return emitErr
 }

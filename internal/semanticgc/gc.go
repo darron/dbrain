@@ -25,6 +25,7 @@ type Options struct {
 	Now             time.Time
 	GracePeriod     time.Duration
 	RetainPublished int
+	LockTimeout     time.Duration
 	Apply           bool
 	Vacuum          bool
 }
@@ -40,23 +41,27 @@ type Artifact struct {
 }
 
 type Result struct {
-	Applied               bool                          `json:"applied"`
-	Vacuumed              bool                          `json:"vacuumed"`
-	Catalog               store.RetrievalSemanticGCPlan `json:"catalog"`
-	FilesystemArtifacts   []Artifact                    `json:"filesystem_artifacts"`
-	PrunableBytes         int64                         `json:"prunable_bytes"`
-	DeletedFilesystemDirs int                           `json:"deleted_filesystem_dirs"`
+	Applied                bool                          `json:"applied"`
+	Vacuumed               bool                          `json:"vacuumed"`
+	Catalog                store.RetrievalSemanticGCPlan `json:"catalog"`
+	FilesystemArtifacts    []Artifact                    `json:"filesystem_artifacts"`
+	PrunableBytes          int64                         `json:"prunable_bytes"`
+	DeletedFilesystemDirs  int                           `json:"deleted_filesystem_dirs"`
+	DeletedFilesystemBytes int64                         `json:"deleted_filesystem_bytes"`
 }
 
 func Run(ctx context.Context, catalog Catalog, cacheDir, databaseID string, opts Options) (result Result, returnErr error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if catalog == nil {
 		return Result{}, errors.New("semantic GC catalog is nil")
 	}
 	if opts.Now.IsZero() {
 		return Result{}, errors.New("semantic GC current time is required")
 	}
-	if opts.GracePeriod < 0 || opts.RetainPublished < 0 {
-		return Result{}, errors.New("semantic GC retention values must not be negative")
+	if opts.GracePeriod < 0 || opts.RetainPublished < 0 || opts.LockTimeout < 0 {
+		return Result{}, errors.New("semantic GC duration and retention values must not be negative")
 	}
 	if opts.Vacuum && !opts.Apply {
 		return Result{}, errors.New("semantic GC --vacuum requires --apply")
@@ -66,17 +71,24 @@ func Run(ctx context.Context, catalog Catalog, cacheDir, databaseID string, opts
 		return Result{}, fmt.Errorf("configure semantic GC locks: %w", err)
 	}
 	storeOpts := store.RetrievalSemanticGCOptions{Now: opts.Now, GracePeriod: opts.GracePeriod, RetainPublished: opts.RetainPublished}
+	admissionCtx := ctx
+	cancelAdmission := func() {}
+	if opts.LockTimeout > 0 {
+		admissionCtx, cancelAdmission = context.WithTimeout(ctx, opts.LockTimeout)
+	}
+	defer cancelAdmission()
 	if !opts.Apply {
-		maintenance, err := scope.AcquireMaintenanceShared(ctx, "owner=semantic-gc\nmode=dry-run\n")
+		maintenance, err := scope.AcquireMaintenanceShared(admissionCtx, "owner=semantic-gc\nmode=dry-run\n")
 		if err != nil {
 			return Result{}, err
 		}
 		defer closeLease(&returnErr, "release semantic GC maintenance lock", maintenance)
-		generation, err := scope.AcquireGenerationShared(ctx, "owner=semantic-gc\nmode=dry-run\n")
+		generation, err := scope.AcquireGenerationShared(admissionCtx, "owner=semantic-gc\nmode=dry-run\n")
 		if err != nil {
 			return Result{}, err
 		}
 		defer closeLease(&returnErr, "release semantic GC generation lock", generation)
+		cancelAdmission()
 		plan, err := catalog.PlanRetrievalSemanticGC(ctx, storeOpts)
 		if err != nil {
 			return Result{}, err
@@ -88,30 +100,34 @@ func Run(ctx context.Context, catalog Catalog, cacheDir, databaseID string, opts
 		return Result{Catalog: plan, FilesystemArtifacts: artifacts, PrunableBytes: bytes}, nil
 	}
 
-	maintenance, err := scope.AcquireMaintenanceExclusive(ctx, "owner=semantic-gc\nmode=apply\n")
+	maintenance, err := scope.AcquireMaintenanceExclusive(admissionCtx, "owner=semantic-gc\nmode=apply\n")
 	if err != nil {
 		return Result{}, err
 	}
 	defer closeLease(&returnErr, "release semantic GC maintenance lock", maintenance)
-	generation, err := maintenance.AcquireGenerationExclusive(ctx, "owner=semantic-gc\nmode=apply\n")
+	generation, err := maintenance.AcquireGenerationExclusive(admissionCtx, "owner=semantic-gc\nmode=apply\n")
 	if err != nil {
 		return Result{}, err
 	}
 	defer closeLease(&returnErr, "release semantic GC generation lock", generation)
+	cancelAdmission()
 	plan, err := catalog.PruneRetrievalSemanticCatalog(ctx, storeOpts)
 	if err != nil {
 		return Result{}, err
 	}
+	result = Result{Applied: true, Catalog: plan}
 	artifacts, bytes, err := scanPrunableFilesystem(cacheDir, databaseID, plan, opts.Now.Add(-opts.GracePeriod))
 	if err != nil {
-		return Result{}, err
+		return result, err
 	}
-	result = Result{Applied: true, Catalog: plan, FilesystemArtifacts: artifacts, PrunableBytes: bytes}
+	result.FilesystemArtifacts = artifacts
+	result.PrunableBytes = bytes
 	for _, artifact := range artifacts {
 		if err := removeArtifact(cacheDir, databaseID, artifact); err != nil {
 			return result, err
 		}
 		result.DeletedFilesystemDirs++
+		result.DeletedFilesystemBytes += artifact.Bytes
 	}
 	if opts.Vacuum {
 		if err := catalog.VacuumRetrievalDatabase(ctx); err != nil {

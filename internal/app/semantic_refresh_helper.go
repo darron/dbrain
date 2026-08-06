@@ -31,6 +31,7 @@ type semanticRefreshDeps struct {
 	now             func() time.Time
 	startedAt       time.Time
 	embeddingBatch  int
+	semanticGC      syncSemanticGCDeps
 }
 
 func defaultSemanticRefreshDeps() semanticRefreshDeps {
@@ -49,6 +50,7 @@ func defaultSemanticRefreshDeps() semanticRefreshDeps {
 		nativeLifecycle: newSemanticNativeLifecycle,
 		runRefresh:      semanticrefresh.Run,
 		now:             time.Now,
+		semanticGC:      defaultSyncSemanticGCDeps(),
 	}
 }
 
@@ -349,6 +351,7 @@ func completeSemanticRefreshDeps(deps semanticRefreshDeps) semanticRefreshDeps {
 	if deps.now == nil {
 		deps.now = defaults.now
 	}
+	deps.semanticGC = completeSyncSemanticGCDeps(deps.semanticGC)
 	return deps
 }
 

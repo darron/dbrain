@@ -112,9 +112,9 @@ the normal top-level sync fields and contains exactly one of:
 - `semantic_error` for a typed refresh failure.
 
 `dbrain semantic refresh`, `semantic status`, `semantic chunk`, `semantic
-embed`, `semantic verify`, and `semantic gc` remain diagnostics and recovery tools. They are
-not a manual step required after normal sync, retain their existing text output,
-and query, research, MCP, and web paths never start maintenance.
+embed`, `semantic verify`, and `semantic gc` retain their standalone diagnostic
+and recovery contracts. Query, research, MCP, and web paths never start
+maintenance.
 
 ### Garbage collection
 
@@ -144,6 +144,16 @@ uncatalogued profile, generation, and segment directories. Symlinks and paths
 outside the configured semantic database root are rejected. An unlink failure
 cannot leave SQLite pointing at an absent artifact; the leftover directory is
 rediscovered by the next run.
+
+Automatic housekeeping is opt-in and default-off. Set either
+`sync_all.semantic_gc: true` or `DBRAIN_SYNC_ALL_SEMANTIC_GC=true` to apply GC
+after a successfully completed semantic refresh in both manual and scheduled
+`sync all`. The stage uses the normal ten-minute reader grace and retains two
+published rollback generations. It bounds semantic lock admission, reports a
+timeout as a skipped cleanup, and reports other cleanup failures without
+changing an otherwise successful sync result. A later successful run retries
+grace-delayed or failed cleanup. Skipped or failed semantic refreshes do not run
+automatic GC, and automatic GC never runs SQLite `VACUUM`.
 
 Row deletion does not necessarily reduce the physical SQLite file while
 `auto_vacuum` is disabled. `--vacuum` requires `--apply`, checkpoints the WAL on

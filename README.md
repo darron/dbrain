@@ -736,6 +736,7 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK` / `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS` | `feeds.allow_private_network` | `false` | Allow feed fetches to localhost/private/link-local IPs for local testing; disabled by default. |
 | `DBRAIN_SYNC_ALL_BROWSER` | `sync_all.browser` | `chrome` | Shared browser for cookie-backed X and YouTube imports in manual and scheduled `sync all` runs. |
 | `DBRAIN_SYNC_ALL_PROFILE` | `sync_all.profile` | `` | Optional shared browser profile name or path for cookie-backed imports. |
+| `DBRAIN_SYNC_ALL_SEMANTIC_GC` | `sync_all.semantic_gc` | `false` | Apply grace-delayed semantic GC as a non-fatal terminal stage after a completed `sync all` semantic refresh; never runs SQLite `VACUUM`. |
 | `DBRAIN_SYNC_ALL_IMPORT_X_BOOKMARKS` | `sync_all.imports.x_bookmarks` | `true` | Include X bookmark import plus X hydration, media transcription, and photo OCR in `sync all`. |
 | `DBRAIN_TRANSCRIPTION_BACKEND` | `transcription.backend` | `auto` | Speech-to-text backend: `auto`, `whisper.cpp`, or `macwhisper[:model]`. Auto prefers a ready whisper.cpp installation. |
 | `DBRAIN_TRANSCRIPTION_LANGUAGE` | `transcription.language` | `auto` | Spoken language code passed to whisper.cpp, or automatic detection. |
@@ -1278,8 +1279,8 @@ dbrain semantic gc --apply
 `semantic refresh` uses the configured embedding profile and does not change
 `research.semantic.mode`. It remains a diagnostic and recovery command, not a
 required routine step. Every successful `dbrain sync all` and scheduled sync
-now invokes this same refresh path synchronously after its source store and
-metrics have closed. That includes an unchanged source run: it can resume a
+now invokes this same refresh path synchronously after its source store has
+closed while the sync metrics lifecycle remains open. That includes an unchanged source run: it can resume a
 durable semantic run left by cancellation or failure. The initial successful
 sync after enabling `shadow` or `on` performs the same full backfill path.
 
@@ -1312,6 +1313,21 @@ the plan. `--vacuum` additionally rebuilds SQLite so deleted pages return to the
 filesystem; archive first, ensure rewrite headroom, and stop the daemon and
 other writers. See the semantic-retrieval guide for the full retention, locking,
 and crash-ordering contract.
+
+Routine cleanup can be enabled for both manual and scheduled syncs:
+
+```yaml
+sync_all:
+  semantic_gc: true
+```
+
+`DBRAIN_SYNC_ALL_SEMANTIC_GC=true` is the equivalent environment override.
+Automatic cleanup runs only after a completed semantic refresh, while the
+coarse sync lock and metrics lifecycle remain open. It uses the normal grace
+and rollback retention, skips rather than hangs when semantic lease admission
+times out, and reports cleanup failures without changing an otherwise
+successful sync exit. It never runs `VACUUM`; use the explicit archived/offline
+command when the SQLite file itself must shrink.
 
 See [Semantic retrieval](docs/semantic-retrieval.md) for the operational
 contract and [MCP.md](MCP.md) for agent-facing retrieval behavior.

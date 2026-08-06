@@ -572,8 +572,10 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 	if finishErr := reporter.Finish(err == nil); finishErr != nil {
 		err = errors.Join(err, wrapScheduledSyncBoundary(scheduledBoundaryOutput, finishErr))
 	}
-	stats = completeSyncStatsWithSemantic(stats, result)
-	metricsErr = errors.Join(metricsErr, emitFullSyncCompletion(metricsRun, stats, result, err))
+	completedDeps := completeSemanticRefreshDeps(deps)
+	gcResult := maybeRunAutomaticSemanticGC(ctx, cfg, resolvedFlags.semanticGC, result, err, completedDeps.semanticGC)
+	stats = completeSyncStatsWithSemanticGC(stats, result, gcResult)
+	metricsErr = errors.Join(metricsErr, emitFullSyncCompletionWithGC(metricsRun, stats, result, gcResult, err))
 	if closeErr := closeMetrics(); closeErr != nil {
 		metricsErr = errors.Join(metricsErr, wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr))
 	}
@@ -585,6 +587,9 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 		return metricsErr
 	}
 	if outputErr := logScheduledSemanticRefreshResult(logOut, result); outputErr != nil {
+		return wrapScheduledSyncBoundary(scheduledBoundaryOutput, outputErr)
+	}
+	if outputErr := logScheduledSemanticGCResult(logOut, gcResult); outputErr != nil {
 		return wrapScheduledSyncBoundary(scheduledBoundaryOutput, outputErr)
 	}
 	return nil
@@ -647,6 +652,26 @@ func logScheduledSemanticRefreshResult(logOut io.Writer, result semanticrefresh.
 		safeSemanticRefreshOutputField(string(result.Capability.State), 64),
 		semanticRefreshElapsed(result.Duration),
 		len(result.Stages),
+	)
+	return err
+}
+
+func logScheduledSemanticGCResult(logOut io.Writer, result *syncSemanticGCResult) error {
+	if logOut == nil || result == nil {
+		return nil
+	}
+	_, err := fmt.Fprintf(
+		logOut,
+		"scheduler semantic GC: status=%s duration=%s generations=%d segments=%d members=%d directories=%d bytes=%d reason=%s error=%s\n",
+		result.Status,
+		semanticRefreshElapsed(result.Duration),
+		result.GenerationsPruned,
+		result.SegmentsPruned,
+		result.MemberRowsPruned,
+		result.FilesystemDeleted,
+		result.DeletedBytes,
+		safeSemanticRefreshOutputField(result.SkipReason, 64),
+		safeSemanticRefreshOutputField(result.Error, 64),
 	)
 	return err
 }

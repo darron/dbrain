@@ -17,7 +17,8 @@ import (
 
 type syncSemanticResultOutput struct {
 	syncjob.Stats
-	Semantic semanticRefreshResultOutput `json:"semantic"`
+	Semantic   semanticRefreshResultOutput `json:"semantic"`
+	SemanticGC *syncSemanticGCResult       `json:"semantic_gc,omitempty"`
 }
 
 type syncSemanticErrorOutput struct {
@@ -30,10 +31,12 @@ func writeSyncSemanticResultJSON(
 	dst io.Writer,
 	stats syncjob.Stats,
 	result semanticrefresh.Result,
+	gc ...*syncSemanticGCResult,
 ) error {
 	return writeJSON(dst, syncSemanticResultOutput{
-		Stats:    stats,
-		Semantic: newSemanticRefreshResultOutput(result),
+		Stats:      stats,
+		Semantic:   newSemanticRefreshResultOutput(result),
+		SemanticGC: firstSyncSemanticGCResult(gc),
 	})
 }
 
@@ -59,6 +62,7 @@ func writeSyncStatsWithSemantic(
 	stats syncjob.Stats,
 	semantic semanticrefresh.Result,
 	semanticErr error,
+	gc ...*syncSemanticGCResult,
 ) error {
 	if _, err := fmt.Fprintf(dst, "\nSync Summary\n"); err != nil {
 		return err
@@ -75,6 +79,7 @@ func writeSyncStatsWithSemantic(
 
 	rows := syncSummaryRows(stats)
 	rows = append(rows, semanticSyncSummaryRows(semantic, semanticErr)...)
+	rows = append(rows, semanticGCSyncSummaryRows(firstSyncSemanticGCResult(gc))...)
 	t := table.New().
 		Border(lipgloss.NormalBorder()).
 		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("240"))).
@@ -108,6 +113,53 @@ func completeSyncStatsWithSemantic(stats syncjob.Stats, result semanticrefresh.R
 	stats.CompletedAt = stats.CompletedAt.Add(duration)
 	stats.Duration = nonnegativeDuration(stats.CompletedAt.Sub(stats.StartedAt))
 	return stats
+}
+
+func completeSyncStatsWithSemanticGC(stats syncjob.Stats, semantic semanticrefresh.Result, gc *syncSemanticGCResult) syncjob.Stats {
+	stats = completeSyncStatsWithSemantic(stats, semantic)
+	if gc == nil {
+		return stats
+	}
+	stats.CompletedAt = stats.CompletedAt.Add(nonnegativeDuration(gc.Duration))
+	stats.Duration = nonnegativeDuration(stats.CompletedAt.Sub(stats.StartedAt))
+	return stats
+}
+
+func firstSyncSemanticGCResult(results []*syncSemanticGCResult) *syncSemanticGCResult {
+	if len(results) == 0 {
+		return nil
+	}
+	return results[0]
+}
+
+func semanticGCSyncSummaryRows(result *syncSemanticGCResult) [][]string {
+	if result == nil {
+		return nil
+	}
+	errorsCount := "0"
+	if result.Status == syncSemanticGCStatusError {
+		errorsCount = "1"
+	}
+	secondary := fmt.Sprintf(
+		"status=%s generations=%d segments=%d members=%d",
+		result.Status,
+		result.GenerationsPruned,
+		result.SegmentsPruned,
+		result.MemberRowsPruned,
+	)
+	if result.SkipReason != "" {
+		secondary += " reason=" + safeSemanticRefreshOutputField(result.SkipReason, 64)
+	}
+	if result.Error != "" {
+		secondary += " error=" + safeSemanticRefreshOutputField(result.Error, 64)
+	}
+	return [][]string{{
+		"Semantic GC",
+		formatSyncDuration(result.Duration),
+		fmt.Sprintf("dirs=%d bytes=%d", result.FilesystemDeleted, result.DeletedBytes),
+		secondary,
+		errorsCount,
+	}}
 }
 
 func semanticSyncSummaryRows(result semanticrefresh.Result, resultErr error) [][]string {

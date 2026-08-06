@@ -135,6 +135,7 @@ feeds:
 sync_all:
   browser: "chrome" # DBRAIN_SYNC_ALL_BROWSER; shared browser for cookie-backed X and YouTube imports
   profile: "" # DBRAIN_SYNC_ALL_PROFILE; optional shared browser profile
+  semantic_gc: false # DBRAIN_SYNC_ALL_SEMANTIC_GC; apply non-fatal semantic cleanup after a completed refresh
   imports:
     x_bookmarks: true # DBRAIN_SYNC_ALL_IMPORT_X_BOOKMARKS
     github_stars: true # DBRAIN_SYNC_ALL_IMPORT_GITHUB_STARS
