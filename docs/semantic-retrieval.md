@@ -49,11 +49,15 @@ maintenance for each bounded projection, embedding, flush, compaction,
 verification, and readiness unit. Flush and compaction hold exclusive generation
 for their entire execution while exclusive maintenance is already held; this
 includes native build/publication and SQLite root activation. An emergency L0
-flush from the embedding stage uses the same nested order. Queries use a short
-shared generation lease while opening and validating the immutable native root.
-After query embedding, they reacquire shared generation and retain it through
-native candidate search, current-generation SQLite validation and reranking,
-exact L0 merge, chunk hydration, and final evidence construction.
+flush from the embedding stage uses the same nested order. Runtime admission
+uses one short budget to probe shared-generation availability and cooperatively
+open the immutable native root, but releases the probe before root loading so a
+slow reader cannot delay publication. After query embedding, queries acquire
+shared generation and retain it through native candidate search,
+current-generation SQLite validation and reranking, exact L0 merge, chunk
+hydration, and final evidence construction. Published root and segment paths
+remain immutable and superseded generations are not physically garbage-collected;
+future cache garbage collection requires a separate ownership or pinning contract.
 
 The only valid two-lock order is maintenance before generation; lock upgrade is
 not supported. Exclusive waiters publish FIFO writer intent, so later source
@@ -66,10 +70,14 @@ Failure to acquire refresh's exclusive maintenance lease is the typed
 `semantic_lock_unavailable` refresh error and therefore makes an enabled,
 supported sync exit non-zero. Failure to acquire a source transaction's shared
 maintenance lease remains a source-write/source-sync error and stops before
-semantic admission. Generation contention during a query fails open with the
-path-free `generation_busy` reason and preserves the lexical result exactly.
-Caller cancellation or deadline expiry remains an error, and lease-release
-errors fail closed rather than being hidden.
+semantic admission. Generation contention or exhaustion of the shared 250 ms
+admission budget during a slow root open fails open with the path-free
+`generation_busy` reason and preserves the lexical result exactly. Time spent
+waiting for the probe reduces the budget left for root loading. Native
+`LoadBuffer` cannot be preempted, so cancellation is observed before and after
+each segment rather than as a strict 250 ms wall-clock bound. Caller cancellation
+or deadline expiry remains an error, and lease-release errors fail closed rather
+than being hidden.
 
 ## Output and recovery
 

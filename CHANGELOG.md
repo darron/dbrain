@@ -5,6 +5,19 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Bounded native semantic admission (2026-08-05)
+
+- **Research stays lexical while native admission is busy**: Research-pack
+  requests now apply the existing short admission budget to both the generation
+  lock probe and cooperative native-root opening. A growing or cold root fails
+  open with `generation_busy` instead of traversing every segment for minutes,
+  preserving the lexical evidence exactly. The same reason can therefore mean
+  either writer contention or a slow root open exhausting the shared budget.
+- **Slow readers no longer delay semantic publication**: Runtime admission
+  releases its shared generation probe before opening immutable root artifacts.
+  Query-time generation locking and SQLite generation, purge-epoch, and snapshot
+  validation still prevent stale candidates from becoming evidence.
+
 ### Semantic sync progress bars (2026-08-05)
 
 - **Visible semantic progress**: Interactive `sync all` now renders projection,

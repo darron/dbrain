@@ -74,14 +74,7 @@ func TestRuntimeSemanticSearcherReportsGenerationBusyBeforeRootOpen(t *testing.T
 	}
 	defer func() { _ = generation.Close() }()
 
-	snapshot := semanticreadiness.Snapshot{
-		ActiveGenerationID:                   "root",
-		ProfileID:                            "profile",
-		ActiveSnapshotRevision:               1,
-		ProfilePurgeEpoch:                    0,
-		ActiveGenerationBackendVersion:       semanticindex.USearchVersion,
-		ActiveGenerationRootDescriptorSHA256: strings.Repeat("a", 64),
-	}
+	snapshot := runtimeNativeSnapshot()
 	searcher, err := runtimeSemanticSearcher(
 		t.Context(),
 		st,
@@ -92,6 +85,209 @@ func TestRuntimeSemanticSearcherReportsGenerationBusyBeforeRootOpen(t *testing.T
 	)
 	if searcher != nil || !errors.Is(err, errSemanticGenerationBusy) {
 		t.Fatalf("searcher=%#v err=%v want generation busy", searcher, err)
+	}
+}
+
+func TestRuntimeSemanticSearcherDoesNotHoldGenerationLeaseWhileOpeningRoot(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(root, "brain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	databaseID, err := st.RetrievalDatabaseID(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := semanticlock.NewScope(cache, databaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openStarted := make(chan struct{})
+	allowOpenReturn := make(chan struct{})
+	openErr := errors.New("synthetic blocked root open")
+	originalOpen := openRuntimeUSearchRoot
+	openRuntimeUSearchRoot = func(
+		context.Context,
+		string,
+		string,
+		string,
+		string,
+		semanticindex.USearchRootExpectations,
+	) (*semanticindex.USearchRoot, error) {
+		close(openStarted)
+		<-allowOpenReturn
+		return nil, openErr
+	}
+	t.Cleanup(func() { openRuntimeUSearchRoot = originalOpen })
+
+	type result struct {
+		searcher semanticindex.Searcher
+		err      error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		searcher, err := runtimeSemanticSearcher(
+			t.Context(),
+			st,
+			config.Config{CacheDir: cache},
+			embedding.Profile{Dimensions: 2},
+			runtimeNativeSnapshot(),
+			semanticreadiness.DefaultExactMaxChunks,
+		)
+		resultCh <- result{searcher: searcher, err: err}
+	}()
+
+	select {
+	case <-openStarted:
+	case <-time.After(time.Second):
+		close(allowOpenReturn)
+		t.Fatal("runtime root opener did not start")
+	}
+
+	writerCtx, cancelWriter := context.WithTimeout(t.Context(), time.Second)
+	defer cancelWriter()
+	maintenance, err := scope.AcquireMaintenanceExclusive(writerCtx, "owner=runtime-open-regression\n")
+	if err != nil {
+		close(allowOpenReturn)
+		t.Fatalf("acquire maintenance exclusive: %v", err)
+	}
+	generation, err := maintenance.AcquireGenerationExclusive(writerCtx, "owner=runtime-open-regression\n")
+	if err != nil {
+		close(allowOpenReturn)
+		_ = maintenance.Close()
+		t.Fatalf("slow runtime root open blocked generation publication: %v", err)
+	}
+	if err := generation.Close(); err != nil {
+		close(allowOpenReturn)
+		_ = maintenance.Close()
+		t.Fatalf("release generation exclusive: %v", err)
+	}
+	if err := maintenance.Close(); err != nil {
+		close(allowOpenReturn)
+		t.Fatalf("release maintenance exclusive: %v", err)
+	}
+	close(allowOpenReturn)
+
+	select {
+	case got := <-resultCh:
+		if got.searcher != nil || !errors.Is(got.err, openErr) {
+			t.Fatalf("searcher=%#v error=%v want root-open failure", got.searcher, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime root opener did not return")
+	}
+}
+
+func TestRuntimeSemanticSearcherBoundsCooperativeRootOpen(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(root, "brain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	originalOpen := openRuntimeUSearchRoot
+	openRuntimeUSearchRoot = func(
+		ctx context.Context,
+		_ string,
+		_ string,
+		_ string,
+		_ string,
+		_ semanticindex.USearchRootExpectations,
+	) (*semanticindex.USearchRoot, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	t.Cleanup(func() { openRuntimeUSearchRoot = originalOpen })
+
+	parentCtx, cancelParent := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancelParent()
+	started := time.Now()
+	searcher, err := runtimeSemanticSearcher(
+		parentCtx,
+		st,
+		config.Config{CacheDir: cache},
+		embedding.Profile{Dimensions: 2},
+		runtimeNativeSnapshot(),
+		semanticreadiness.DefaultExactMaxChunks,
+	)
+	if searcher != nil || !errors.Is(err, errSemanticGenerationBusy) {
+		t.Fatalf("searcher=%#v error=%v want generation busy", searcher, err)
+	}
+	if parentCtx.Err() != nil {
+		t.Fatalf("local admission timeout canceled parent: %v", parentCtx.Err())
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("runtime root admission took %s, want bounded fail-open latency", elapsed)
+	}
+}
+
+func TestRuntimeSemanticSearcherPreservesLateRootArtifactFailure(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(root, "brain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	rootErr := errors.New("synthetic payload checksum mismatch")
+	originalOpen := openRuntimeUSearchRoot
+	openRuntimeUSearchRoot = func(
+		context.Context,
+		string,
+		string,
+		string,
+		string,
+		semanticindex.USearchRootExpectations,
+	) (*semanticindex.USearchRoot, error) {
+		time.Sleep(semanticRuntimeAdmissionTimeout + 50*time.Millisecond)
+		return nil, rootErr
+	}
+	t.Cleanup(func() { openRuntimeUSearchRoot = originalOpen })
+
+	parentCtx, cancelParent := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancelParent()
+	searcher, err := runtimeSemanticSearcher(
+		parentCtx,
+		st,
+		config.Config{CacheDir: cache},
+		embedding.Profile{Dimensions: 2},
+		runtimeNativeSnapshot(),
+		semanticreadiness.DefaultExactMaxChunks,
+	)
+	if searcher != nil || !errors.Is(err, errNativeRootArtifactsUnavailable) || !errors.Is(err, rootErr) {
+		t.Fatalf("searcher=%#v error=%v want preserved native root artifact failure", searcher, err)
+	}
+	if errors.Is(err, errSemanticGenerationBusy) {
+		t.Fatalf("late native root artifact failure was misclassified as generation busy: %v", err)
+	}
+	if parentCtx.Err() != nil {
+		t.Fatalf("late native root artifact failure canceled parent: %v", parentCtx.Err())
+	}
+}
+
+func runtimeNativeSnapshot() semanticreadiness.Snapshot {
+	return semanticreadiness.Snapshot{
+		ActiveGenerationID:                   "root",
+		ProfileID:                            "profile",
+		ActiveSnapshotRevision:               1,
+		ProfilePurgeEpoch:                    0,
+		ActiveGenerationBackendVersion:       semanticindex.USearchVersion,
+		ActiveGenerationRootDescriptorSHA256: strings.Repeat("a", 64),
 	}
 }
 
@@ -123,6 +319,20 @@ func TestRuntimeNativeRootOpenFailureFailsClosedWhenGenerationLeaseReleaseFails(
 		return errors.Join(lease.Close(), closeErr)
 	}
 	t.Cleanup(func() { closeRuntimeGenerationLease = originalClose })
+	openCalls := 0
+	originalOpen := openRuntimeUSearchRoot
+	openRuntimeUSearchRoot = func(
+		context.Context,
+		string,
+		string,
+		string,
+		string,
+		semanticindex.USearchRootExpectations,
+	) (*semanticindex.USearchRoot, error) {
+		openCalls++
+		return nil, errors.New("root opener must not be called")
+	}
+	t.Cleanup(func() { openRuntimeUSearchRoot = originalOpen })
 
 	providerCalls := 0
 	deps := defaultRuntimeDeps()
@@ -150,6 +360,9 @@ func TestRuntimeNativeRootOpenFailureFailsClosedWhenGenerationLeaseReleaseFails(
 	}
 	if providerCalls != 0 {
 		t.Fatalf("provider calls=%d want=0", providerCalls)
+	}
+	if openCalls != 0 {
+		t.Fatalf("root open calls=%d want=0 after lease release failure", openCalls)
 	}
 }
 
