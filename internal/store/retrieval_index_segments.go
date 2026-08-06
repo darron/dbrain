@@ -283,7 +283,7 @@ func (s *Store) CompleteRetrievalIndexGeneration(ctx context.Context, input Comp
 	if err := proveNoDuplicateUsableGenerationMembersTx(ctx, tx, input.Generation.GenerationID, input.Generation.ProfileID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_generations SET active=0,activated_at='' WHERE profile_id=? AND active=1`, input.Generation.ProfileID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_generations SET active=0,activated_at='',updated_at=? WHERE profile_id=? AND active=1`, now, input.Generation.ProfileID); err != nil {
 		return fmt.Errorf("deactivate prior retrieval generation: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE retrieval_index_generations SET active=1,activated_at=?,updated_at=? WHERE generation_id=?`, now, now, input.Generation.GenerationID); err != nil {

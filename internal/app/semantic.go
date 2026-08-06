@@ -15,6 +15,7 @@ import (
 	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/semanticbuild"
 	"github.com/darron/dbrain/internal/semanticconfig"
+	"github.com/darron/dbrain/internal/semanticgc"
 	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/semanticreadiness"
 	"github.com/darron/dbrain/internal/store"
@@ -34,6 +35,7 @@ type semanticDeps struct {
 	resolveDiagnostic func(string) (semanticconfig.Config, error)
 	capability        func() semanticindex.Capability
 	provider          func(semanticconfig.Config) (embedding.Provider, error)
+	runGC             func(context.Context, semanticgc.Catalog, string, string, semanticgc.Options) (semanticgc.Result, error)
 }
 
 func defaultSemanticDeps() semanticDeps {
@@ -53,6 +55,7 @@ func defaultSemanticDeps() semanticDeps {
 				BaseURL: cfg.OllamaBaseURL, Model: cfg.Model, Dimensions: cfg.Dimensions,
 			})
 		},
+		runGC: semanticgc.Run,
 	}
 }
 
@@ -63,6 +66,9 @@ func newSemanticCommand(root *rootOptions) *cobra.Command {
 func newSemanticCommandWithDeps(root *rootOptions, deps semanticDeps) *cobra.Command {
 	if deps.capability == nil {
 		deps.capability = semanticindex.RuntimeCapability
+	}
+	if deps.runGC == nil {
+		deps.runGC = semanticgc.Run
 	}
 	refreshDeps := defaultSemanticRefreshDeps()
 	refreshDeps.resolve = deps.resolve
@@ -76,6 +82,7 @@ func newSemanticCommandWithDeps(root *rootOptions, deps semanticDeps) *cobra.Com
 		newSemanticChunkCommand(root, deps),
 		newSemanticEmbedCommand(root, deps),
 		newSemanticVerifyCommand(root, deps),
+		newSemanticGCCommand(root, deps),
 	)
 	return cmd
 }
