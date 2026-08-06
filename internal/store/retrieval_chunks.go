@@ -83,7 +83,6 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 		return ChunkReplaceResult{}, fmt.Errorf("retrieval parent kind and source key are required")
 	}
 	seen := make(map[string]struct{}, len(chunks))
-	incomingChunks := make(map[string]retrievalchunk.Chunk, len(chunks))
 	for _, chunk := range chunks {
 		if chunk.ID == "" || chunk.ParentKind != parentKind || chunk.ParentSourceKey != parentSourceKey {
 			return ChunkReplaceResult{}, fmt.Errorf("chunk %q does not belong to retrieval parent %s %s", chunk.ID, parentKind, parentSourceKey)
@@ -92,7 +91,6 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 			return ChunkReplaceResult{}, fmt.Errorf("duplicate retrieval chunk ID %q", chunk.ID)
 		}
 		seen[chunk.ID] = struct{}{}
-		incomingChunks[chunk.ID] = chunk
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -128,39 +126,6 @@ func (s *Store) ReplaceRetrievalChunks(ctx context.Context, parentKind, parentSo
 	}
 
 	result := ChunkReplaceResult{}
-	affectedProfiles := make(map[string]struct{})
-	rows, err = tx.QueryContext(ctx, `
-		SELECT DISTINCT e.profile_id, c.chunk_id, c.chunk_text_hash
-		FROM retrieval_chunks c
-		JOIN retrieval_embeddings e ON e.chunk_id = c.chunk_id
-		WHERE c.parent_kind = ? AND c.parent_source_key = ?`, parentKind, parentSourceKey)
-	if err != nil {
-		return ChunkReplaceResult{}, fmt.Errorf("list affected retrieval profiles: %w", err)
-	}
-	for rows.Next() {
-		var profileID, chunkID, oldHash string
-		if err := rows.Scan(&profileID, &chunkID, &oldHash); err != nil {
-			_ = rows.Close()
-			return ChunkReplaceResult{}, fmt.Errorf("scan affected retrieval profile: %w", err)
-		}
-		incoming, keep := incomingChunks[chunkID]
-		old := existing[chunkID]
-		if !keep || oldHash != incoming.TextHash || old.ProjectionVersion != incoming.ProjectionVersion || old.ChunkerVersion != incoming.ChunkerVersion {
-			affectedProfiles[profileID] = struct{}{}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return ChunkReplaceResult{}, fmt.Errorf("iterate affected retrieval profiles: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return ChunkReplaceResult{}, fmt.Errorf("close affected retrieval profiles: %w", err)
-	}
-	for profileID := range affectedProfiles {
-		if err := markRetrievalProfileGenerationsStaleTx(ctx, tx, profileID); err != nil {
-			return ChunkReplaceResult{}, err
-		}
-	}
 	for id := range existing {
 		if _, keep := seen[id]; keep {
 			continue
@@ -302,39 +267,6 @@ func replaceRetrievalProjectionTx(ctx context.Context, tx *sql.Tx, parentKind, p
 	}
 	if err := rows.Close(); err != nil {
 		return ChunkReplaceResult{}, fmt.Errorf("close existing retrieval projection chunks: %w", err)
-	}
-
-	affectedProfiles := make(map[string]struct{})
-	rows, err = tx.QueryContext(ctx, `
-		SELECT DISTINCT e.profile_id, c.chunk_id, c.chunk_text_hash, c.projection_version, c.chunker_version
-		FROM retrieval_chunks c
-		JOIN retrieval_embeddings e ON e.chunk_id = c.chunk_id
-		WHERE c.parent_kind = ? AND c.parent_source_key = ?`, parentKind, parentSourceKey)
-	if err != nil {
-		return ChunkReplaceResult{}, fmt.Errorf("list affected retrieval projection profiles: %w", err)
-	}
-	for rows.Next() {
-		var profileID, chunkID, textHash, projectionVersion, chunkerVersion string
-		if err := rows.Scan(&profileID, &chunkID, &textHash, &projectionVersion, &chunkerVersion); err != nil {
-			_ = rows.Close()
-			return ChunkReplaceResult{}, fmt.Errorf("scan affected retrieval projection profile: %w", err)
-		}
-		chunk, keep := incoming[chunkID]
-		if !keep || chunk.TextHash != textHash || chunk.ProjectionVersion != projectionVersion || chunk.ChunkerVersion != chunkerVersion {
-			affectedProfiles[profileID] = struct{}{}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return ChunkReplaceResult{}, fmt.Errorf("iterate affected retrieval projection profiles: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return ChunkReplaceResult{}, fmt.Errorf("close affected retrieval projection profiles: %w", err)
-	}
-	for profileID := range affectedProfiles {
-		if err := markRetrievalProfileGenerationsStaleTx(ctx, tx, profileID); err != nil {
-			return ChunkReplaceResult{}, err
-		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM retrieval_chunk_occurrences WHERE parent_kind=? AND parent_source_key=?`, parentKind, parentSourceKey); err != nil {

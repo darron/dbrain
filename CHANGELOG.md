@@ -60,8 +60,14 @@ development date for the change set.
 
 - **Incremental updates preserve the active ANN root**: Projection-dirty writes
   no longer mark a valid segmented generation stale while leaving its profile
-  pointer behind. Changed vectors continue through the exact L0 tail until the
+  pointer behind. Ordinary chunk replacement and projection application now
+  preserve that root as well: changed vectors continue through the exact L0
+  tail, while deleted or superseded native members remain tombstones until the
   normal bounded flush and compaction thresholds are reached.
+- **Candidate validation remains fail-safe**: Query-time joins filter stale and
+  deleted immutable members; dirty parents suppress every sibling candidate
+  until projection is current, and text-hash corruption still fails the entire
+  semantic lane with its typed corruption error.
 - **Existing dangling roots recover safely**: A resumed refresh can repair the
   legacy stale-pointer state only after proving the SQLite segment catalog and
   membership counts and verifying the immutable native root on disk. Missing or

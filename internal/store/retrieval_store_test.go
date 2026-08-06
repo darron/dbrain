@@ -261,7 +261,7 @@ func TestCompletedGenerationActivationFailsClosedWithoutMembershipProvenance(t *
 	}
 }
 
-func TestEmbeddingWriteAndChunkInvalidationStaleAffectedGenerations(t *testing.T) {
+func TestEmbeddingWriteAndOrdinaryChunkReplacementPreserveActiveGeneration(t *testing.T) {
 	t.Parallel()
 	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
 	defer func() { _ = st.Close() }()
@@ -310,7 +310,8 @@ func TestEmbeddingWriteAndChunkInvalidationStaleAffectedGenerations(t *testing.T
 	if _, err := st.ReplaceRetrievalChunks(ctx, "item", "item:one", []retrievalchunk.Chunk{changed}); err != nil {
 		t.Fatalf("replace embedded chunk: %v", err)
 	}
-	assertRetrievalGenerationStale(t, st, "generation-b")
+	assertGenerationActiveForTest(t, st, "generation-b")
+	assertProfileAggregatesForTest(t, st, "profile-a", "generation-b", 1, 0, 1)
 }
 
 func TestOpenReadOnlyPreRetrievalSchemaDoesNotWrite(t *testing.T) {
@@ -759,7 +760,29 @@ func TestApplyRetrievalProjectionAtomicallyReplacesOccurrencesAndOnlyObsoleteEmb
 	if len(ready) != 1 || ready[0].ChunkID != sharedProjectionChunkID(t, initialProjection, nextProjection) {
 		t.Fatalf("ready embeddings=%+v", ready)
 	}
-	assertRetrievalGenerationStale(t, st, "generation-apply")
+	assertGenerationActiveForTest(t, st, "generation-apply")
+	assertProfileAggregatesForTest(t, st, "profile-a", "generation-apply", 2, 0, 1)
+	var replacement retrievalchunk.Chunk
+	for _, chunk := range nextProjection.Chunks {
+		if chunk.ID != ready[0].ChunkID {
+			replacement = chunk
+			break
+		}
+	}
+	if replacement.ID == "" {
+		t.Fatal("replacement projection chunk is missing")
+	}
+	if err := st.PutRetrievalEmbedding(ctx, testEmbedding(replacement.ID, "profile-a", replacement.TextHash)); err != nil {
+		t.Fatal(err)
+	}
+	assertProfileAggregatesForTest(t, st, "profile-a", "generation-apply", 2, 1, 1)
+	window, err := st.NextRetrievalFlushWindow(ctx, "profile-a", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window.Rows) != 1 || window.Rows[0].ChunkID != replacement.ID {
+		t.Fatalf("next projection flush window=%+v want only %s", window.Rows, replacement.ID)
+	}
 	var projectionHash, status, reason string
 	var dirtyRevision, projectedRevision int64
 	if err := st.db.QueryRow(`SELECT projection_hash,status,reason,dirty_revision,projected_revision FROM retrieval_parent_projections WHERE parent_kind='source' AND parent_source_key='source:apply'`).Scan(&projectionHash, &status, &reason, &dirtyRevision, &projectedRevision); err != nil {

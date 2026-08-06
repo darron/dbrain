@@ -59,6 +59,16 @@ hydration, and final evidence construction. Published root and segment paths
 remain immutable and superseded generations are not physically garbage-collected;
 future cache garbage collection requires a separate ownership or pinning contract.
 
+Ordinary chunk replacement and projection application preserve the active root.
+Changed embeddings are removed, replacement embeddings enter exact L0, and the
+old immutable membership is counted as a tombstone until bounded flush and
+compaction publish a successor. Deleted chunks are likewise filtered by
+query-time membership validation. A dirty parent suppresses all of its native
+candidates, including unchanged siblings, until the projection is current;
+this is the deliberate fail-safe recall cost. Purge and provenance/profile
+repair paths still invalidate the root because their authority boundary is
+broader than an ordinary chunk delta.
+
 The only valid two-lock order is maintenance before generation; lock upgrade is
 not supported. Exclusive waiters publish FIFO writer intent, so later source
 writers cannot starve refresh and later queries cannot starve activation.
