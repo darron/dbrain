@@ -73,6 +73,72 @@ func TestCompleteRetrievalIndexGenerationActivatesProvenMemberRoot(t *testing.T)
 	}
 }
 
+func TestCompleteRetrievalIndexGenerationTimestampsSupersededRoot(t *testing.T) {
+	t.Parallel()
+	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	seedReadyRetrievalEmbeddings(t, st, "flush-profile", 3)
+	firstWindow, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstMembers := retrievalSegmentMembers(firstWindow.Rows, "segment-one")
+	firstSegment := RetrievalIndexSegmentRow{
+		SegmentHash: "segment-one", ProfileID: "flush-profile", Backend: "usearch", BackendVersion: "2.26.0",
+		Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 2, RelativeCachePath: "semantic/db/profile/segments/segment-one",
+		MembershipHash: "members-one", PayloadHash: "payload-one", ManifestHash: "segment-one",
+	}
+	if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+		Generation: RetrievalIndexGenerationRow{
+			GenerationID: "generation-one", ProfileID: "flush-profile", Backend: "usearch", BackendVersion: "2.26.0",
+			Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 2, SourceManifestHash: "root-one",
+			BuildStatus: RetrievalGenerationCompleted, RelativeCachePath: "semantic/db/profile/generations/generation-one",
+			BuildStartedAt: time.Now().UTC(), BuildCompletedAt: time.Now().UTC(),
+		},
+		Segments: []RetrievalIndexSegmentRow{firstSegment}, Members: firstMembers, SnapshotRevision: firstWindow.SnapshotRevision,
+		ExpectedActiveGenerationID: firstWindow.Profile.ActiveGenerationID, ExpectedPurgeEpoch: firstWindow.Profile.PurgeEpoch,
+		ExpectedActiveSnapshotRevision: firstWindow.Profile.ActiveSnapshotRevision, ActivationMode: RetrievalGenerationAdvanceSnapshot,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldTimestamp := "2026-08-01T00:00:00Z"
+	if _, err := st.db.Exec(`UPDATE retrieval_index_generations SET updated_at=? WHERE generation_id='generation-one'`, oldTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	secondWindow, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondMembers := retrievalSegmentMembers(secondWindow.Rows, "segment-two")
+	secondSegment := RetrievalIndexSegmentRow{
+		SegmentHash: "segment-two", ProfileID: "flush-profile", Backend: "usearch", BackendVersion: "2.26.0",
+		Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 1, RelativeCachePath: "semantic/db/profile/segments/segment-two",
+		MembershipHash: "members-two", PayloadHash: "payload-two", ManifestHash: "segment-two",
+	}
+	if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+		Generation: RetrievalIndexGenerationRow{
+			GenerationID: "generation-two", ProfileID: "flush-profile", Backend: "usearch", BackendVersion: "2.26.0",
+			Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 3, SourceManifestHash: "root-two",
+			BuildStatus: RetrievalGenerationCompleted, RelativeCachePath: "semantic/db/profile/generations/generation-two",
+			BuildStartedAt: time.Now().UTC(), BuildCompletedAt: time.Now().UTC(),
+		},
+		Segments: []RetrievalIndexSegmentRow{firstSegment, secondSegment}, Members: append(firstMembers, secondMembers...), SnapshotRevision: secondWindow.SnapshotRevision,
+		ExpectedActiveGenerationID: secondWindow.Profile.ActiveGenerationID, ExpectedPurgeEpoch: secondWindow.Profile.PurgeEpoch,
+		ExpectedActiveSnapshotRevision: secondWindow.Profile.ActiveSnapshotRevision, ActivationMode: RetrievalGenerationAdvanceSnapshot,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var active int
+	var updatedAt string
+	if err := st.db.QueryRow(`SELECT active,updated_at FROM retrieval_index_generations WHERE generation_id='generation-one'`).Scan(&active, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 || updatedAt == oldTimestamp {
+		t.Fatalf("superseded root active=%d updated_at=%q", active, updatedAt)
+	}
+}
+
 func TestCompleteRetrievalIndexGenerationRejectsChangedMember(t *testing.T) {
 	t.Parallel()
 	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))

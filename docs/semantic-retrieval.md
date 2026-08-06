@@ -56,8 +56,9 @@ slow reader cannot delay publication. After query embedding, queries acquire
 shared generation and retain it through native candidate search,
 current-generation SQLite validation and reranking, exact L0 merge, chunk
 hydration, and final evidence construction. Published root and segment paths
-remain immutable and superseded generations are not physically garbage-collected;
-future cache garbage collection requires a separate ownership or pinning contract.
+remain immutable. `dbrain semantic gc` reclaims superseded catalog rows and
+cache directories under the same lock order, with a retention grace period
+covering readers that released their generation probe before opening a root.
 
 The only valid two-lock order is maintenance before generation; lock upgrade is
 not supported. Exclusive waiters publish FIFO writer intent, so later source
@@ -101,9 +102,46 @@ the normal top-level sync fields and contains exactly one of:
 - `semantic_error` for a typed refresh failure.
 
 `dbrain semantic refresh`, `semantic status`, `semantic chunk`, `semantic
-embed`, and `semantic verify` remain diagnostics and recovery tools. They are
+embed`, `semantic verify`, and `semantic gc` remain diagnostics and recovery tools. They are
 not a manual step required after normal sync, retain their existing text output,
 and query, research, MCP, and web paths never start maintenance.
+
+### Garbage collection
+
+Semantic publication is content-addressed and generations can share segments.
+Garbage collection therefore uses reachability, not generation age: it retains
+the active/profile root, resumable refresh roots, the newest published rollback
+roots (including roots later marked stale), and roots updated within the grace
+period. A segment is prunable only when no retained root references it.
+
+The default command is read-only:
+
+```sh
+dbrain semantic gc
+dbrain semantic gc --json
+```
+
+Review the plan, then opt in to deletion:
+
+```sh
+dbrain semantic gc --apply
+```
+
+Apply recomputes the plan while holding exclusive maintenance followed by
+exclusive generation locking. It removes obsolete SQLite catalog/membership
+rows in one transaction before unlinking cache directories, and also sweeps old
+uncatalogued profile, generation, and segment directories. Symlinks and paths
+outside the configured semantic database root are rejected. An unlink failure
+cannot leave SQLite pointing at an absent artifact; the leftover directory is
+rediscovered by the next run.
+
+Row deletion does not necessarily reduce the physical SQLite file while
+`auto_vacuum` is disabled. `--vacuum` requires `--apply`, checkpoints the WAL on
+both sides, and rebuilds the database file. Archive the database first, ensure
+free space for the rewrite, and stop the dbrain daemon and other writers before
+running it; a busy database produces an actionable error. A run shortly after
+a root is superseded can reclaim less than the eventual total because the
+default ten-minute reader grace remains in force.
 
 ## Scope of this stack
 
