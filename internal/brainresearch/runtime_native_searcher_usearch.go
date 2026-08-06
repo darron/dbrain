@@ -17,6 +17,7 @@ import (
 )
 
 var closeRuntimeGenerationLease = (*semanticlock.Lease).Close
+var openRuntimeUSearchRoot = semanticindex.OpenUSearchRoot
 
 type nativeSemanticLeaseReleaseError struct {
 	cause error
@@ -54,9 +55,9 @@ func runtimeSemanticSearcher(ctx context.Context, st *store.Store, cfg config.Co
 	if err != nil {
 		return nil, fmt.Errorf("construct native semantic generation lease scope: %w", err)
 	}
-	acquireCtx, cancelAcquire := context.WithTimeout(ctx, semanticRuntimeAdmissionTimeout)
-	generation, err := scope.AcquireGenerationShared(acquireCtx, "owner=runtime-admission\noperation=open-native-root\n")
-	cancelAcquire()
+	admissionCtx, cancelAdmission := context.WithTimeout(ctx, semanticRuntimeAdmissionTimeout)
+	defer cancelAdmission()
+	generation, err := scope.AcquireGenerationShared(admissionCtx, "owner=runtime-admission\noperation=probe-native-root\n")
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -66,8 +67,11 @@ func runtimeSemanticSearcher(ctx context.Context, st *store.Store, cfg config.Co
 		}
 		return nil, fmt.Errorf("acquire native root generation lease: %w", err)
 	}
-	root, err := semanticindex.OpenUSearchRoot(
-		ctx,
+	if err := closeRuntimeGenerationLease(generation); err != nil {
+		return nil, nativeSemanticLeaseReleaseError{cause: err}
+	}
+	root, err := openRuntimeUSearchRoot(
+		admissionCtx,
 		cfg.CacheDir,
 		databaseID,
 		snapshot.ProfileID,
@@ -86,17 +90,13 @@ func runtimeSemanticSearcher(ctx context.Context, st *store.Store, cfg config.Co
 		},
 	)
 	if err != nil {
-		openErr := fmt.Errorf("%w: open native semantic root: %w", errNativeRootArtifactsUnavailable, err)
-		if closeErr := closeRuntimeGenerationLease(generation); closeErr != nil {
-			return nil, nativeSemanticLeaseReleaseError{cause: closeErr}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
-		return nil, openErr
-	}
-	if err := closeRuntimeGenerationLease(generation); err != nil {
-		return nil, errors.Join(
-			nativeSemanticLeaseReleaseError{cause: err},
-			root.Close(),
-		)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("%w: open native semantic root within admission budget: %v", errSemanticGenerationBusy, err)
+		}
+		return nil, fmt.Errorf("%w: open native semantic root: %w", errNativeRootArtifactsUnavailable, err)
 	}
 	return semanticindex.NewUSearchCandidateSearcher(root, st), nil
 }
