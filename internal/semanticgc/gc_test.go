@@ -3,6 +3,7 @@ package semanticgc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -93,6 +94,34 @@ func TestRunRejectsSymlinkCandidates(t *testing.T) {
 	}
 }
 
+func TestRunApplyPreservesCommittedCatalogResultWhenFilesystemScanFails(t *testing.T) {
+	t.Parallel()
+	cacheDir := t.TempDir()
+	databaseID := "db-a"
+	now := time.Now().UTC()
+	plan := semanticGCTestPlan(databaseID)
+	target := t.TempDir()
+	link := filepath.Join(cacheDir, filepath.FromSlash(plan.PrunableSegments[0].RelativeCachePath))
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	fake := &semanticGCTestCatalog{plan: plan}
+
+	result, err := Run(context.Background(), fake, cacheDir, databaseID, Options{Now: now, Apply: true})
+	if err == nil {
+		t.Fatal("Run accepted symlink candidate")
+	}
+	if !fake.pruned || !result.Applied || len(result.Catalog.PrunableSegments) != len(plan.PrunableSegments) {
+		t.Fatalf("post-commit scan failure lost catalog result: result=%+v fake=%+v", result, fake)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("scan failure changed symlink target: %v", err)
+	}
+}
+
 func TestRunRejectsSymlinkArtifactFamily(t *testing.T) {
 	t.Parallel()
 	cacheDir := t.TempDir()
@@ -131,6 +160,93 @@ func TestRunApplyWaitsForSharedMaintenanceLease(t *testing.T) {
 	}
 }
 
+func TestRunApplyLockTimeoutBoundsMaintenanceAdmission(t *testing.T) {
+	t.Parallel()
+	cacheDir := t.TempDir()
+	databaseID := "db-a"
+	scope, err := semanticlock.NewScope(cacheDir, databaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := scope.AcquireMaintenanceShared(context.Background(), "owner=test-holder\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Close() }()
+
+	started := time.Now()
+	_, err = Run(context.Background(), &semanticGCTestCatalog{}, cacheDir, databaseID, Options{
+		Now: time.Now().UTC(), Apply: true, LockTimeout: 40 * time.Millisecond,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run error=%v want bounded maintenance deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("bounded maintenance admission took %s", elapsed)
+	}
+}
+
+func TestRunApplyLockTimeoutReleasesMaintenanceAfterGenerationContention(t *testing.T) {
+	t.Parallel()
+	cacheDir := t.TempDir()
+	databaseID := "db-a"
+	scope, err := semanticlock.NewScope(cacheDir, databaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := scope.AcquireGenerationShared(context.Background(), "owner=test-holder\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Close() }()
+	fake := &semanticGCTestCatalog{}
+
+	_, err = Run(context.Background(), fake, cacheDir, databaseID, Options{
+		Now: time.Now().UTC(), Apply: true, LockTimeout: 40 * time.Millisecond,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run error=%v want bounded generation deadline", err)
+	}
+	if fake.pruned {
+		t.Fatal("catalog pruned before generation admission")
+	}
+
+	probeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	maintenance, err := scope.AcquireMaintenanceExclusive(probeCtx, "owner=maintenance-release-probe\n")
+	if err != nil {
+		t.Fatalf("maintenance lease remained held after generation timeout: %v", err)
+	}
+	if err := maintenance.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunApplyUsesParentContextAfterBoundedAdmission(t *testing.T) {
+	t.Parallel()
+	cacheDir := t.TempDir()
+	databaseID := "db-a"
+	fake := &semanticGCTestCatalog{
+		plan: semanticGCTestPlan(databaseID),
+		prune: func(ctx context.Context) (store.RetrievalSemanticGCPlan, error) {
+			if deadline, ok := ctx.Deadline(); ok {
+				return store.RetrievalSemanticGCPlan{}, fmt.Errorf("catalog inherited admission deadline %s", deadline)
+			}
+			return semanticGCTestPlan(databaseID), nil
+		},
+	}
+
+	result, err := Run(context.Background(), fake, cacheDir, databaseID, Options{
+		Now: time.Now().UTC(), Apply: true, LockTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("catalog work inherited expired admission context: %v", err)
+	}
+	if !result.Applied || !fake.pruned {
+		t.Fatalf("result=%+v fake=%+v", result, fake)
+	}
+}
+
 func TestRemoveArtifactAcceptsRelativeCacheDirectoryWithoutEscapingRoot(t *testing.T) {
 	cacheDir := t.TempDir()
 	cwd, err := os.Getwd()
@@ -154,14 +270,18 @@ func TestRemoveArtifactAcceptsRelativeCacheDirectoryWithoutEscapingRoot(t *testi
 type semanticGCTestCatalog struct {
 	plan             store.RetrievalSemanticGCPlan
 	pruned, vacuumed bool
+	prune            func(context.Context) (store.RetrievalSemanticGCPlan, error)
 }
 
 func (f *semanticGCTestCatalog) PlanRetrievalSemanticGC(context.Context, store.RetrievalSemanticGCOptions) (store.RetrievalSemanticGCPlan, error) {
 	return f.plan, nil
 }
 
-func (f *semanticGCTestCatalog) PruneRetrievalSemanticCatalog(context.Context, store.RetrievalSemanticGCOptions) (store.RetrievalSemanticGCPlan, error) {
+func (f *semanticGCTestCatalog) PruneRetrievalSemanticCatalog(ctx context.Context, _ store.RetrievalSemanticGCOptions) (store.RetrievalSemanticGCPlan, error) {
 	f.pruned = true
+	if f.prune != nil {
+		return f.prune(ctx)
+	}
 	return f.plan, nil
 }
 

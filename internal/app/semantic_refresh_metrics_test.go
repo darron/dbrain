@@ -74,6 +74,86 @@ func TestEmitFullSyncCompletionKeepsSemanticEventsUnderParentRun(t *testing.T) {
 	}
 }
 
+func TestEmitFullSyncCompletionWithGCEmitsStageBeforeSuccessfulTerminalRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := metrics.RunContext{RunID: "sync-parent", Command: "sync all", Invocation: "cli", Sink: sink}
+	result := semanticrefresh.Result{
+		Outcome:  semanticrefresh.OutcomeCompleted,
+		Duration: 4 * time.Second,
+	}
+	gcErr := errors.New("unlink failed")
+	gc := &syncSemanticGCResult{
+		Status:               syncSemanticGCStatusError,
+		Duration:             3 * time.Second,
+		DurationMS:           3000,
+		GenerationsPruned:    2,
+		SegmentsPruned:       1,
+		MemberRowsPruned:     7,
+		FilesystemCandidates: 3,
+		FilesystemDeleted:    1,
+		PrunableBytes:        4096,
+		DeletedBytes:         1024,
+		Error:                "filesystem_unlink",
+		err:                  gcErr,
+	}
+	stats := completeSyncStatsWithSemanticGC(syncSemanticTestStats(), result, gc)
+	if err := emitFullSyncCompletionWithGC(run, stats, result, gc, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events := readAppMetricEvents(t, path)
+	if len(events) != 3 || events[0]["event"] != "semantic.refresh.completed" || events[1]["event"] != "semantic.gc.completed" || events[2]["event"] != "sync.run.completed" {
+		t.Fatalf("events=%#v", events)
+	}
+	if events[1]["status"] != "error" || events[1]["duration_ms"] != float64(3000) || events[1]["member_rows_pruned"] != float64(7) {
+		t.Fatalf("semantic GC metric=%#v", events[1])
+	}
+	errorObject, ok := events[1]["error"].(map[string]any)
+	if !ok || errorObject["message"] != "filesystem_unlink" {
+		t.Fatalf("semantic GC safe error=%#v", events[1]["error"])
+	}
+	if events[2]["status"] != "ok" || events[2]["duration_ms"] != float64(9000) {
+		t.Fatalf("sync terminal metric=%#v", events[2])
+	}
+}
+
+func TestEmitSyncSemanticGCMetricsReportsLeaseSkip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := metrics.RunContext{RunID: "sync-parent", Command: "sync all", Invocation: "scheduler", Sink: sink}
+	gcErr := errors.Join(errors.New("acquire maintenance lock"), context.DeadlineExceeded)
+	gc := &syncSemanticGCResult{
+		Status:     syncSemanticGCStatusSkipped,
+		Duration:   time.Second,
+		DurationMS: 1000,
+		SkipReason: "semantic_lease_timeout",
+		err:        gcErr,
+	}
+	if err := emitSyncSemanticGCMetrics(run, gc); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events := readAppMetricEvents(t, path)
+	if len(events) != 1 || events[0]["status"] != "skipped" || events[0]["skip_reason"] != "semantic_lease_timeout" {
+		t.Fatalf("semantic GC metric=%#v", events)
+	}
+	if _, ok := events[0]["error"]; !ok {
+		t.Fatalf("semantic GC metric omitted structured error: %#v", events[0])
+	}
+}
+
 func TestEmitSemanticRefreshMetricsWritesClosedTerminalFailureCode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "metrics.jsonl")
 	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage, Strict: true})

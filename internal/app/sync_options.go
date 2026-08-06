@@ -82,6 +82,7 @@ type syncAllFlags struct {
 	skipSources                  bool
 	skipCategorize               bool
 	skipOKFExport                bool
+	semanticGC                   bool
 	jsonOut                      bool
 }
 

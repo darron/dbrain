@@ -14,6 +14,7 @@ type syncCommandCompleted struct {
 	cfg          config.Config
 	stats        syncjob.Stats
 	jsonOut      bool
+	semanticGC   bool
 	lock         *runlock.Lock
 	metrics      metrics.RunContext
 	closeMetrics func() error

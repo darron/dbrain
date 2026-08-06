@@ -13,6 +13,7 @@ func resolveSyncAllFlags(rootDir string, flags syncAllFlags, overrides ...syncAl
 		explicit = overrides[0]
 	}
 	flags = applySyncAllImportPolicy(flags, syncAllImportPolicyFromRuntime(rootDir), explicit)
+	flags.semanticGC = firstEnvBool(rootDir, "DBRAIN_SYNC_ALL_SEMANTIC_GC")
 	if !explicit.browser && strings.TrimSpace(flags.browser) == "" {
 		flags.browser = firstNonEmptyEnv(rootDir, "DBRAIN_SYNC_ALL_BROWSER")
 	}

@@ -73,6 +73,47 @@ safari_tabs:
 	}
 }
 
+func TestResolveSyncAllFlagsSemanticGCIsSharedAndDefaultOff(t *testing.T) {
+	t.Run("omitted", func(t *testing.T) {
+		t.Setenv("DBRAIN_SYNC_ALL_SEMANTIC_GC", "")
+		root := t.TempDir()
+		writeSyncImportPolicyConfig(t, root, "sync_all:\n  browser: chrome\n")
+		resolved, err := resolveSyncAllFlags(root, syncAllFlags{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.semanticGC {
+			t.Fatal("omitted sync_all.semantic_gc enabled automatic cleanup")
+		}
+	})
+
+	t.Run("yaml enabled", func(t *testing.T) {
+		t.Setenv("DBRAIN_SYNC_ALL_SEMANTIC_GC", "")
+		root := t.TempDir()
+		writeSyncImportPolicyConfig(t, root, "sync_all:\n  semantic_gc: true\n")
+		resolved, err := resolveSyncAllFlags(root, syncAllFlags{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !resolved.semanticGC {
+			t.Fatal("sync_all.semantic_gc=true was not resolved")
+		}
+	})
+
+	t.Run("environment disables yaml", func(t *testing.T) {
+		t.Setenv("DBRAIN_SYNC_ALL_SEMANTIC_GC", "false")
+		root := t.TempDir()
+		writeSyncImportPolicyConfig(t, root, "sync_all:\n  semantic_gc: true\n")
+		resolved, err := resolveSyncAllFlags(root, syncAllFlags{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.semanticGC {
+			t.Fatal("DBRAIN_SYNC_ALL_SEMANTIC_GC=false did not override yaml")
+		}
+	})
+}
+
 func TestResolveSyncAllFlagsHonorsExplicitCLIOverrides(t *testing.T) {
 	clearSyncImportPolicyEnv(t)
 	root := t.TempDir()

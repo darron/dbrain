@@ -46,7 +46,7 @@ func TestSemanticGCCommandIsDryRunByDefault(t *testing.T) {
 	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if got.Apply || got.Vacuum || got.GracePeriod != defaultSemanticGCGracePeriod || got.RetainPublished != defaultSemanticGCRetainPublished {
+	if got.Apply || got.Vacuum || got.GracePeriod != defaultSemanticGCGracePeriod || got.RetainPublished != defaultSemanticGCRetainPublished || got.LockTimeout != 0 {
 		t.Fatalf("default options=%+v", got)
 	}
 	if !strings.Contains(out.String(), "no changes made") || !strings.Contains(out.String(), "bytes=11") {

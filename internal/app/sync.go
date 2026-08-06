@@ -49,9 +49,13 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 				reporter.Callback(),
 			)
 			err = errors.Join(err, reporter.Finish(err == nil))
+			completedDeps := completeSemanticRefreshDeps(deps)
+			gcResult := maybeRunAutomaticSemanticGC(
+				cmd.Context(), completed.cfg, completed.semanticGC, result, err, completedDeps.semanticGC,
+			)
 			elapsed := result.Duration
-			completed.stats = completeSyncStatsWithSemantic(completed.stats, result)
-			metricsErr = errors.Join(metricsErr, emitFullSyncCompletion(completed.metrics, completed.stats, result, err))
+			completed.stats = completeSyncStatsWithSemanticGC(completed.stats, result, gcResult)
+			metricsErr = errors.Join(metricsErr, emitFullSyncCompletionWithGC(completed.metrics, completed.stats, result, gcResult, err))
 			if completed.closeMetrics != nil {
 				metricsErr = errors.Join(metricsErr, completed.closeMetrics())
 				completed.closeMetrics = nil
@@ -90,9 +94,9 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 			}
 
 			if completed.jsonOut {
-				return writeSyncSemanticResultJSON(cmd.OutOrStdout(), completed.stats, result)
+				return writeSyncSemanticResultJSON(cmd.OutOrStdout(), completed.stats, result, gcResult)
 			}
-			if err := writeSyncStatsWithSemantic(cmd.OutOrStdout(), completed.stats, result, nil); err != nil {
+			if err := writeSyncStatsWithSemantic(cmd.OutOrStdout(), completed.stats, result, nil, gcResult); err != nil {
 				return err
 			}
 			return nil
@@ -202,6 +206,7 @@ func newSyncAllCommandWithCompletion(root *rootOptions, completion *syncCommandC
 					cfg:          cfg,
 					stats:        stats,
 					jsonOut:      resolvedFlags.jsonOut,
+					semanticGC:   resolvedFlags.semanticGC,
 					lock:         lock,
 					metrics:      metricsRun,
 					closeMetrics: closeMetrics,
