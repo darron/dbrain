@@ -86,6 +86,11 @@ func emitSyncStageMetrics(run metrics.RunContext, opts stageOptions, stats *Stat
 		emitStage(run, "apple_notes", stats.AppleNotes, stageErr, nil)
 	case syncStageSafariTabs:
 		emitStage(run, "safari_tabs", stats.SafariTabs, stageErr, nil)
+	case syncStageBlueskyBookmarks:
+		emitStage(run, "bluesky_bookmarks", stats.BlueskyBookmarks, stageErr, map[string]any{
+			"limit":      opts.BlueskyBookmarks.Limit,
+			"timeout_ms": metrics.DurationMillis(opts.BlueskyBookmarks.Timeout),
+		})
 	case syncStageXFrontier:
 		emitStage(run, "x_bookmarks", stats.XBookmarks, stageErr, nil)
 		emitStage(run, "x", stats.X, stageErr, nil)
@@ -135,6 +140,9 @@ func selectedMetricStages(opts Options) []string {
 	if opts.SafariTabsEnabled {
 		out = append(out, "safari_tabs")
 	}
+	if opts.BlueskyBookmarksEnabled {
+		out = append(out, "bluesky_bookmarks")
+	}
 	if opts.XBookmarksEnabled {
 		out = append(out, "x_bookmarks")
 	}
@@ -177,11 +185,12 @@ func selectedMetricStages(opts Options) []string {
 func emitSyncImportMetrics(run metrics.RunContext, stats Stats, stageErrors map[syncStageID]error) {
 	opts := newStageOptions(Options{
 		AppleNotesEnabled: stats.AppleNotes != nil, SafariTabsEnabled: stats.SafariTabs != nil,
-		XBookmarksEnabled: stats.XBookmarks != nil, GitHubEnabled: stats.GitHub != nil,
+		BlueskyBookmarksEnabled: stats.BlueskyBookmarks != nil,
+		XBookmarksEnabled:       stats.XBookmarks != nil, GitHubEnabled: stats.GitHub != nil,
 		YouTubeEnabled: stats.YouTube != nil, WatchLater: stats.YouTube != nil, Liked: stats.YouTube != nil,
 		FeedsEnabled: stats.Feeds != nil,
 	})
-	for _, stage := range []syncStageID{syncStageAppleNotes, syncStageSafariTabs, syncStageXFrontier, syncStageGitHub, syncStageYouTube, syncStageFeeds} {
+	for _, stage := range []syncStageID{syncStageAppleNotes, syncStageSafariTabs, syncStageBlueskyBookmarks, syncStageXFrontier, syncStageGitHub, syncStageYouTube, syncStageFeeds} {
 		emitSyncImportStageMetric(run, opts, stage, stats, stageErrors[stage])
 	}
 }
@@ -219,6 +228,13 @@ func emitSyncImportStageMetric(run metrics.RunContext, opts stageOptions, stage 
 			emit("safari_tabs", value.Duration, importCounts(s.TabsCreated, s.TabsUpdated, s.TabsUnchanged, s.TabsSkipped, s.LinksFound, 0, s.Errors), s.Errors > 0)
 		} else if opts.SafariTabs.Enabled {
 			emit("safari_tabs", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+		}
+	case syncStageBlueskyBookmarks:
+		if value := stats.BlueskyBookmarks; value != nil {
+			s := value.Stats
+			emit("bluesky_bookmarks", value.Duration, importCounts(s.Created, s.Updated, s.Unchanged, s.Skipped, 0, s.SkippedBlocked, 0), false)
+		} else if opts.BlueskyBookmarks.Enabled {
+			emit("bluesky_bookmarks", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
 		}
 	case syncStageXFrontier:
 		if value := stats.XBookmarks; value != nil {
@@ -445,6 +461,11 @@ func stageMetrics(value any) (time.Duration, any, bool) {
 			return 0, nil, false
 		}
 		return stage.Duration, stage.Stats, true
+	case *BlueskyBookmarksStage:
+		if stage == nil {
+			return 0, nil, false
+		}
+		return stage.Duration, stage.Stats, true
 	case *XBookmarksStage:
 		if stage == nil {
 			return 0, nil, false
@@ -529,6 +550,7 @@ func completedStageCount(stats Stats) int {
 	for _, present := range []bool{
 		stats.AppleNotes != nil,
 		stats.SafariTabs != nil,
+		stats.BlueskyBookmarks != nil,
 		stats.XBookmarks != nil,
 		stats.X != nil,
 		stats.Links != nil,

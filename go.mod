@@ -20,6 +20,7 @@ require (
 	github.com/nbd-wtf/go-nostr v0.52.3
 	github.com/spf13/cobra v1.10.2
 	github.com/steipete/sweetcookie v0.0.0-20260102214724-68ec5a0bced4
+	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7
 	github.com/unum-cloud/usearch/golang v0.0.0-20260710183501-cc23bbaf21ef
 	github.com/yuin/goldmark v1.8.2
 	github.com/zalando/go-keyring v0.2.6
@@ -86,6 +87,7 @@ require (
 	github.com/go-json-experiment/json v0.0.0-20250813024750-ebf49471dced // indirect
 	github.com/godbus/dbus/v5 v5.1.1-0.20230522191255-76236955d466 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
+	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/renameio v1.0.1 // indirect

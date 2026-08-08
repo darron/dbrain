@@ -33,6 +33,7 @@ func buildConfig(template []byte, selections Selections, tools []Tool, secretRef
 	setBool(root, []string{"sync_all", "imports", "feeds"}, selections.ImportFeeds)
 	setBool(root, []string{"sync_all", "imports", "apple_notes"}, selections.EnableAppleNotes)
 	setBool(root, []string{"sync_all", "imports", "safari_tabs"}, selections.EnableSafariTabs)
+	setBool(root, []string{"sync_all", "imports", "bluesky_bookmarks"}, selections.ImportBlueskyBookmarks)
 	if value := strings.TrimSpace(selections.SyncBrowser); value != "" {
 		setString(root, []string{"sync_all", "browser"}, value)
 	}
@@ -47,6 +48,7 @@ func buildConfig(template []byte, selections Selections, tools []Tool, secretRef
 	setBool(root, []string{"scheduler", "sync_all", "enabled"}, selections.EnableScheduler)
 	setBool(root, []string{"scheduler", "sync_all", "apple_notes"}, selections.EnableAppleNotes)
 	setBool(root, []string{"scheduler", "sync_all", "safari_tabs"}, selections.EnableSafariTabs)
+	setBool(root, []string{"scheduler", "sync_all", "bluesky_bookmarks"}, selections.ImportBlueskyBookmarks)
 	setBool(root, []string{"scheduler", "sync_all", "skip_x_photo_ocr"}, selections.SkipXPhotoOCR)
 	setBool(root, []string{"scheduler", "sync_all", "skip_categorize"}, selections.SkipCategorize)
 	if selections.EnableTailscale {
@@ -265,6 +267,8 @@ func SeedSelectionsFromConfig(selections Selections, data []byte) (Selections, e
 		{path: []string{"sync_all", "imports", "feeds"}, target: &selections.ImportFeeds},
 		{path: []string{"sync_all", "imports", "apple_notes"}, target: &selections.EnableAppleNotes},
 		{path: []string{"sync_all", "imports", "safari_tabs"}, target: &selections.EnableSafariTabs},
+		{path: []string{"scheduler", "sync_all", "bluesky_bookmarks"}, target: &selections.ImportBlueskyBookmarks},
+		{path: []string{"sync_all", "imports", "bluesky_bookmarks"}, target: &selections.ImportBlueskyBookmarks},
 		{path: []string{"scheduler", "sync_all", "enabled"}, target: &selections.EnableScheduler},
 	}
 	for _, field := range boolFields {

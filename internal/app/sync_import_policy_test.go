@@ -25,6 +25,7 @@ sync_all:
     feeds: false
     apple_notes: true
     safari_tabs: false
+    bluesky_bookmarks: true
 `)
 
 	resolved, err := resolveSyncAllFlags(root, syncAllFlags{
@@ -45,6 +46,9 @@ sync_all:
 	}
 	if !resolved.appleNotes || resolved.safariTabs {
 		t.Fatalf("Apple Notes/Safari selections were not applied: %+v", resolved)
+	}
+	if !resolved.blueskyBookmarks {
+		t.Fatalf("Bluesky selection was not applied: %+v", resolved)
 	}
 	if resolved.browser != "firefox" || resolved.profile != "research" {
 		t.Fatalf("shared browser/profile were not applied: %+v", resolved)
@@ -129,27 +133,30 @@ sync_all:
     feeds: false
     apple_notes: false
     safari_tabs: false
+    bluesky_bookmarks: true
 `)
 
 	resolved, err := resolveSyncAllFlags(root, syncAllFlags{
-		watchLater: true,
-		liked:      false,
-		appleNotes: true,
-		browser:    "safari",
-		profile:    "explicit",
+		watchLater:       true,
+		liked:            false,
+		appleNotes:       true,
+		blueskyBookmarks: true,
+		browser:          "safari",
+		profile:          "explicit",
 	}, syncAllFlagOverrides{
-		skipXBookmarks: true,
-		skipX:          true,
-		skipXMedia:     true,
-		skipXPhotoOCR:  true,
-		skipGitHub:     true,
-		skipYouTube:    true,
-		skipFeeds:      true,
-		watchLater:     true,
-		liked:          true,
-		appleNotes:     true,
-		browser:        true,
-		profile:        true,
+		skipXBookmarks:   true,
+		skipX:            true,
+		skipXMedia:       true,
+		skipXPhotoOCR:    true,
+		skipGitHub:       true,
+		skipYouTube:      true,
+		skipFeeds:        true,
+		watchLater:       true,
+		liked:            true,
+		appleNotes:       true,
+		blueskyBookmarks: true,
+		browser:          true,
+		profile:          true,
 	})
 	if err != nil {
 		t.Fatalf("resolveSyncAllFlags: %v", err)
@@ -157,7 +164,7 @@ sync_all:
 	if resolved.skipXBookmarks || resolved.skipX || resolved.skipXMedia || resolved.skipXPhotoOCR || resolved.skipGitHub || resolved.skipYouTube || resolved.skipFeeds {
 		t.Fatalf("explicit false skip flags should override disabled config: %+v", resolved)
 	}
-	if !resolved.watchLater || resolved.liked || !resolved.appleNotes {
+	if !resolved.watchLater || resolved.liked || !resolved.appleNotes || !resolved.blueskyBookmarks {
 		t.Fatalf("explicit source flags should override shared config: %+v", resolved)
 	}
 	if resolved.browser != "safari" || resolved.profile != "explicit" {
@@ -229,6 +236,7 @@ func clearSyncImportPolicyEnv(t *testing.T) {
 		syncImportFeedsKey,
 		syncImportAppleNotesKey,
 		syncImportSafariTabsKey,
+		syncImportBlueskyBookmarksKey,
 		"DBRAIN_APPLE_NOTES_ENABLED",
 		"DBRAIN_SAFARI_TABS_ENABLED",
 		"DBRAIN_SYNC_ALL_BROWSER",

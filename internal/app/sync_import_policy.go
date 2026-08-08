@@ -10,6 +10,7 @@ const (
 	syncImportFeedsKey             = "DBRAIN_SYNC_ALL_IMPORT_FEEDS"
 	syncImportAppleNotesKey        = "DBRAIN_SYNC_ALL_IMPORT_APPLE_NOTES"
 	syncImportSafariTabsKey        = "DBRAIN_SYNC_ALL_IMPORT_SAFARI_TABS"
+	syncImportBlueskyBookmarksKey  = "DBRAIN_SYNC_ALL_IMPORT_BLUESKY_BOOKMARKS"
 )
 
 type syncAllImportPolicy struct {
@@ -20,23 +21,25 @@ type syncAllImportPolicy struct {
 	Feeds             bool
 	AppleNotes        bool
 	SafariTabs        bool
+	BlueskyBookmarks  bool
 }
 
 type syncAllFlagOverrides struct {
-	skipXBookmarks bool
-	skipX          bool
-	skipXMedia     bool
-	skipXPhotoOCR  bool
-	skipGitHub     bool
-	skipYouTube    bool
-	skipFeeds      bool
-	skipCategorize bool
-	watchLater     bool
-	liked          bool
-	appleNotes     bool
-	safariTabs     bool
-	browser        bool
-	profile        bool
+	skipXBookmarks   bool
+	skipX            bool
+	skipXMedia       bool
+	skipXPhotoOCR    bool
+	skipGitHub       bool
+	skipYouTube      bool
+	skipFeeds        bool
+	skipCategorize   bool
+	watchLater       bool
+	liked            bool
+	appleNotes       bool
+	safariTabs       bool
+	blueskyBookmarks bool
+	browser          bool
+	profile          bool
 }
 
 func defaultSyncAllImportPolicy(rootDir string) syncAllImportPolicy {
@@ -48,6 +51,7 @@ func defaultSyncAllImportPolicy(rootDir string) syncAllImportPolicy {
 		Feeds:             true,
 		AppleNotes:        runtimeenv.FirstBool(rootDir, "DBRAIN_APPLE_NOTES_ENABLED"),
 		SafariTabs:        runtimeenv.FirstBool(rootDir, "DBRAIN_SAFARI_TABS_ENABLED"),
+		BlueskyBookmarks:  false,
 	}
 }
 
@@ -60,6 +64,7 @@ func syncAllImportPolicyFromRuntime(rootDir string) syncAllImportPolicy {
 	applySyncImportBool(rootDir, syncImportFeedsKey, &policy.Feeds)
 	applySyncImportBool(rootDir, syncImportAppleNotesKey, &policy.AppleNotes)
 	applySyncImportBool(rootDir, syncImportSafariTabsKey, &policy.SafariTabs)
+	applySyncImportBool(rootDir, syncImportBlueskyBookmarksKey, &policy.BlueskyBookmarks)
 	return policy
 }
 
@@ -102,6 +107,9 @@ func applySyncAllImportPolicy(flags syncAllFlags, policy syncAllImportPolicy, ov
 	}
 	if !overrides.safariTabs {
 		flags.safariTabs = flags.safariTabs || policy.SafariTabs
+	}
+	if !overrides.blueskyBookmarks {
+		flags.blueskyBookmarks = flags.blueskyBookmarks || policy.BlueskyBookmarks
 	}
 	return flags
 }

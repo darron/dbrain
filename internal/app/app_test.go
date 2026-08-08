@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/darron/dbrain/internal/applenotes"
 	"github.com/darron/dbrain/internal/brainresearch"
+	"github.com/darron/dbrain/internal/bskyapi"
 	"github.com/darron/dbrain/internal/categoryvocab"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/embedding"
@@ -4645,6 +4646,39 @@ func TestWriteSyncStatsIncludesSafariTabsStage(t *testing.T) {
 
 	output := dst.String()
 	for _, value := range []string{"Sync Summary", "Safari Tabs", "created=1 updated=2", "unchanged=495 rendered=498 skipped=2 links=492 device=phone", "1"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
+		}
+	}
+}
+
+func TestWriteSyncStatsIncludesBlueskyBookmarksStage(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	stats := syncjob.Stats{
+		StartedAt:   time.Date(2026, time.May, 1, 15, 0, 0, 0, time.UTC),
+		CompletedAt: time.Date(2026, time.May, 1, 15, 1, 0, 0, time.UTC),
+		Duration:    time.Minute,
+		BlueskyBookmarks: &syncjob.BlueskyBookmarksStage{
+			Stats: bskyapi.BookmarkStats{
+				PagesFetched:   2,
+				Created:        3,
+				Updated:        1,
+				Unchanged:      4,
+				Skipped:        2,
+				SkippedBlocked: 1,
+				StoppedReason:  "end of bookmarks",
+			},
+		},
+	}
+
+	if err := writeSyncStats(&dst, stats); err != nil {
+		t.Fatalf("writeSyncStats: %v", err)
+	}
+
+	output := dst.String()
+	for _, value := range []string{"Sync Summary", "Bluesky Bookmarks", "created=3 updated=1", "unchanged=4 skipped=2 blocked=1 not_found=0 pages=2 stopped=end of bookmarks"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
 		}

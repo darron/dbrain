@@ -32,6 +32,7 @@ type installFlags struct {
 	enableYouTubeWatchLater bool
 	enableYouTubeLiked      bool
 	enableFeeds             bool
+	enableBlueskyBookmarks  bool
 	enableAppleNotes        bool
 	enableSafariTabs        bool
 	safariTabsDevice        string
@@ -174,11 +175,12 @@ func newInstallCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&flags.enableYouTubeWatchLater, "enable-youtube-watch-later", false, "Include YouTube Watch Later in sync all")
 	cmd.Flags().BoolVar(&flags.enableYouTubeLiked, "enable-youtube-liked", false, "Include liked YouTube videos in sync all")
 	cmd.Flags().BoolVar(&flags.enableFeeds, "enable-feeds", false, "Include subscribed RSS, Atom, and JSON feeds in sync all")
+	cmd.Flags().BoolVar(&flags.enableBlueskyBookmarks, "enable-bluesky-bookmarks", false, "Include the reusable Bluesky bookmark import from the Chrome profile session in sync all")
 	cmd.Flags().BoolVar(&flags.enableAppleNotes, "enable-apple-notes", false, "Include Apple Notes imports in sync all")
 	cmd.Flags().BoolVar(&flags.enableSafariTabs, "enable-safari-tabs", false, "Include Safari tab imports in sync all")
 	cmd.Flags().StringVar(&flags.safariTabsDevice, "safari-tabs-device", "", "Safari iCloud device name or UUID for selected Safari tab imports")
-	cmd.Flags().StringVar(&flags.syncBrowser, "browser", "", "Browser for selected cookie-backed X and YouTube imports; defaults to the existing sync_all.browser or chrome")
-	cmd.Flags().StringVar(&flags.syncProfile, "profile", "", "Optional browser profile for selected cookie-backed imports")
+	cmd.Flags().StringVar(&flags.syncBrowser, "browser", "", "Browser for selected X, YouTube, and Bluesky profile-backed imports; defaults to the existing sync_all.browser or chrome")
+	cmd.Flags().StringVar(&flags.syncProfile, "profile", "", "Optional browser profile for selected profile-backed imports")
 	cmd.Flags().BoolVar(&flags.enableScheduler, "enable-scheduler", false, "Enable scheduler.sync_all in config")
 	cmd.Flags().BoolVar(&flags.enableTailscale, "enable-tailscale", false, "Configure built-in tsnet/Tailscale transport settings")
 	cmd.Flags().StringVar(&flags.tsnetHostname, "tsnet-hostname", "dbrain", "Tailscale machine hostname for built-in tsnet")
@@ -290,6 +292,7 @@ func defaultInstallSelections(flags installFlags, tools []installer.Tool) instal
 		ImportYouTubeWatchLater: flags.enableYouTubeWatchLater,
 		ImportYouTubeLiked:      flags.enableYouTubeLiked,
 		ImportFeeds:             flags.enableFeeds,
+		ImportBlueskyBookmarks:  flags.enableBlueskyBookmarks,
 		EnableAppleNotes:        flags.enableAppleNotes,
 		EnableSafariTabs:        flags.enableSafariTabs,
 		SafariTabsDevice:        strings.TrimSpace(flags.safariTabsDevice),
@@ -334,6 +337,9 @@ func applyExplicitInstallSelectionFlags(cmd *cobra.Command, flags installFlags, 
 	}
 	if changed("enable-feeds") {
 		selections.ImportFeeds = flags.enableFeeds
+	}
+	if changed("enable-bluesky-bookmarks") {
+		selections.ImportBlueskyBookmarks = flags.enableBlueskyBookmarks
 	}
 	if changed("enable-apple-notes") {
 		selections.EnableAppleNotes = flags.enableAppleNotes
@@ -406,6 +412,9 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 	if selections.ImportFeeds {
 		imports = append(imports, "feeds")
 	}
+	if selections.ImportBlueskyBookmarks {
+		imports = append(imports, "bluesky_bookmarks")
+	}
 	if selections.EnableAppleNotes {
 		imports = append(imports, "apple_notes")
 	}
@@ -441,6 +450,7 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 					huh.NewOption("YouTube Watch Later", "youtube_watch_later").Selected(selections.ImportYouTubeWatchLater),
 					huh.NewOption("Liked YouTube videos", "youtube_liked").Selected(selections.ImportYouTubeLiked),
 					huh.NewOption("RSS, Atom, and JSON feeds", "feeds").Selected(selections.ImportFeeds),
+					huh.NewOption("Bluesky bookmarks", "bluesky_bookmarks").Selected(selections.ImportBlueskyBookmarks),
 					huh.NewOption("Apple Notes import", "apple_notes").Selected(selections.EnableAppleNotes),
 					huh.NewOption("Safari tabs import", "safari_tabs").Selected(selections.EnableSafariTabs),
 				).
@@ -456,8 +466,8 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 		).WithHideFunc(func() bool { return !offerWhisperModels }),
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Browser for X and YouTube").
-				Description("Used for cookie-backed imports.").
+				Title("Browser for X, YouTube, and Bluesky").
+				Description("Used for browser-profile-backed imports.").
 				Placeholder("chrome").
 				Value(&selections.SyncBrowser),
 			huh.NewInput().
@@ -551,6 +561,7 @@ func promptInstallSelections(cmd *cobra.Command, selections *installer.Selection
 	selections.ImportYouTubeWatchLater = containsString(imports, "youtube_watch_later")
 	selections.ImportYouTubeLiked = containsString(imports, "youtube_liked")
 	selections.ImportFeeds = containsString(imports, "feeds")
+	selections.ImportBlueskyBookmarks = containsString(imports, "bluesky_bookmarks")
 	selections.EnableAppleNotes = containsString(imports, "apple_notes")
 	selections.EnableSafariTabs = containsString(imports, "safari_tabs")
 	selections.EnableScheduler = containsString(features, "scheduler")
@@ -793,6 +804,7 @@ func containsString(values []string, needle string) bool {
 
 func browserBackedImportSelected(imports []string) bool {
 	return containsString(imports, "x_bookmarks") ||
+		containsString(imports, "bluesky_bookmarks") ||
 		containsString(imports, "youtube_watch_later") ||
 		containsString(imports, "youtube_liked")
 }
@@ -893,6 +905,7 @@ func installImportSummary(selections installer.Selections) []installImportSummar
 		{name: "YouTube Watch Later", enabled: selections.ImportYouTubeWatchLater},
 		{name: "Liked YouTube videos", enabled: selections.ImportYouTubeLiked},
 		{name: "RSS/Atom/JSON feeds", enabled: selections.ImportFeeds},
+		{name: "Bluesky bookmarks", enabled: selections.ImportBlueskyBookmarks},
 		{name: "Apple Notes", enabled: selections.EnableAppleNotes},
 		{name: "Safari tabs", enabled: selections.EnableSafariTabs},
 	}

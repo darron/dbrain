@@ -2,6 +2,7 @@ package syncjob
 
 import (
 	"github.com/darron/dbrain/internal/applenotes"
+	"github.com/darron/dbrain/internal/bskyapi"
 	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/itemcategorize"
@@ -18,20 +19,21 @@ import (
 )
 
 var (
-	runXBookmarkImport     = xapi.RunBookmarks
-	runXHydrate            = xapi.Run
-	runXMediaStage         = xmediatranscribe.Run
-	runXPhotoOCRStage      = xphotoocr.Run
-	runLinkExtract         = linkextract.Run
-	runGitHubImport        = githubimport.Run
-	runYouTubeImport       = youtubeimport.Run
-	runSourceWorker        = worker.RunSources
-	runSourceEnrichPending = sourceenrich.RunPending
-	runMediaArchive        = mediaarchive.Run
-	runItemCategorize      = itemcategorize.Batch
-	runSourceCategorize    = itemcategorize.BatchSources
-	runAppleNotesImport    = applenotes.Run
-	runSafariTabsImport    = safaritabs.Run
-	runFeedImport          = feedimport.Run
-	runOKFExport           = okf.Export
+	runXBookmarkImport       = xapi.RunBookmarks
+	runBlueskyBookmarkImport = bskyapi.RunBookmarks
+	runXHydrate              = xapi.Run
+	runXMediaStage           = xmediatranscribe.Run
+	runXPhotoOCRStage        = xphotoocr.Run
+	runLinkExtract           = linkextract.Run
+	runGitHubImport          = githubimport.Run
+	runYouTubeImport         = youtubeimport.Run
+	runSourceWorker          = worker.RunSources
+	runSourceEnrichPending   = sourceenrich.RunPending
+	runMediaArchive          = mediaarchive.Run
+	runItemCategorize        = itemcategorize.Batch
+	runSourceCategorize      = itemcategorize.BatchSources
+	runAppleNotesImport      = applenotes.Run
+	runSafariTabsImport      = safaritabs.Run
+	runFeedImport            = feedimport.Run
+	runOKFExport             = okf.Export
 )

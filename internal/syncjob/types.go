@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/applenotes"
+	"github.com/darron/dbrain/internal/bskyapi"
 	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/itemcategorize"
@@ -22,8 +23,11 @@ import (
 )
 
 type Options struct {
-	XBookmarksEnabled bool
-	XBookmarksLimit   int
+	XBookmarksEnabled       bool
+	XBookmarksLimit         int
+	BlueskyBookmarksEnabled bool
+	BlueskyBookmarksLimit   int
+	BlueskyBookmarksTimeout time.Duration
 
 	XEnabled         bool
 	XLimit           int
@@ -111,28 +115,34 @@ type Options struct {
 }
 
 type Stats struct {
-	StartedAt    time.Time          `json:"started_at"`
-	CompletedAt  time.Time          `json:"completed_at,omitempty"`
-	Duration     time.Duration      `json:"duration"`
-	XBookmarks   *XBookmarksStage   `json:"x_bookmarks,omitempty"`
-	X            *XStage            `json:"x,omitempty"`
-	XMedia       *XMediaStage       `json:"x_media,omitempty"`
-	XPhotoOCR    *XPhotoOCRStage    `json:"x_photo_ocr,omitempty"`
-	Links        *LinksStage        `json:"links,omitempty"`
-	GitHub       *GitHubStage       `json:"github,omitempty"`
-	YouTube      *YouTubeStage      `json:"youtube,omitempty"`
-	AppleNotes   *AppleNotesStage   `json:"apple_notes,omitempty"`
-	SafariTabs   *SafariTabsStage   `json:"safari_tabs,omitempty"`
-	Feeds        *FeedsStage        `json:"feeds,omitempty"`
-	Sources      *SourcesStage      `json:"sources,omitempty"`
-	MediaArchive *MediaArchiveStage `json:"media_archive,omitempty"`
-	Categorize   *CategorizeStage   `json:"categorize,omitempty"`
-	OKFExport    *OKFExportStage    `json:"okf_export,omitempty"`
+	StartedAt        time.Time              `json:"started_at"`
+	CompletedAt      time.Time              `json:"completed_at,omitempty"`
+	Duration         time.Duration          `json:"duration"`
+	XBookmarks       *XBookmarksStage       `json:"x_bookmarks,omitempty"`
+	BlueskyBookmarks *BlueskyBookmarksStage `json:"bluesky_bookmarks,omitempty"`
+	X                *XStage                `json:"x,omitempty"`
+	XMedia           *XMediaStage           `json:"x_media,omitempty"`
+	XPhotoOCR        *XPhotoOCRStage        `json:"x_photo_ocr,omitempty"`
+	Links            *LinksStage            `json:"links,omitempty"`
+	GitHub           *GitHubStage           `json:"github,omitempty"`
+	YouTube          *YouTubeStage          `json:"youtube,omitempty"`
+	AppleNotes       *AppleNotesStage       `json:"apple_notes,omitempty"`
+	SafariTabs       *SafariTabsStage       `json:"safari_tabs,omitempty"`
+	Feeds            *FeedsStage            `json:"feeds,omitempty"`
+	Sources          *SourcesStage          `json:"sources,omitempty"`
+	MediaArchive     *MediaArchiveStage     `json:"media_archive,omitempty"`
+	Categorize       *CategorizeStage       `json:"categorize,omitempty"`
+	OKFExport        *OKFExportStage        `json:"okf_export,omitempty"`
 }
 
 type XBookmarksStage struct {
 	Duration time.Duration      `json:"duration"`
 	Stats    xapi.BookmarkStats `json:"stats"`
+}
+
+type BlueskyBookmarksStage struct {
+	Duration time.Duration         `json:"duration"`
+	Stats    bskyapi.BookmarkStats `json:"stats"`
 }
 
 type XStage struct {

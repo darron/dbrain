@@ -1,0 +1,30 @@
+package syncjob
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/darron/dbrain/internal/bskyapi"
+	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/store"
+)
+
+func executeBlueskyBookmarksStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions) (*BlueskyBookmarksStage, error) {
+	common := opts.Common
+	stageOpts := opts.BlueskyBookmarks
+	progressf(common.Progress, "==> import bluesky-bookmarks\n")
+	start := time.Now()
+	bookmarkStats, err := runBlueskyBookmarkImport(ctx, cfg, st, bskyapi.BookmarkOptions{
+		Browser: common.Browser,
+		Profile: common.Profile,
+		Limit:   stageOpts.Limit,
+		Timeout: stageOpts.Timeout,
+	})
+	stage := &BlueskyBookmarksStage{Duration: time.Since(start), Stats: bookmarkStats}
+	if err != nil {
+		return stage, fmt.Errorf("import Bluesky bookmarks: %w", err)
+	}
+	progressf(common.Progress, "Bluesky bookmarks import complete: pages=%d seen=%d processed=%d skipped=%d blocked=%d not_found=%d unsupported=%d malformed=%d created=%d updated=%d unchanged=%d rendered=%d stopped=%s (%s)\n", bookmarkStats.PagesFetched, bookmarkStats.Seen, bookmarkStats.Processed, bookmarkStats.Skipped, bookmarkStats.SkippedBlocked, bookmarkStats.SkippedNotFound, bookmarkStats.SkippedUnsupported, bookmarkStats.SkippedMalformed, bookmarkStats.Created, bookmarkStats.Updated, bookmarkStats.Unchanged, bookmarkStats.Rendered, bookmarkStats.StoppedReason, stage.Duration)
+	return stage, nil
+}

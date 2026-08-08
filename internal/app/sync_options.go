@@ -41,6 +41,9 @@ type syncAllFlags struct {
 	appleNotesSkipAttachmentOCR  bool
 	appleNotesAttachmentMaxBytes int64
 	appleNotesTesseractBinary    string
+	blueskyBookmarks             bool
+	blueskyBookmarksLimit        int
+	blueskyBookmarksTimeout      time.Duration
 	safariTabs                   bool
 	safariTabsDBPath             string
 	safariTabsDevice             string
@@ -134,6 +137,9 @@ func syncOptionsFromFlags(ctx context.Context, cfg config.Config, flags syncAllF
 	return syncjob.Options{
 		XBookmarksEnabled:            !flags.skipXBookmarks,
 		XBookmarksLimit:              flags.xBookmarksLimit,
+		BlueskyBookmarksEnabled:      flags.blueskyBookmarks,
+		BlueskyBookmarksLimit:        flags.blueskyBookmarksLimit,
+		BlueskyBookmarksTimeout:      flags.blueskyBookmarksTimeout,
 		XEnabled:                     !flags.skipX,
 		XLimit:                       flags.xLimit,
 		XConcurrency:                 flags.xConcurrency,

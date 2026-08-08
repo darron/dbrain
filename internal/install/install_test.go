@@ -843,6 +843,24 @@ scheduler:
 	}
 }
 
+func TestSeedSelectionsFromConfigSharedBlueskyPolicyOverridesSchedulerFlag(t *testing.T) {
+	t.Parallel()
+
+	selections, err := SeedSelectionsFromConfig(Selections{}, []byte(`sync_all:
+  imports:
+    bluesky_bookmarks: true
+scheduler:
+  sync_all:
+    bluesky_bookmarks: false
+`))
+	if err != nil {
+		t.Fatalf("SeedSelectionsFromConfig: %v", err)
+	}
+	if !selections.ImportBlueskyBookmarks {
+		t.Fatalf("explicit shared Bluesky policy was overwritten by scheduler flag: %#v", selections)
+	}
+}
+
 func TestRunDoesNotWriteConfigWhenOllamaCreateFails(t *testing.T) {
 	t.Parallel()
 

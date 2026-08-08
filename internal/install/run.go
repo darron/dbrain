@@ -370,6 +370,7 @@ func anyImportSelected(selections Selections) bool {
 		selections.ImportYouTubeWatchLater ||
 		selections.ImportYouTubeLiked ||
 		selections.ImportFeeds ||
+		selections.ImportBlueskyBookmarks ||
 		selections.EnableAppleNotes ||
 		selections.EnableSafariTabs
 }

@@ -240,6 +240,10 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 		s := stats.SafariTabs.Stats
 		rows = append(rows, []string{"Safari Tabs", formatSyncDuration(stats.SafariTabs.Duration), fmt.Sprintf("created=%d updated=%d", s.TabsCreated, s.TabsUpdated), fmt.Sprintf("unchanged=%d rendered=%d skipped=%d links=%d device=%s", s.TabsUnchanged, s.TabsRendered, s.TabsSkipped, s.LinksFound, emptyDash(s.DeviceName)), strconv.Itoa(s.Errors)})
 	}
+	if stats.BlueskyBookmarks != nil {
+		s := stats.BlueskyBookmarks.Stats
+		rows = append(rows, []string{"Bluesky Bookmarks", formatSyncDuration(stats.BlueskyBookmarks.Duration), fmt.Sprintf("created=%d updated=%d", s.Created, s.Updated), fmt.Sprintf("unchanged=%d skipped=%d blocked=%d not_found=%d pages=%d stopped=%s", s.Unchanged, s.Skipped, s.SkippedBlocked, s.SkippedNotFound, s.PagesFetched, s.StoppedReason), "0"})
+	}
 	if stats.XBookmarks != nil {
 		s := stats.XBookmarks.Stats
 		rows = append(rows, []string{"X Bookmarks", formatSyncDuration(stats.XBookmarks.Duration), fmt.Sprintf("created=%d updated=%d", s.Created, s.Updated), fmt.Sprintf("unchanged=%d pages=%d stopped=%s", s.Unchanged, s.PagesFetched, s.StoppedReason), "0"})
