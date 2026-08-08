@@ -49,6 +49,31 @@ func TestComputeIgnoresXBookmarkEngagementCounts(t *testing.T) {
 	}
 }
 
+func TestComputeIgnoresBlueskyBookmarkEngagementCounts(t *testing.T) {
+	base := model.Item{
+		SourceKey:     "bsky:at://did:plc:one/app.bsky.feed.post/3lq7example",
+		SourceType:    "bsky_bookmark",
+		CanonicalURL:  "https://bsky.app/profile/alice.example/post/3lq7example",
+		Title:         "Example",
+		Text:          "hello world",
+		LikeCount:     1,
+		RepostCount:   2,
+		ReplyCount:    3,
+		QuoteCount:    4,
+		BookmarkCount: 5,
+	}
+	other := base
+	other.LikeCount = 101
+	other.RepostCount = 102
+	other.ReplyCount = 103
+	other.QuoteCount = 104
+	other.BookmarkCount = 105
+
+	if got, want := Compute(base), Compute(other); got != want {
+		t.Fatalf("Bluesky bookmark hash changed only from engagement counters: %q != %q", got, want)
+	}
+}
+
 func TestComputePreservesEngagementCountsForOtherSourceTypes(t *testing.T) {
 	base := model.Item{
 		SourceKey:     "x:123",

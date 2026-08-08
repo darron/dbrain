@@ -57,7 +57,8 @@ Homebrew's `summarize` formula installs its required `ffmpeg`, `node`,
 `tesseract`, and `yt-dlp` dependencies. Ollama enables the installer's default
 local model profile. `whisper-cpp` supplies `whisper-cli`, the preferred local
 backend for X media and YouTube audio transcription. Chrome supplies the
-cookie-backed session used by X and YouTube imports. Install these before
+cookie-backed session used by X and YouTube imports and the profile-backed
+session storage used by Bluesky bookmarks. Install these before
 `dbrain install` so the setup wizard can detect and configure them.
 
 Verify the installed binaries:
@@ -156,7 +157,9 @@ brew install --cask google-chrome
 
 Runtime tools and services:
 
-- **Chrome or Chromium**: recommended for cookie-backed X and YouTube imports.
+- **Chrome or Chromium**: recommended for X, YouTube, and Bluesky imports. X and
+  YouTube use browser cookies; Bluesky reads its session from the Chrome profile
+  Local Storage database.
 - **`summarize`**: required for source extraction and summary-backed answer synthesis. Verify with `summarize --help`.
 - **`whisper-cli`**: the completely open-source whisper.cpp CLI and preferred local speech-to-text backend. Homebrew's Apple Silicon bottle uses the native whisper.cpp acceleration stack, including Metal where supported.
 - **Whisper models**: whisper.cpp still needs separate GGML model files. When
@@ -218,6 +221,7 @@ Common entry points:
 - `dbrain serve mcp`
 - `dbrain install`
 - `dbrain sync all`
+- `dbrain import bluesky bookmarks`
 - `dbrain okf export`
 - `dbrain research <question>`
 - `dbrain whats-new --since 24h`
@@ -237,7 +241,7 @@ temp files, chat transcripts, and tsnet state as private local state. Keep
 you intentionally scrub and include them.
 
 Imports are intended to be import-only against upstream services and apps. X,
-GitHub, YouTube, Apple Notes, and Safari tab flows materialize local evidence;
+GitHub, YouTube, Bluesky, Apple Notes, and Safari tab flows materialize local evidence;
 Apple Notes and Safari tabs read from dbrain-owned SQLite snapshots. Normal
 imports should not mutate upstream apps or delete local memories just because an
 upstream bookmark, tab, note, star, or video later disappears.
@@ -734,8 +738,8 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SOURCE_WAYBACK_ENABLED` / `DBRAIN_WAYBACK_ENABLED` | `source.wayback.enabled` | `true` | Use Internet Archive Wayback as a final source extraction fallback before terminalizing repeated failures. |
 | `DBRAIN_SOURCE_WAYBACK_AVAILABILITY_URL` / `DBRAIN_WAYBACK_AVAILABILITY_URL` | `source.wayback.availability_url` | `https://archive.org/wayback/available?url={escaped_url}` | Wayback Availability API URL template used for final source fallback. |
 | `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK` / `DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORKS` | `feeds.allow_private_network` | `false` | Allow feed fetches to localhost/private/link-local IPs for local testing; disabled by default. |
-| `DBRAIN_SYNC_ALL_BROWSER` | `sync_all.browser` | `chrome` | Shared browser for cookie-backed X and YouTube imports in manual and scheduled `sync all` runs. |
-| `DBRAIN_SYNC_ALL_PROFILE` | `sync_all.profile` | `` | Optional shared browser profile name or path for cookie-backed imports. |
+| `DBRAIN_SYNC_ALL_BROWSER` | `sync_all.browser` | `chrome` | Shared browser for X, YouTube, and Bluesky profile-backed imports in manual and scheduled `sync all` runs. |
+| `DBRAIN_SYNC_ALL_PROFILE` | `sync_all.profile` | `` | Optional shared browser profile name or path for browser-backed imports. |
 | `DBRAIN_SYNC_ALL_SEMANTIC_GC` | `sync_all.semantic_gc` | `false` | Apply grace-delayed semantic GC as a non-fatal terminal stage after a completed `sync all` semantic refresh; never runs SQLite `VACUUM`. |
 | `DBRAIN_SYNC_ALL_IMPORT_X_BOOKMARKS` | `sync_all.imports.x_bookmarks` | `true` | Include X bookmark import plus X hydration, media transcription, and photo OCR in `sync all`. |
 | `DBRAIN_TRANSCRIPTION_BACKEND` | `transcription.backend` | `auto` | Speech-to-text backend: `auto`, `whisper.cpp`, or `macwhisper[:model]`. Auto prefers a ready whisper.cpp installation. |
@@ -748,6 +752,7 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SYNC_ALL_IMPORT_FEEDS` | `sync_all.imports.feeds` | `true` | Include subscribed RSS, Atom, and JSON Feed imports in `sync all`. |
 | `DBRAIN_SYNC_ALL_IMPORT_APPLE_NOTES` | `sync_all.imports.apple_notes` | `apple_notes.enabled` | Shared `sync all` Apple Notes selection; falls back to `apple_notes.enabled` when omitted. |
 | `DBRAIN_SYNC_ALL_IMPORT_SAFARI_TABS` | `sync_all.imports.safari_tabs` | `safari_tabs.enabled` | Shared `sync all` Safari tabs selection; falls back to `safari_tabs.enabled` when omitted. |
+| `DBRAIN_SYNC_ALL_IMPORT_BLUESKY_BOOKMARKS` | `sync_all.imports.bluesky_bookmarks` | `false` | Include the opt-in Bluesky bookmark import from the Chrome profile session. |
 | `DBRAIN_OKF_EXPORT_ENABLED` / `DBRAIN_SYNC_OKF_EXPORT` | `okf.export.enabled` | `false` | Export a full private OKF bundle at the end of `sync all`; use `--skip-okf-export` for a one-off opt-out. |
 | `DBRAIN_APPLE_NOTES_ENABLED` | `apple_notes.enabled` | `false` | Include Apple Notes import in `sync all` when enabled; the standalone import command remains explicit. |
 | `DBRAIN_APPLE_NOTES_DB_PATH` | `apple_notes.db_path` | `` | Optional Apple Notes `NoteStore.sqlite` path override. |
@@ -824,8 +829,11 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SCHEDULER_SYNC_ALL_CATEGORIZE_MODEL` | `scheduler.sync_all.categorize_model` | `` | Optional scheduled categorization model override. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_CLI` | `scheduler.sync_all.cli` | `` | Optional scheduled summarize CLI provider override. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_LENGTH` | `scheduler.sync_all.length` | `` | Optional scheduled summary length override. |
-| `DBRAIN_SCHEDULER_SYNC_ALL_BROWSER` | `scheduler.sync_all.browser` | `` | Optional scheduled browser override for cookie-backed imports. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_BROWSER` | `scheduler.sync_all.browser` | `` | Optional scheduled browser override for browser-profile-backed imports. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_PROFILE` | `scheduler.sync_all.profile` | `` | Optional scheduled browser profile override. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS` | `scheduler.sync_all.bluesky_bookmarks` | `false` | Include Bluesky bookmark import in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS_LIMIT` | `scheduler.sync_all.bluesky_bookmarks_limit` | `0` | Optional scheduled Bluesky bookmark import limit; 0 uses the `sync all` default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS_TIMEOUT` | `scheduler.sync_all.bluesky_bookmarks_timeout` | `30s` | Optional scheduled Bluesky bookmark API timeout; empty or 0 uses the importer default. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_APPLE_NOTES` | `scheduler.sync_all.apple_notes` | `false` | Include configured Apple Notes import in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SAFARI_TABS` | `scheduler.sync_all.safari_tabs` | `false` | Include configured Safari tabs import in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_ARCHIVE_MEDIA` | `scheduler.sync_all.archive_media` | `false` | Run media archive at the end of scheduled `sync all` runs. |
@@ -978,6 +986,9 @@ For GitHub stars, use a fine-grained PAT with:
 `dbrain` reads `GITHUB_TOKEN` from the shell, `.envrc`, `.env`, or
 `config.yaml`. Cookie-backed X and YouTube flows require a supported browser
 profile with an active logged-in session; Chrome is the best-tested option.
+`dbrain import bluesky bookmarks` reads the signed-in Bluesky session from
+Chrome's `Local Storage/leveldb` profile data and leaves the browser profile
+unchanged; it does not use Bluesky cookies.
 
 ## Optional Media Archive Env
 
@@ -1414,7 +1425,7 @@ backlog and explicit non-goals.
   presentation, and cleaner outbound link handling.
 - Add optional importers when they become high-value enough to justify first-
   class support: X profile/likes, Apple News bookmarks, native Substack data
-  beyond RSS/manual links, Bluesky, Mastodon, Instagram, MakerWorld bookmarks,
+  beyond RSS/manual links, Mastodon, Instagram, MakerWorld bookmarks,
   Goodreads, and Apple Podcasts.
 
 ### Pipeline gaps

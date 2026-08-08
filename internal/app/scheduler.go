@@ -71,6 +71,10 @@ func schedulerSyncFlagsFromRuntime(rootDir string) (syncAllFlags, error) {
 	if err != nil {
 		return syncAllFlags{}, err
 	}
+	flags.blueskyBookmarksLimit, err = schedulerInt(rootDir, "BLUESKY_BOOKMARKS_LIMIT")
+	if err != nil {
+		return syncAllFlags{}, err
+	}
 	flags.xLimit, err = schedulerInt(rootDir, "X_LIMIT")
 	if err != nil {
 		return syncAllFlags{}, err
@@ -132,6 +136,10 @@ func schedulerSyncFlagsFromRuntime(rootDir string) (syncAllFlags, error) {
 	if err != nil {
 		return syncAllFlags{}, err
 	}
+	flags.blueskyBookmarksTimeout, err = schedulerDuration(rootDir, "BLUESKY_BOOKMARKS_TIMEOUT")
+	if err != nil {
+		return syncAllFlags{}, err
+	}
 	flags.xMediaTimeout, err = schedulerDuration(rootDir, "X_MEDIA_DOWNLOAD_TIMEOUT")
 	if err != nil {
 		return syncAllFlags{}, err
@@ -155,6 +163,7 @@ func schedulerSyncFlagsFromRuntime(rootDir string) (syncAllFlags, error) {
 
 	flags.appleNotes = schedulerBool(rootDir, "APPLE_NOTES")
 	flags.safariTabs = schedulerBool(rootDir, "SAFARI_TABS")
+	flags.blueskyBookmarks = schedulerBool(rootDir, "BLUESKY_BOOKMARKS")
 	flags.archiveMedia = schedulerBool(rootDir, "ARCHIVE_MEDIA")
 	flags.okfExport = schedulerBool(rootDir, "OKF_EXPORT")
 	flags.force = schedulerBool(rootDir, "FORCE")
@@ -601,6 +610,11 @@ func logScheduledSyncStats(logOut io.Writer, stats syncjob.Stats) error {
 	}
 	if stats.XBookmarks != nil {
 		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: x_bookmarks created=%d updated=%d unchanged=%d\n", stats.XBookmarks.Stats.Created, stats.XBookmarks.Stats.Updated, stats.XBookmarks.Stats.Unchanged); err != nil {
+			return err
+		}
+	}
+	if stats.BlueskyBookmarks != nil {
+		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: bluesky_bookmarks created=%d updated=%d unchanged=%d skipped=%d\n", stats.BlueskyBookmarks.Stats.Created, stats.BlueskyBookmarks.Stats.Updated, stats.BlueskyBookmarks.Stats.Unchanged, stats.BlueskyBookmarks.Stats.Skipped); err != nil {
 			return err
 		}
 	}

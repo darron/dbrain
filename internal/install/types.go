@@ -63,6 +63,7 @@ type Selections struct {
 	ImportYouTubeWatchLater bool
 	ImportYouTubeLiked      bool
 	ImportFeeds             bool
+	ImportBlueskyBookmarks  bool
 	EnableAppleNotes        bool
 	EnableSafariTabs        bool
 	SafariTabsDevice        string

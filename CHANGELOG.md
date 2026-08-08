@@ -5,6 +5,18 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Reusable Bluesky bookmark import (2026-08-08)
+
+- **Profile-backed bookmark ingestion**: Added an opt-in `dbrain import bluesky
+  bookmarks` path that reads `BSKY_STORAGE` from a read-only Chrome Local
+  Storage LevelDB snapshot, follows the authenticated bookmark cursor chain,
+  refreshes access tokens only in memory, and materializes idempotent
+  `bsky_bookmark` items with rendered notes.
+- **Sync and installer integration**: Added the independent Bluesky stage,
+  shared and scheduled configuration, bounded smoke-run limits, dedicated API
+  timeout, progress/metrics output, and documentation. Blocked and not-found
+  post views remain explicit skip categories.
+
 ### Reachability-based semantic garbage collection (2026-08-05)
 
 - **Safe cache and catalog reclamation**: Added dry-run-first `dbrain semantic

@@ -9,21 +9,22 @@ import (
 )
 
 type stageOptions struct {
-	Common     commonStageOptions
-	XBookmarks xBookmarksStageOptions
-	X          xHydrationStageOptions
-	XMedia     xMediaStageOptions
-	XPhotoOCR  xPhotoOCRStageOptions
-	Links      linksStageOptions
-	GitHub     gitHubStageOptions
-	YouTube    youTubeStageOptions
-	AppleNotes appleNotesStageOptions
-	SafariTabs safariTabsStageOptions
-	Feeds      feedsStageOptions
-	Sources    sourcesStageOptions
-	Archive    archiveStageOptions
-	Categorize categorizeStageOptions
-	OKFExport  okfExportStageOptions
+	Common           commonStageOptions
+	XBookmarks       xBookmarksStageOptions
+	BlueskyBookmarks blueskyBookmarksStageOptions
+	X                xHydrationStageOptions
+	XMedia           xMediaStageOptions
+	XPhotoOCR        xPhotoOCRStageOptions
+	Links            linksStageOptions
+	GitHub           gitHubStageOptions
+	YouTube          youTubeStageOptions
+	AppleNotes       appleNotesStageOptions
+	SafariTabs       safariTabsStageOptions
+	Feeds            feedsStageOptions
+	Sources          sourcesStageOptions
+	Archive          archiveStageOptions
+	Categorize       categorizeStageOptions
+	OKFExport        okfExportStageOptions
 }
 
 type commonStageOptions struct {
@@ -41,6 +42,12 @@ type commonStageOptions struct {
 }
 
 type xBookmarksStageOptions struct {
+	Enabled bool
+	Limit   int
+	Timeout time.Duration
+}
+
+type blueskyBookmarksStageOptions struct {
 	Enabled bool
 	Limit   int
 	Timeout time.Duration
@@ -168,6 +175,11 @@ func newStageOptions(opts Options) stageOptions {
 			Enabled: opts.XBookmarksEnabled,
 			Limit:   opts.XBookmarksLimit,
 			Timeout: opts.XTimeout,
+		},
+		BlueskyBookmarks: blueskyBookmarksStageOptions{
+			Enabled: opts.BlueskyBookmarksEnabled,
+			Limit:   opts.BlueskyBookmarksLimit,
+			Timeout: opts.BlueskyBookmarksTimeout,
 		},
 		X: xHydrationStageOptions{
 			Enabled:      opts.XEnabled,

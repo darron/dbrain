@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/applenotes"
+	"github.com/darron/dbrain/internal/bskyapi"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/githubimport"
@@ -34,7 +35,7 @@ import (
 	"github.com/darron/dbrain/internal/youtubeimport"
 )
 
-func TestEmitSyncImportMetricsEmitsAllSevenContentFreeFamilies(t *testing.T) {
+func TestEmitSyncImportMetricsEmitsAllEightContentFreeFamilies(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "metrics.jsonl")
 	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage})
 	if err != nil {
@@ -42,22 +43,23 @@ func TestEmitSyncImportMetricsEmitsAllSevenContentFreeFamilies(t *testing.T) {
 	}
 	run := metrics.RunContext{RunID: "sync_imports", Command: "sync all", Invocation: "scheduler:interval", Sink: sink}
 	stats := Stats{
-		AppleNotes: &AppleNotesStage{Duration: time.Second, Stats: applenotes.Stats{NotesCreated: 1}},
-		SafariTabs: &SafariTabsStage{Duration: time.Second, Stats: safaritabs.Stats{TabsCreated: 1}},
-		XBookmarks: &XBookmarksStage{Duration: time.Second, Stats: xapi.BookmarkStats{Created: 1}},
-		GitHub:     &GitHubStage{Duration: time.Second, Stats: githubimport.Stats{ItemsCreated: 1}},
-		YouTube:    &YouTubeStage{Duration: time.Second, Stats: youtubeimport.Stats{WatchLater: youtubeimport.FeedStats{ItemsCreated: 1}, Liked: youtubeimport.FeedStats{ItemsUpdated: 1}}},
-		Feeds:      &FeedsStage{Duration: time.Second, Stats: feedimport.Stats{ItemsCreated: 1}},
+		AppleNotes:       &AppleNotesStage{Duration: time.Second, Stats: applenotes.Stats{NotesCreated: 1}},
+		SafariTabs:       &SafariTabsStage{Duration: time.Second, Stats: safaritabs.Stats{TabsCreated: 1}},
+		BlueskyBookmarks: &BlueskyBookmarksStage{Duration: time.Second, Stats: bskyapi.BookmarkStats{Created: 1}},
+		XBookmarks:       &XBookmarksStage{Duration: time.Second, Stats: xapi.BookmarkStats{Created: 1}},
+		GitHub:           &GitHubStage{Duration: time.Second, Stats: githubimport.Stats{ItemsCreated: 1}},
+		YouTube:          &YouTubeStage{Duration: time.Second, Stats: youtubeimport.Stats{WatchLater: youtubeimport.FeedStats{ItemsCreated: 1}, Liked: youtubeimport.FeedStats{ItemsUpdated: 1}}},
+		Feeds:            &FeedsStage{Duration: time.Second, Stats: feedimport.Stats{ItemsCreated: 1}},
 	}
 	emitSyncImportMetrics(run, stats, nil)
 	if err := sink.Close(); err != nil {
 		t.Fatal(err)
 	}
 	events := readSyncMetricEvents(t, path)
-	if len(events) != 7 {
-		t.Fatalf("events = %d, want 7", len(events))
+	if len(events) != 8 {
+		t.Fatalf("events = %d, want 8", len(events))
 	}
-	want := []string{"apple_notes", "safari_tabs", "x_bookmarks", "github_stars", "youtube_watch_later", "youtube_liked", "feeds"}
+	want := []string{"apple_notes", "safari_tabs", "bluesky_bookmarks", "x_bookmarks", "github_stars", "youtube_watch_later", "youtube_liked", "feeds"}
 	for i, event := range events {
 		if event["event"] != "sync.import.completed" || event["source"] != want[i] {
 			t.Fatalf("event[%d] = %#v", i, event)

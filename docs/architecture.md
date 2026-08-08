@@ -156,8 +156,8 @@ shape used by CLI/tests.
 The ordinary sync flow is:
 
 1. Import local/user signals such as Apple Notes and Safari tabs when enabled.
-2. Import X bookmarks, hydrate X posts, and run bounded quoted-post follow-up
-   passes.
+2. Import Bluesky bookmarks when explicitly enabled, then import X bookmarks,
+   hydrate X posts, and run bounded quoted-post follow-up passes.
 3. Discover links from newly changed items and queue/enrich sources.
 4. Transcribe X media and OCR X photos.
 5. Import GitHub stars and YouTube feed entries.

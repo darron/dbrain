@@ -80,7 +80,7 @@ func NewRootCommand() *cobra.Command {
 		Short: "Import source data into the brain",
 		RunE:  helpCommand,
 	}
-	importCmd.AddCommand(newImportXBookmarksCommand(opts), newImportGitHubCommand(opts), newImportYouTubeCommand(opts), newImportAppleNotesCommand(opts), newImportSafariTabsCommand(opts))
+	importCmd.AddCommand(newImportXBookmarksCommand(opts), newImportGitHubCommand(opts), newImportYouTubeCommand(opts), newImportAppleNotesCommand(opts), newImportSafariTabsCommand(opts), newImportBlueskyCommand(opts))
 
 	extractCmd := &cobra.Command{
 		Use:   "extract",

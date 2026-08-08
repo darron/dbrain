@@ -31,6 +31,7 @@ func parseKnownStage(stage string) (syncStageID, bool) {
 	switch stageID {
 	case syncStageAppleNotes,
 		syncStageSafariTabs,
+		syncStageBlueskyBookmarks,
 		syncStageXFrontier,
 		syncStageXMedia,
 		syncStageXPhotoOCR,

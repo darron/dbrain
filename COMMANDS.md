@@ -43,6 +43,7 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain import apple-notes`
 - `dbrain import apple-notes probe`
 - `dbrain import apple-notes snapshot --dir <path>`
+- `dbrain import bluesky bookmarks`
 - `dbrain import github stars`
 - `dbrain import safari-tabs`
 - `dbrain import safari-tabs devices`
@@ -421,15 +422,17 @@ and Ollama pulls/creates stream their native command output.
 
 Interactive install begins with an explicit source checklist for X bookmarks,
 GitHub stars, YouTube Watch Later, liked YouTube videos, subscribed feeds,
-Apple Notes, and Safari tabs. All choices begin unchecked on a fresh install.
+Bluesky bookmarks, Apple Notes, and Safari tabs. All choices begin unchecked on
+a fresh install.
 The resulting positive selections are written under `sync_all.imports` and are
 shared by manual and scheduled `sync all` runs. Selecting X enables its whole
 family of bookmark import, hydration, media transcription, and photo OCR;
 leaving X unchecked prevents all four stages. Re-running install without
 `--force` merges these managed selections into the existing YAML while
-preserving unrelated config. When X or either YouTube list is selected, install
-also asks for the shared cookie browser and optional profile written to
-`sync_all.browser` and `sync_all.profile`.
+preserving unrelated config. When X, either YouTube list, or Bluesky bookmarks
+is selected, install also asks for the shared browser and optional profile
+written to `sync_all.browser` and `sync_all.profile`. X and YouTube read
+cookies; Bluesky reads its session from Chrome Local Storage.
 
 When the Ollama CLI is detected, plain `dbrain install` uses the local dbrain
 Ollama profile by default: it writes the embedded Modelfile, pulls the public
@@ -490,6 +493,23 @@ X cookies. Chrome/Chromium is the best-tested path.
 dbrain import x-bookmarks --limit 25
 ```
 
+### `dbrain import bluesky bookmarks`
+
+Imports Bluesky bookmarks through the official bookmark XRPC endpoint. The
+importer reads the signed-in session from the selected Chrome profile's
+`Local Storage/leveldb` `BSKY_STORAGE` entry using a read-only bounded snapshot;
+it does not read or write browser cookies and never writes refreshed tokens back
+to Chrome. It follows the complete cursor chain, prefers the session PDS URL,
+refreshes an expired access token in memory at most once, and upserts bookmarks
+as `bsky_bookmark` items with stable `at://` identities. Blocked and not-found
+post views are reported as skipped rather than failing the run. Re-running the
+command is idempotent.
+
+```sh
+dbrain import bluesky bookmarks --profile Default --limit 25
+dbrain import bluesky bookmarks --profile Default --json
+```
+
 ### `dbrain import apple-notes`
 
 Imports Apple Notes directly from the local Notes SQLite store through a
@@ -548,7 +568,8 @@ dbrain import safari-tabs --device phone --limit 100
 ### `dbrain sync all`
 
 Runs the regular incremental refresh pipeline in one command: optional Apple
-Notes import, optional Safari tabs import, direct X bookmark import, X
+Notes import, optional Safari tabs import, optional Bluesky bookmark import,
+direct X bookmark import, X
 hydration, X media audio transcription, X photo OCR, link
 discovery/enrichment, GitHub stars import, YouTube, RSS/Atom/JSON Feed
 import, and an optional source-backlog worker batch. It then categorizes
@@ -569,8 +590,9 @@ The durable `sync_all.imports` map controls which source importers both manual
 and scheduled runs may contact. Existing configs without this map retain the
 legacy defaults: X, GitHub stars, both YouTube lists, and feeds are enabled;
 Apple Notes and Safari tabs continue to follow their existing `*.enabled`
-settings. Environment variables named `DBRAIN_SYNC_ALL_IMPORT_*` override the
-map, and explicit CLI flags remain one-run overrides. Scheduler-specific
+settings, and Bluesky bookmarks are disabled by default. Environment variables
+named `DBRAIN_SYNC_ALL_IMPORT_*` override the map, and explicit CLI flags remain
+one-run overrides. Scheduler-specific
 `skip_*` settings are applied afterward as scheduled-run-only restrictions.
 
 X hydration uses `--x-limit`. X media transcription and X photo OCR can be
@@ -595,6 +617,7 @@ the stage or `--feed-limit` to cap checks in one run.
 dbrain sync all --length short --timeout 5m
 dbrain sync all --apple-notes --length short --timeout 5m
 dbrain sync all --safari-tabs --safari-tabs-device phone --length short --timeout 5m
+dbrain sync all --bluesky-bookmarks --bluesky-bookmarks-limit 25 --bluesky-bookmarks-timeout 30s --length short --timeout 5m
 dbrain sync all --skip-categorize --length short --timeout 5m
 dbrain sync all --okf-export --length short --timeout 5m
 dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m

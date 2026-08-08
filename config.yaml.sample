@@ -133,7 +133,7 @@ feeds:
   allow_private_network: false # DBRAIN_FEEDS_ALLOW_PRIVATE_NETWORK; enable only for local feed testing
 
 sync_all:
-  browser: "chrome" # DBRAIN_SYNC_ALL_BROWSER; shared browser for cookie-backed X and YouTube imports
+  browser: "chrome" # DBRAIN_SYNC_ALL_BROWSER; shared browser for X, YouTube, and Bluesky profile-backed imports
   profile: "" # DBRAIN_SYNC_ALL_PROFILE; optional shared browser profile
   semantic_gc: false # DBRAIN_SYNC_ALL_SEMANTIC_GC; apply non-fatal semantic cleanup after a completed refresh
   imports:
@@ -144,6 +144,7 @@ sync_all:
     feeds: true # DBRAIN_SYNC_ALL_IMPORT_FEEDS
     apple_notes: false # DBRAIN_SYNC_ALL_IMPORT_APPLE_NOTES; falls back to apple_notes.enabled when omitted
     safari_tabs: false # DBRAIN_SYNC_ALL_IMPORT_SAFARI_TABS; falls back to safari_tabs.enabled when omitted
+    bluesky_bookmarks: false # DBRAIN_SYNC_ALL_IMPORT_BLUESKY_BOOKMARKS; opt-in Chrome profile-backed bookmark import
 
 apple_notes:
   enabled: false # DBRAIN_APPLE_NOTES_ENABLED; opt into sync all
@@ -173,7 +174,10 @@ scheduler:
     interval: "1h" # DBRAIN_SCHEDULER_SYNC_ALL_INTERVAL
     run_on_start: false # DBRAIN_SCHEDULER_SYNC_ALL_RUN_ON_START
     jitter: "" # DBRAIN_SCHEDULER_SYNC_ALL_JITTER; optional, for example 5m
+    bluesky_bookmarks: false # DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS
     x_bookmarks_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_BOOKMARKS_LIMIT
+    bluesky_bookmarks_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS_LIMIT
+    bluesky_bookmarks_timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS_TIMEOUT; 0 uses the 30s importer default
     x_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_LIMIT
     x_media_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_MEDIA_LIMIT
     x_photo_ocr_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_PHOTO_OCR_LIMIT
