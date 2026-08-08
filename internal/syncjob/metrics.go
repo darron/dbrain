@@ -232,7 +232,17 @@ func emitSyncImportStageMetric(run metrics.RunContext, opts stageOptions, stage 
 	case syncStageBlueskyBookmarks:
 		if value := stats.BlueskyBookmarks; value != nil {
 			s := value.Stats
-			emit("bluesky_bookmarks", value.Duration, importCounts(s.Created, s.Updated, s.Unchanged, s.Skipped, 0, s.SkippedBlocked, 0), false)
+			counts := importCounts(s.Created, s.Updated, s.Unchanged, s.Skipped, 0, s.SkippedBlocked, 0)
+			counts["media_discovered"] = s.MediaDiscovered
+			counts["media_linked"] = s.MediaLinked
+			counts["media_unavailable"] = s.MediaUnavailable
+			counts["media_downloaded"] = s.MediaDownloaded
+			counts["media_gone"] = s.MediaGone
+			// The compact import event intentionally avoids the reserved
+			// "error" field name; full stage metrics retain media_errors.
+			counts["media_failures"] = s.MediaErrors
+			counts["media_blocked"] = s.MediaBlocked
+			emit("bluesky_bookmarks", value.Duration, counts, s.MediaErrors > 0)
 		} else if opts.BlueskyBookmarks.Enabled {
 			emit("bluesky_bookmarks", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
 		}

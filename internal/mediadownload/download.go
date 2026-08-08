@@ -1,6 +1,8 @@
 package mediadownload
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -26,7 +28,7 @@ type progressOptions struct {
 	Bytes    int64
 }
 
-func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, ref model.ItemMediaRef, progress progressOptions) (model.MediaDownloadResult, error) {
+func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, ref model.ItemMediaRef, namespace string, progress progressOptions) (model.MediaDownloadResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ref.RemoteURL, nil)
 	if err != nil {
 		return model.MediaDownloadResult{}, fmt.Errorf("create media request %q: %w", ref.RemoteURL, err)
@@ -73,6 +75,26 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 			Error:  "media request returned HTML instead of media bytes",
 		}, nil
 	}
+	bufferedBody := bufio.NewReader(resp.Body)
+	playlistHeader, _ := bufferedBody.Peek(512)
+	if isHLSPlaylist(mediaType, ref.RemoteURL, playlistHeader) {
+		return model.MediaDownloadResult{
+			Status: model.MediaDownloadStatusError,
+			Error:  "media request returned an HLS playlist instead of media bytes",
+		}, nil
+	}
+	if mediaType == "" || mediaType == "application/octet-stream" {
+		detected := http.DetectContentType(playlistHeader)
+		if detected != "application/octet-stream" {
+			mediaType = detected
+		} else if ref.MediaType == "video" {
+			// Bluesky getBlob URLs have no extension and some PDSes omit the
+			// content type. Bluesky video blobs are MP4, so retain a truthful
+			// extension for the existing ffprobe/transcription path.
+			mediaType = "video/mp4"
+		}
+	}
+	resp.Body = io.NopCloser(bufferedBody)
 
 	tmpDir := filepath.Join(cfg.MediaDir, ".tmp")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
@@ -114,7 +136,7 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 
 	sum := hex.EncodeToString(hasher.Sum(nil))
 	ext := mediaExtension(mediaType, ref.RemoteURL)
-	relPath := filepath.ToSlash(filepath.Join("media", "x", normalizedMediaType(ref.MediaType), sum[:2], sum+ext))
+	relPath := filepath.ToSlash(filepath.Join("media", namespace, normalizedMediaType(ref.MediaType), sum[:2], sum+ext))
 	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return model.MediaDownloadResult{}, fmt.Errorf("create media target dir: %w", err)
@@ -142,6 +164,24 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 		Status:       model.MediaDownloadStatusDownloaded,
 		DownloadedAt: time.Now().UTC(),
 	}, nil
+}
+
+func normalizedMediaNamespace(value string) string {
+	if strings.TrimSpace(strings.ToLower(value)) == "bsky" {
+		return "bsky"
+	}
+	return "x"
+}
+
+func isHLSPlaylist(mediaType, rawURL string, prefix []byte) bool {
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if mediaType == "application/vnd.apple.mpegurl" || mediaType == "application/x-mpegurl" || mediaType == "audio/mpegurl" {
+		return true
+	}
+	if parsed, err := neturl.Parse(rawURL); err == nil && strings.EqualFold(filepath.Ext(parsed.Path), ".m3u8") {
+		return true
+	}
+	return bytes.HasPrefix(bytes.TrimSpace(prefix), []byte("#EXTM3U"))
 }
 
 func normalizedMediaType(value string) string {

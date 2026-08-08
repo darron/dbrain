@@ -67,9 +67,9 @@ func auditLocalIdentifierQuery(checkID string, now time.Time) (string, []any, bo
 		return sourceSelect + where + sourceOrderLimit, args, true
 	case "pipeline.transcription.partition", "pipeline.transcription.pending_age":
 		where, args := xMediaTranscriptionPendingWhere(now)
-		return itemSelect + xItemSourceTypeWhere + ` AND external_id != '' AND ` + where + itemOrderLimit, args, true
+		return itemSelect + mediaEnrichmentItemSourceTypeWhere + ` AND external_id != '' AND ` + where + itemOrderLimit, args, true
 	case "pipeline.ocr.partition", "pipeline.ocr.pending_age":
-		return itemSelect + xItemSourceTypeWhere + ` AND external_id != '' AND ` + xPhotoOCRPendingWhere() + itemOrderLimit, nil, true
+		return itemSelect + mediaEnrichmentItemSourceTypeWhere + ` AND external_id != '' AND ` + xPhotoOCRPendingWhere() + itemOrderLimit, nil, true
 	case "durability.media_local_coverage":
 		return `SELECT a.id, COALESCE(MIN(i.source_key), '')
 			FROM media_assets a

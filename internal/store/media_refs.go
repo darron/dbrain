@@ -202,11 +202,11 @@ func (s *Store) listItemMediaRefsTx(ctx context.Context, tx *sql.Tx, itemID int6
 	return refs, nil
 }
 
-func desiredItemMediaRefs(itemID int64, media []xHydrationMedia) []model.ItemMediaRef {
+func desiredItemMediaRefs(itemID int64, media []model.MediaCandidate) []model.ItemMediaRef {
 	seen := make(map[string]struct{}, len(media))
 	refs := make([]model.ItemMediaRef, 0, len(media))
 	for _, candidate := range media {
-		url := strings.TrimSpace(candidate.URL)
+		url := strings.TrimSpace(candidate.RemoteURL)
 		if url == "" {
 			continue
 		}
@@ -219,7 +219,7 @@ func desiredItemMediaRefs(itemID int64, media []xHydrationMedia) []model.ItemMed
 			Ordinal:     len(refs),
 			ExpandedURL: strings.TrimSpace(candidate.ExpandedURL),
 			RemoteURL:   url,
-			MediaType:   strings.TrimSpace(candidate.Type),
+			MediaType:   strings.TrimSpace(candidate.MediaType),
 			Width:       candidate.Width,
 			Height:      candidate.Height,
 		})

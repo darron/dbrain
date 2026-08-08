@@ -1,6 +1,7 @@
 package bskyapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,10 +42,11 @@ type postAuthor struct {
 }
 
 type postRecord struct {
-	Text      string      `json:"text"`
-	CreatedAt string      `json:"createdAt"`
-	Langs     []string    `json:"langs"`
-	Facets    []postFacet `json:"facets"`
+	Text      string          `json:"text"`
+	CreatedAt string          `json:"createdAt"`
+	Langs     []string        `json:"langs"`
+	Facets    []postFacet     `json:"facets"`
+	Embed     json.RawMessage `json:"embed,omitempty"`
 }
 
 type postFacet struct {
@@ -56,12 +58,6 @@ type postFacetFeature struct {
 	URI  string `json:"uri"`
 }
 
-type externalEmbedView struct {
-	External struct {
-		URI string `json:"uri"`
-	} `json:"external"`
-}
-
 type sanitizedBookmarkView struct {
 	CreatedAt string          `json:"createdAt,omitempty"`
 	Subject   bookmarkSubject `json:"subject"`
@@ -69,6 +65,34 @@ type sanitizedBookmarkView struct {
 }
 
 func bookmarkViewToItem(view bookmarkView, now time.Time) (model.Item, error) {
+	projection, err := bookmarkViewToProjection(context.Background(), view, now, nil)
+	if err != nil {
+		return model.Item{}, err
+	}
+	return projection.Item, nil
+}
+
+func bookmarkViewToProjection(ctx context.Context, view bookmarkView, now time.Time, resolver videoBlobResolver) (bookmarkProjection, error) {
+	item, err := bookmarkViewToItemBase(view, now)
+	if err != nil {
+		return bookmarkProjection{}, err
+	}
+	var post postView
+	if err := json.Unmarshal(view.Item, &post); err != nil {
+		return bookmarkProjection{}, fmt.Errorf("decode Bluesky post %s for media: %w", view.Subject.URI, err)
+	}
+	var record postRecord
+	if err := json.Unmarshal(post.Record, &record); err != nil {
+		return bookmarkProjection{}, fmt.Errorf("decode Bluesky post record %s for media: %w", view.Subject.URI, err)
+	}
+	media := decodeBookmarkMedia(ctx, post.Author.DID, item.CanonicalURL, record.Embed, post.Embed, resolver)
+	if strings.TrimSpace(record.Text) == "" && !media.supported {
+		return bookmarkProjection{}, fmt.Errorf("%w: bookmark has no text or supported embed", errUnsupportedBookmark)
+	}
+	return bookmarkProjection{Item: item, MediaCandidates: media.candidates, MediaKnown: media.known, MediaUnavailable: media.unavailable}, nil
+}
+
+func bookmarkViewToItemBase(view bookmarkView, now time.Time) (model.Item, error) {
 	did, rkey, err := parsePostURI(view.Subject.URI)
 	if err != nil {
 		return model.Item{}, err
@@ -109,10 +133,6 @@ func bookmarkViewToItem(view bookmarkView, now time.Time) (model.Item, error) {
 			return model.Item{}, fmt.Errorf("sanitize Bluesky post embed %s: %w", view.Subject.URI, err)
 		}
 	}
-	if strings.TrimSpace(record.Text) == "" {
-		return model.Item{}, fmt.Errorf("%w: post has no text record", errUnsupportedBookmark)
-	}
-
 	savedAt := normalizeTimestamp(view.CreatedAt)
 	publishedAt := normalizeTimestamp(record.CreatedAt)
 	syncedAt := normalizeTimestamp(post.IndexedAt)
@@ -145,13 +165,14 @@ func bookmarkViewToItem(view bookmarkView, now time.Time) (model.Item, error) {
 	if authorName == "" {
 		authorName = authorHandle
 	}
+	title := deriveBookmarkTitle(record.Text, record.Embed, post.Embed, authorHandle, did)
 	canonicalURL := fmt.Sprintf("https://bsky.app/profile/%s/post/%s", url.PathEscape(authorHandleOrDID(authorHandle, did)), url.PathEscape(rkey))
 	item := model.Item{
 		SourceKey:     "bsky:" + strings.TrimSpace(view.Subject.URI),
 		SourceType:    "bsky_bookmark",
 		ExternalID:    strings.TrimSpace(view.Subject.URI),
 		CanonicalURL:  canonicalURL,
-		Title:         deriveTitle(record.Text),
+		Title:         title,
 		AuthorHandle:  authorHandle,
 		AuthorName:    authorName,
 		PublishedAt:   publishedAt,
@@ -211,22 +232,9 @@ func collectPostLinks(record postRecord, embed json.RawMessage) []string {
 		seen[raw] = struct{}{}
 		links = append(links, raw)
 	}
-	for _, raw := range httpURLPattern.FindAllString(record.Text, -1) {
-		add(raw)
-	}
-	for _, facet := range record.Facets {
-		for _, feature := range facet.Features {
-			if strings.HasSuffix(feature.Type, "#link") {
-				add(feature.URI)
-			}
-		}
-	}
-	if len(embed) > 0 && string(embed) != "null" {
-		var external externalEmbedView
-		if err := json.Unmarshal(embed, &external); err == nil {
-			add(external.External.URI)
-		}
-	}
+	collectRecordLinks(record, add)
+	collectEmbeddedLinks(record.Embed, add)
+	collectEmbeddedLinks(embed, add)
 	return links
 }
 

@@ -115,6 +115,102 @@ func TestSaveXHydrationPersistsMediaAssetsAndLinks(t *testing.T) {
 	}
 }
 
+func TestSaveItemMediaCandidatesReplacesGenericMediaAndInvalidatesDerivedState(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 8, 3, 4, 5, 0, time.UTC)
+	item, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "bsky:at://did:plc:one/app.bsky.feed.post/3lq7media",
+		SourceType:   "bsky_bookmark",
+		ExternalID:   "at://did:plc:one/app.bsky.feed.post/3lq7media",
+		CanonicalURL: "https://bsky.app/profile/alice.example/post/3lq7media",
+		Title:        "Media post",
+		ContentHash:  "item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/bsky/2026/3lq7media.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if _, err := st.SaveItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{{
+		RemoteURL: "https://cdn.example/old.jpg", MediaType: "photo", ExpandedURL: "https://bsky.app/old", Width: 640, Height: 480,
+	}}); err != nil {
+		t.Fatalf("seed media candidates: %v", err)
+	}
+	if _, err := st.SaveItemSummary(ctx, item.ItemID, model.SummaryResult{Text: "old summary", Status: "ok", FetchedAt: now}, "summary-hash"); err != nil {
+		t.Fatalf("SaveItemSummary: %v", err)
+	}
+	if _, err := st.SaveItemOCR(ctx, item.ItemID, model.OCRResult{Text: "old OCR", Status: "ok", FetchedAt: now}, "ocr-hash"); err != nil {
+		t.Fatalf("SaveItemOCR: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET article_title = ?, article_text = ? WHERE id = ?`, model.XMediaTranscriptArticleTitle, "old transcript", item.ItemID); err != nil {
+		t.Fatalf("seed transcript article: %v", err)
+	}
+	if err := st.SaveXMediaTranscriptionState(ctx, item.ItemID, model.XMediaTranscriptStatusOK, "", now); err != nil {
+		t.Fatalf("SaveXMediaTranscriptionState: %v", err)
+	}
+
+	changed, err := st.SaveItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{{
+		RemoteURL: "https://cdn.example/new.jpg", MediaType: "photo", ExpandedURL: "https://bsky.app/new", Width: 1200, Height: 800,
+	}})
+	if err != nil {
+		t.Fatalf("replace media candidates: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected media replacement to report changed")
+	}
+	refs, err := st.ListItemMediaRefs(ctx, item.ItemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 || refs[0].RemoteURL != "https://cdn.example/new.jpg" {
+		t.Fatalf("media refs = %#v", refs)
+	}
+	got, err := st.GetItem(ctx, "bsky:at://did:plc:one/app.bsky.feed.post/3lq7media")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if got.SummaryText != "" || got.OCRText != "" || got.XMediaTranscriptStatus != "" || got.ArticleText != "" {
+		t.Fatalf("derived state was not invalidated: %+v", got)
+	}
+	for _, role := range []string{model.ItemEnrichmentRoleSummary, model.ItemEnrichmentRoleOCR, model.ItemEnrichmentRoleXMediaTranscript} {
+		if _, err := st.GetItemEnrichment(ctx, item.ItemID, role); err == nil {
+			t.Fatalf("enrichment role %q still exists", role)
+		}
+	}
+
+	changed, err = st.SaveItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{{
+		RemoteURL: "https://cdn.example/new.jpg", MediaType: "photo", ExpandedURL: "https://bsky.app/new", Width: 1200, Height: 800,
+	}})
+	if err != nil {
+		t.Fatalf("repeat media candidates: %v", err)
+	}
+	if changed {
+		t.Fatal("identical media candidates should be idempotent")
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET article_title = 'Original article', article_text = 'Original body' WHERE id = ?`, item.ItemID); err != nil {
+		t.Fatalf("seed unrelated article: %v", err)
+	}
+	if _, err := st.SaveItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{{
+		RemoteURL: "https://cdn.example/final.jpg", MediaType: "photo", ExpandedURL: "https://bsky.app/final", Width: 1200, Height: 800,
+	}}); err != nil {
+		t.Fatalf("replace media with unrelated article: %v", err)
+	}
+	got, err = st.GetItem(ctx, "bsky:at://did:plc:one/app.bsky.feed.post/3lq7media")
+	if err != nil {
+		t.Fatalf("GetItem after unrelated article replacement: %v", err)
+	}
+	if got.ArticleTitle != "Original article" || got.ArticleText != "Original body" {
+		t.Fatalf("unrelated article was cleared: title=%q text=%q", got.ArticleTitle, got.ArticleText)
+	}
+}
+
 func TestSaveXHydrationPersistsSnapshotLinks(t *testing.T) {
 	t.Parallel()
 

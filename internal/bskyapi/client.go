@@ -25,10 +25,11 @@ func (e bookmarkHTTPError) Error() string {
 }
 
 type bookmarkClient struct {
-	baseURL    *url.URL
-	httpClient *http.Client
-	accessJWT  string
-	refreshJWT string
+	baseURL       *url.URL
+	httpClient    *http.Client
+	pdsHTTPClient *http.Client
+	accessJWT     string
+	refreshJWT    string
 }
 
 type bookmarkPage struct {
@@ -72,10 +73,11 @@ func newBookmarkClient(credentials sessionCredentials, httpClient *http.Client) 
 		httpClient = http.DefaultClient
 	}
 	return &bookmarkClient{
-		baseURL:    parsed,
-		httpClient: httpClient,
-		accessJWT:  strings.TrimSpace(credentials.AccessJWT),
-		refreshJWT: strings.TrimSpace(credentials.RefreshJWT),
+		baseURL:       parsed,
+		httpClient:    httpClient,
+		pdsHTTPClient: httpClient,
+		accessJWT:     strings.TrimSpace(credentials.AccessJWT),
+		refreshJWT:    strings.TrimSpace(credentials.RefreshJWT),
 	}, nil
 }
 

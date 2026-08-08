@@ -352,7 +352,7 @@ func TestBuildFindsTranscriptBackedMediaEvidence(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert generic item: %v", err)
 	}
-	upsert, err := st.UpsertItem(ctx, model.Item{
+	recording := model.Item{
 		SourceKey:    "x:test-recording-red-balloon",
 		SourceType:   "x_bookmark",
 		ExternalID:   "test-recording-red-balloon",
@@ -361,8 +361,6 @@ func TestBuildFindsTranscriptBackedMediaEvidence(t *testing.T) {
 		AuthorHandle: "darron",
 		AuthorName:   "Darron",
 		Text:         "Short clip.",
-		ArticleTitle: model.XMediaTranscriptArticleTitle,
-		ArticleText:  "Transcript:\n\nDarron is saying the red balloon promise out loud.",
 		SummaryText:  "A short saved video clip.",
 		ContentHash:  "test-recording-red-balloon-hash",
 		NotePath:     "items/x/2026/test-recording-red-balloon.md",
@@ -370,7 +368,8 @@ func TestBuildFindsTranscriptBackedMediaEvidence(t *testing.T) {
 		ImportedAt:   now,
 		UpdatedAt:    now,
 		LastSeenAt:   now,
-	})
+	}
+	upsert, err := st.UpsertItem(ctx, recording)
 	if err != nil {
 		t.Fatalf("upsert item: %v", err)
 	}
@@ -390,6 +389,13 @@ func TestBuildFindsTranscriptBackedMediaEvidence(t *testing.T) {
 		}`,
 	}); err != nil {
 		t.Fatalf("save x hydration: %v", err)
+	}
+	recording.ArticleTitle = model.XMediaTranscriptArticleTitle
+	recording.ArticleText = "Transcript:\n\nDarron is saying the red balloon promise out loud."
+	recording.ContentHash = "test-recording-red-balloon-transcript-hash"
+	recording.UpdatedAt = now
+	if _, err := st.UpsertItem(ctx, recording); err != nil {
+		t.Fatalf("save transcript text: %v", err)
 	}
 	if err := st.SaveXMediaTranscriptionState(ctx, upsert.ItemID, model.XMediaTranscriptStatusOK, "", now); err != nil {
 		t.Fatalf("save transcript state: %v", err)

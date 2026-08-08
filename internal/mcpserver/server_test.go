@@ -2033,28 +2033,20 @@ func TestServerGetToolIncludesMediaTranscriptAndOCRSections(t *testing.T) {
 
 	ctx := context.Background()
 	now := time.Now().UTC()
-	upsert, err := st.UpsertItem(ctx, model.Item{
-		SourceKey:              "x:test-mcp-get-media-enrichments",
-		SourceType:             "x_bookmark",
-		ExternalID:             "test-mcp-get-media-enrichments",
-		CanonicalURL:           "https://x.com/example/status/test-mcp-get-media-enrichments",
-		Title:                  "MCP Get Media Enrichments",
-		ArticleTitle:           "X Media Transcript",
-		ArticleText:            "raw video transcript evidence",
-		OCRText:                "raw image OCR evidence",
-		OCRStatus:              "ok",
-		OCRModel:               "test-vision",
-		OCRTool:                "test-ocr",
-		OCRAt:                  now,
-		XMediaTranscriptStatus: "ok",
-		XMediaTranscriptAt:     now,
-		ContentHash:            "mcp-get-media-enrichments-hash",
-		NotePath:               "items/x/2026/test-mcp-get-media-enrichments.md",
-		RawJSON:                `{}`,
-		ImportedAt:             now,
-		UpdatedAt:              now,
-		LastSeenAt:             now,
-	})
+	mediaItem := model.Item{
+		SourceKey:    "x:test-mcp-get-media-enrichments",
+		SourceType:   "x_bookmark",
+		ExternalID:   "test-mcp-get-media-enrichments",
+		CanonicalURL: "https://x.com/example/status/test-mcp-get-media-enrichments",
+		Title:        "MCP Get Media Enrichments",
+		ContentHash:  "mcp-get-media-enrichments-hash",
+		NotePath:     "items/x/2026/test-mcp-get-media-enrichments.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	}
+	upsert, err := st.UpsertItem(ctx, mediaItem)
 	if err != nil {
 		t.Fatalf("upsert item: %v", err)
 	}
@@ -2074,6 +2066,13 @@ func TestServerGetToolIncludesMediaTranscriptAndOCRSections(t *testing.T) {
 		}`,
 	}); err != nil {
 		t.Fatalf("save x hydration: %v", err)
+	}
+	mediaItem.ArticleTitle = model.XMediaTranscriptArticleTitle
+	mediaItem.ArticleText = "raw video transcript evidence"
+	mediaItem.ContentHash = "mcp-get-media-enrichments-transcript-hash"
+	mediaItem.UpdatedAt = now
+	if _, err := st.UpsertItem(ctx, mediaItem); err != nil {
+		t.Fatalf("save transcript text: %v", err)
 	}
 	if _, err := st.SaveItemOCR(ctx, upsert.ItemID, model.OCRResult{
 		Text:      "raw image OCR evidence",
