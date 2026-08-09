@@ -4840,6 +4840,19 @@ func TestSyncProgressUIFormatsStageLines(t *testing.T) {
 	}
 }
 
+func TestSyncProgressUIUsesSocialMediaWordingForSharedMediaEnrichment(t *testing.T) {
+	t.Parallel()
+
+	for stage, want := range map[string]string{
+		"transcribe x-media": "Transcribing social media",
+		"ocr x-photos":       "Running OCR on social media",
+	} {
+		if got := syncStageLabel(stage); !strings.Contains(got, want) {
+			t.Fatalf("syncStageLabel(%q) = %q, want wording containing %q", stage, got, want)
+		}
+	}
+}
+
 func TestSyncProgressUILogWriterPreservesDebugLines(t *testing.T) {
 	t.Parallel()
 

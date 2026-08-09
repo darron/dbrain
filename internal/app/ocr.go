@@ -31,7 +31,7 @@ func newOCRXPhotosCommand(root *rootOptions) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "x-photos",
-		Short: "OCR downloaded X photo media with Ollama/OpenRouter vision plus Tesseract fallback",
+		Short: "OCR downloaded social media photos with Ollama/OpenRouter vision plus Tesseract fallback",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfig(root.root, root.configFile)
@@ -81,9 +81,9 @@ func newOCRXPhotosCommand(root *rootOptions) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum X or Bluesky items to inspect for downloaded photo media")
+	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum social media items to inspect for downloaded photo media")
 	cmd.Flags().BoolVar(&force, "force", false, "Re-run OCR even if item OCR text already exists")
-	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of concurrent X or Bluesky photo OCR jobs to run")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of concurrent social media photo OCR jobs to run")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Per-image timeout for hosted OCR and local fallback")
 	cmd.Flags().StringVar(&model, "model", "", "OCR model override; supports ollama/<name> and openrouter/<provider>/<model>")
 	cmd.Flags().StringVar(&tesseractBinary, "tesseract-binary", "tesseract", "Tesseract binary for local OCR fallback")
