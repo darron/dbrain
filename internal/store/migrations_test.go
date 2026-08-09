@@ -276,7 +276,7 @@ func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotent
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 6 ||
+	if len(events) != 8 ||
 		events[0].Phase != MigrationStarted ||
 		events[1].Phase != MigrationApplied ||
 		events[0].Version != semanticRefreshRunsArchiveMigrationVersion ||
@@ -294,8 +294,14 @@ func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotent
 		events[4].Version != semanticSegmentedDirtyTriggerVersion ||
 		events[5].Version != semanticSegmentedDirtyTriggerVersion ||
 		events[4].Name != semanticSegmentedDirtyTriggerName ||
-		events[5].Name != semanticSegmentedDirtyTriggerName {
-		t.Fatalf("v27-v29 migration events=%+v", events)
+		events[5].Name != semanticSegmentedDirtyTriggerName ||
+		events[6].Phase != MigrationStarted ||
+		events[7].Phase != MigrationApplied ||
+		events[6].Version != mastodonSyncStateVersion ||
+		events[7].Version != mastodonSyncStateVersion ||
+		events[6].Name != mastodonSyncStateName ||
+		events[7].Name != mastodonSyncStateName {
+		t.Fatalf("v27-v30 migration events=%+v", events)
 	}
 	got, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a")
 	if err != nil || got == nil {

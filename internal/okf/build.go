@@ -271,6 +271,8 @@ func itemDescription(item model.Item) string {
 	switch strings.TrimSpace(item.SourceType) {
 	case "x_bookmark", "x":
 		return "Saved X item from " + firstNonEmpty(item.AuthorHandle, item.AuthorName, item.Title, "unknown author") + "."
+	case "mastodon_bookmark", "mastodon_quote", "mastodon_reblog":
+		return "Saved Mastodon item from " + firstNonEmpty(item.AuthorHandle, item.AuthorName, item.Title, "unknown author") + "."
 	case "apple_note", "apple-notes":
 		return "Imported Apple Note titled \"" + itemTitle(item) + "\"."
 	case "safari_tab", "safari-tabs":

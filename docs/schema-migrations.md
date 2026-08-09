@@ -56,6 +56,16 @@ Current migration history:
 | 18      | `retrieval_projection_dirty_trigger_provenance_repair` | Repair the migration 17 item/source dirty triggers so provenance-only `content_hash` recalculations do not dirty semantic projections. Existing projection-ledger parents receive one shared new pending revision, partial staging is cleared, and generations are made stale; authoritative evidence and derived chunks remain intact for normal reprojection. |
 | 19      | `retrieval_embedding_profile_definitions` | Persist each embedding profile's immutable provider, model, dimensions, projection, chunker, representation, and normalization definition. Backfill and validate existing rows, reject mixed provenance, replace full-profile invariant scans with primary-key profile/chunk checks, repair aggregate counters, and deactivate pre-migration generations whose complete revision/profile provenance cannot be proven. |
 | 20      | `retrieval_embedding_revision_provenance_repair` | Move legacy ready embeddings with an unproven revision or missing vector hash back to explicit `pending` work, clear their vector payload coherently, repair profile counters, and stale any affected generation. The ordinary embedding worker then regenerates a fully revisioned and hashed row. |
+| 21      | `retrieval_runtime_readiness_counters` | Persist and repair runtime retrieval readiness counters. |
+| 22      | `retrieval_segment_membership_v1` | Add retrieval segment membership state used by indexed vector segments. |
+| 23      | `retrieval_membership_l0_activation_v1` | Repair and activate retrieval membership L0 counters and tombstone state. |
+| 24      | `retrieval_occurrence_chunk_cleanup_index` | Add the retrieval occurrence cleanup index used when chunks are removed. |
+| 25      | `semantic_refresh_runs_v1` | Add resumable semantic refresh run state. |
+| 26      | `semantic_refresh_runs_v2_byte_limits` | Repair semantic refresh run state with bounded byte accounting. |
+| 27      | `semantic_refresh_runs_v25_compatibility_archive` | Preserve compatibility archive rows for the semantic refresh run schema. |
+| 28      | `retrieval_projection_staging_expected_purge_epoch` | Persist the expected purge epoch for staged retrieval projections. |
+| 29      | `retrieval_segmented_dirty_trigger_repair` | Repair segmented retrieval dirty triggers after the v29 projection mutation. |
+| 30      | `mastodon_sync_state_v1` | Add per-account, per-origin Mastodon bookmark synchronization state with opaque resumable cursors, explicit incremental partial-page mode, bounded diagnostics, and stamped table/index repair. |
 
 Version 1 is the adoption baseline, not a permanent "current schema" label.
 The current schema version is the highest registered migration version.

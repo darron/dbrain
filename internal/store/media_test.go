@@ -115,6 +115,107 @@ func TestSaveXHydrationPersistsMediaAssetsAndLinks(t *testing.T) {
 	}
 }
 
+func TestMediaAssetReusePreservesEstablishedFamilyAndDownloadState(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 9, 3, 4, 5, 0, time.UTC)
+	result, err := st.db.ExecContext(ctx, `
+		INSERT INTO media_assets (
+			remote_url, media_type, mime_type, byte_size, content_hash, download_status,
+			local_path, discovered_at, downloaded_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"https://cdn.example/shared", "photo", "image/jpeg", 123, "sha256:photo", "downloaded",
+		"media/mastodon/photo/ab/photo.jpg", now.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("insert media asset: %v", err)
+	}
+	assetID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("asset id: %v", err)
+	}
+	item, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "mastodon:shared-media",
+		SourceType:   "mastodon_bookmark",
+		ExternalID:   "shared-media",
+		CanonicalURL: "https://hachyderm.io/@alice/shared-media",
+		Title:        "shared media",
+		ContentHash:  "item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/mastodon/2026/shared-media.md",
+		RawJSON:      "{}",
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if _, err := st.SaveItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{{
+		RemoteURL:   "https://cdn.example/shared",
+		MediaType:   "audio",
+		ExpandedURL: "https://hachyderm.io/@alice/shared-media/media/1",
+	}}); err != nil {
+		t.Fatalf("SaveItemMediaCandidates: %v", err)
+	}
+
+	var mediaType, mimeType, status, localPath, contentHash string
+	var byteSize int64
+	if err := st.db.QueryRowContext(ctx, `SELECT media_type, mime_type, download_status, local_path, content_hash, byte_size FROM media_assets WHERE id = ?`, assetID).Scan(&mediaType, &mimeType, &status, &localPath, &contentHash, &byteSize); err != nil {
+		t.Fatalf("load reused media asset: %v", err)
+	}
+	if mediaType != "photo" || mimeType != "image/jpeg" || status != "downloaded" || localPath == "" || contentHash != "sha256:photo" || byteSize != 123 {
+		t.Fatalf("reused media asset was relabeled or reset: type=%q mime=%q status=%q path=%q hash=%q size=%d", mediaType, mimeType, status, localPath, contentHash, byteSize)
+	}
+}
+
+func TestMergeItemMediaCandidatesRetainsValidLinksFromIncompleteProjection(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 8, 3, 4, 5, 0, time.UTC)
+	item, err := st.UpsertItem(ctx, model.Item{
+		SourceKey:    "mastodon:incomplete-media",
+		SourceType:   "mastodon_bookmark",
+		ExternalID:   "incomplete-media",
+		CanonicalURL: "https://hachyderm.io/@alice/1",
+		Title:        "Mixed media",
+		ContentHash:  "item-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/mastodon/2026/incomplete-media.md",
+		RawJSON:      `{}`,
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if _, err := st.SaveItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{{
+		RemoteURL: "https://cdn.example/known.jpg", MediaType: "photo", ExpandedURL: "https://hachyderm.io/@alice/1/media/1", Width: 640, Height: 480,
+	}}); err != nil {
+		t.Fatalf("seed media candidates: %v", err)
+	}
+	changed, err := st.MergeItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{{
+		RemoteURL: "https://cdn.example/new.mp4", MediaType: "video", ExpandedURL: "https://hachyderm.io/@alice/1/media/2", Width: 1280, Height: 720,
+	}})
+	if err != nil {
+		t.Fatalf("merge media candidates: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected incomplete projection merge to add a link")
+	}
+	refs, err := st.ListItemMediaRefs(ctx, item.ItemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 2 || refs[0].RemoteURL != "https://cdn.example/known.jpg" || refs[1].RemoteURL != "https://cdn.example/new.mp4" {
+		t.Fatalf("merged refs = %#v", refs)
+	}
+}
+
 func TestSaveItemMediaCandidatesReplacesGenericMediaAndInvalidatesDerivedState(t *testing.T) {
 	t.Parallel()
 
@@ -1330,6 +1431,7 @@ func TestListMediaAssetsForArchiveRequiresTerminalCoverage(t *testing.T) {
 	photoPendingID := insertTestItem(t, st, "x:photo-pending", "", "", now)
 	videoReadyID := insertTestItem(t, st, "x:video-ready", "", "", now)
 	videoPendingID := insertTestItem(t, st, "x:video-pending", "", "", now)
+	audioReadyID := insertTestItem(t, st, "mastodon:audio-ready", "", "", now)
 
 	if _, err := st.db.ExecContext(ctx, `UPDATE items SET ocr_status = 'ok', ocr_text = 'photo text', ocr_at = ? WHERE id = ?`, now.Format(time.RFC3339), photoReadyID); err != nil {
 		t.Fatalf("seed ready photo ocr: %v", err)
@@ -1342,6 +1444,7 @@ func TestListMediaAssetsForArchiveRequiresTerminalCoverage(t *testing.T) {
 	insertDownloadedAssetLink(t, st, photoPendingID, "https://example.com/photo-pending.jpg", "photo", "media/x/photo/ab/photo-pending.jpg", now)
 	insertDownloadedAssetLink(t, st, videoReadyID, "https://example.com/video-ready.mp4", "video", "media/x/video/ab/video-ready.mp4", now)
 	insertDownloadedAssetLink(t, st, videoPendingID, "https://example.com/video-pending.mp4", "video", "media/x/video/ab/video-pending.mp4", now)
+	insertDownloadedAssetLink(t, st, audioReadyID, "https://example.com/audio-ready.mp3", "audio", "media/mastodon/audio/ab/audio-ready.mp3", now)
 
 	assets, err := st.ListMediaAssetsForArchive(ctx, 10, false)
 	if err != nil {
@@ -1353,6 +1456,7 @@ func TestListMediaAssetsForArchiveRequiresTerminalCoverage(t *testing.T) {
 	}
 	slices.Sort(got)
 	want := []string{
+		"https://example.com/audio-ready.mp3",
 		"https://example.com/photo-ready.jpg",
 		"https://example.com/video-ready.mp4",
 	}

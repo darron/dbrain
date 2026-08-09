@@ -11,6 +11,7 @@ const (
 	syncImportAppleNotesKey        = "DBRAIN_SYNC_ALL_IMPORT_APPLE_NOTES"
 	syncImportSafariTabsKey        = "DBRAIN_SYNC_ALL_IMPORT_SAFARI_TABS"
 	syncImportBlueskyBookmarksKey  = "DBRAIN_SYNC_ALL_IMPORT_BLUESKY_BOOKMARKS"
+	syncImportMastodonBookmarksKey = "DBRAIN_SYNC_ALL_IMPORT_MASTODON_BOOKMARKS"
 )
 
 type syncAllImportPolicy struct {
@@ -22,24 +23,26 @@ type syncAllImportPolicy struct {
 	AppleNotes        bool
 	SafariTabs        bool
 	BlueskyBookmarks  bool
+	MastodonBookmarks bool
 }
 
 type syncAllFlagOverrides struct {
-	skipXBookmarks   bool
-	skipX            bool
-	skipXMedia       bool
-	skipXPhotoOCR    bool
-	skipGitHub       bool
-	skipYouTube      bool
-	skipFeeds        bool
-	skipCategorize   bool
-	watchLater       bool
-	liked            bool
-	appleNotes       bool
-	safariTabs       bool
-	blueskyBookmarks bool
-	browser          bool
-	profile          bool
+	skipXBookmarks    bool
+	skipX             bool
+	skipXMedia        bool
+	skipXPhotoOCR     bool
+	skipGitHub        bool
+	skipYouTube       bool
+	skipFeeds         bool
+	skipCategorize    bool
+	watchLater        bool
+	liked             bool
+	appleNotes        bool
+	safariTabs        bool
+	blueskyBookmarks  bool
+	mastodonBookmarks bool
+	browser           bool
+	profile           bool
 }
 
 func defaultSyncAllImportPolicy(rootDir string) syncAllImportPolicy {
@@ -52,6 +55,7 @@ func defaultSyncAllImportPolicy(rootDir string) syncAllImportPolicy {
 		AppleNotes:        runtimeenv.FirstBool(rootDir, "DBRAIN_APPLE_NOTES_ENABLED"),
 		SafariTabs:        runtimeenv.FirstBool(rootDir, "DBRAIN_SAFARI_TABS_ENABLED"),
 		BlueskyBookmarks:  false,
+		MastodonBookmarks: false,
 	}
 }
 
@@ -65,6 +69,7 @@ func syncAllImportPolicyFromRuntime(rootDir string) syncAllImportPolicy {
 	applySyncImportBool(rootDir, syncImportAppleNotesKey, &policy.AppleNotes)
 	applySyncImportBool(rootDir, syncImportSafariTabsKey, &policy.SafariTabs)
 	applySyncImportBool(rootDir, syncImportBlueskyBookmarksKey, &policy.BlueskyBookmarks)
+	applySyncImportBool(rootDir, syncImportMastodonBookmarksKey, &policy.MastodonBookmarks)
 	return policy
 }
 
@@ -80,12 +85,6 @@ func applySyncAllImportPolicy(flags syncAllFlags, policy syncAllImportPolicy, ov
 	}
 	if !overrides.skipX {
 		flags.skipX = flags.skipX || !policy.XBookmarks
-	}
-	if !overrides.skipXMedia {
-		flags.skipXMedia = flags.skipXMedia || !policy.XBookmarks
-	}
-	if !overrides.skipXPhotoOCR {
-		flags.skipXPhotoOCR = flags.skipXPhotoOCR || !policy.XBookmarks
 	}
 	if !overrides.skipGitHub {
 		flags.skipGitHub = flags.skipGitHub || !policy.GitHubStars
@@ -110,6 +109,19 @@ func applySyncAllImportPolicy(flags syncAllFlags, policy syncAllImportPolicy, ov
 	}
 	if !overrides.blueskyBookmarks {
 		flags.blueskyBookmarks = flags.blueskyBookmarks || policy.BlueskyBookmarks
+	}
+	if !overrides.mastodonBookmarks {
+		flags.mastodonBookmarks = flags.mastodonBookmarks || policy.MastodonBookmarks
+	}
+	// Compute shared enrichment from the final effective source selection.
+	// This includes explicit CLI flags and scheduler-provided Mastodon/Bluesky
+	// selections, which were not represented by policy alone before A2.
+	sharedBookmarkMedia := policy.XBookmarks || flags.blueskyBookmarks || flags.mastodonBookmarks
+	if !overrides.skipXMedia {
+		flags.skipXMedia = flags.skipXMedia || !sharedBookmarkMedia
+	}
+	if !overrides.skipXPhotoOCR {
+		flags.skipXPhotoOCR = flags.skipXPhotoOCR || !sharedBookmarkMedia
 	}
 	return flags
 }

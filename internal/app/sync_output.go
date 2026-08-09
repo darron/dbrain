@@ -244,6 +244,10 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 		s := stats.BlueskyBookmarks.Stats
 		rows = append(rows, []string{"Bluesky Bookmarks", formatSyncDuration(stats.BlueskyBookmarks.Duration), fmt.Sprintf("created=%d updated=%d", s.Created, s.Updated), fmt.Sprintf("unchanged=%d skipped=%d blocked=%d not_found=%d pages=%d stopped=%s media_discovered=%d media_linked=%d media_unavailable=%d media_downloaded=%d media_gone=%d media_errors=%d media_blocked=%d quote_linked=%d quote_skipped=%d", s.Unchanged, s.Skipped, s.SkippedBlocked, s.SkippedNotFound, s.PagesFetched, s.StoppedReason, s.MediaDiscovered, s.MediaLinked, s.MediaUnavailable, s.MediaDownloaded, s.MediaGone, s.MediaErrors, s.MediaBlocked, s.QuoteLinked, s.QuoteSkipped), strconv.Itoa(s.MediaErrors)})
 	}
+	if stats.MastodonBookmarks != nil {
+		s := stats.MastodonBookmarks.Stats
+		rows = append(rows, []string{"Mastodon Bookmarks", formatSyncDuration(stats.MastodonBookmarks.Duration), fmt.Sprintf("created=%d updated=%d", s.Created, s.Updated), fmt.Sprintf("account=%s pages=%d unchanged=%d skipped=%d stopped=%s media_discovered=%d media_linked=%d media_unavailable=%d media_downloaded=%d media_gone=%d media_errors=%d media_blocked=%d api_errors=%d rate_limits=%d retries=%d", emptyDash(s.AccountKey), s.PagesFetched, s.Unchanged, s.Skipped, s.StoppedReason, s.MediaDiscovered, s.MediaLinked, s.MediaUnavailable, s.MediaDownloaded, s.MediaGone, s.MediaErrors, s.MediaBlocked, s.APIErrors, s.RateLimits, s.Retries), strconv.Itoa(s.MediaErrors + s.APIErrors)})
+	}
 	if stats.XBookmarks != nil {
 		s := stats.XBookmarks.Stats
 		rows = append(rows, []string{"X Bookmarks", formatSyncDuration(stats.XBookmarks.Duration), fmt.Sprintf("created=%d updated=%d", s.Created, s.Updated), fmt.Sprintf("unchanged=%d pages=%d stopped=%s", s.Unchanged, s.PagesFetched, s.StoppedReason), "0"})

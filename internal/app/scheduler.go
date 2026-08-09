@@ -75,6 +75,10 @@ func schedulerSyncFlagsFromRuntime(rootDir string) (syncAllFlags, error) {
 	if err != nil {
 		return syncAllFlags{}, err
 	}
+	flags.mastodonBookmarksLimit, err = schedulerInt(rootDir, "MASTODON_BOOKMARKS_LIMIT")
+	if err != nil {
+		return syncAllFlags{}, err
+	}
 	flags.xLimit, err = schedulerInt(rootDir, "X_LIMIT")
 	if err != nil {
 		return syncAllFlags{}, err
@@ -140,6 +144,10 @@ func schedulerSyncFlagsFromRuntime(rootDir string) (syncAllFlags, error) {
 	if err != nil {
 		return syncAllFlags{}, err
 	}
+	flags.mastodonBookmarksTimeout, err = schedulerDuration(rootDir, "MASTODON_BOOKMARKS_TIMEOUT")
+	if err != nil {
+		return syncAllFlags{}, err
+	}
 	flags.xMediaTimeout, err = schedulerDuration(rootDir, "X_MEDIA_DOWNLOAD_TIMEOUT")
 	if err != nil {
 		return syncAllFlags{}, err
@@ -164,6 +172,7 @@ func schedulerSyncFlagsFromRuntime(rootDir string) (syncAllFlags, error) {
 	flags.appleNotes = schedulerBool(rootDir, "APPLE_NOTES")
 	flags.safariTabs = schedulerBool(rootDir, "SAFARI_TABS")
 	flags.blueskyBookmarks = schedulerBool(rootDir, "BLUESKY_BOOKMARKS")
+	flags.mastodonBookmarks = schedulerBool(rootDir, "MASTODON_BOOKMARKS")
 	flags.archiveMedia = schedulerBool(rootDir, "ARCHIVE_MEDIA")
 	flags.okfExport = schedulerBool(rootDir, "OKF_EXPORT")
 	flags.force = schedulerBool(rootDir, "FORCE")
@@ -615,6 +624,11 @@ func logScheduledSyncStats(logOut io.Writer, stats syncjob.Stats) error {
 	}
 	if stats.BlueskyBookmarks != nil {
 		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: bluesky_bookmarks created=%d updated=%d unchanged=%d skipped=%d media_discovered=%d media_linked=%d media_unavailable=%d media_downloaded=%d media_gone=%d media_errors=%d media_blocked=%d quote_linked=%d quote_skipped=%d\n", stats.BlueskyBookmarks.Stats.Created, stats.BlueskyBookmarks.Stats.Updated, stats.BlueskyBookmarks.Stats.Unchanged, stats.BlueskyBookmarks.Stats.Skipped, stats.BlueskyBookmarks.Stats.MediaDiscovered, stats.BlueskyBookmarks.Stats.MediaLinked, stats.BlueskyBookmarks.Stats.MediaUnavailable, stats.BlueskyBookmarks.Stats.MediaDownloaded, stats.BlueskyBookmarks.Stats.MediaGone, stats.BlueskyBookmarks.Stats.MediaErrors, stats.BlueskyBookmarks.Stats.MediaBlocked, stats.BlueskyBookmarks.Stats.QuoteLinked, stats.BlueskyBookmarks.Stats.QuoteSkipped); err != nil {
+			return err
+		}
+	}
+	if stats.MastodonBookmarks != nil {
+		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: mastodon_bookmarks accounts=%d created=%d updated=%d unchanged=%d skipped=%d media_discovered=%d media_linked=%d media_unavailable=%d media_downloaded=%d media_gone=%d media_errors=%d media_blocked=%d\n", len(stats.MastodonBookmarks.Accounts), stats.MastodonBookmarks.Stats.Created, stats.MastodonBookmarks.Stats.Updated, stats.MastodonBookmarks.Stats.Unchanged, stats.MastodonBookmarks.Stats.Skipped, stats.MastodonBookmarks.Stats.MediaDiscovered, stats.MastodonBookmarks.Stats.MediaLinked, stats.MastodonBookmarks.Stats.MediaUnavailable, stats.MastodonBookmarks.Stats.MediaDownloaded, stats.MastodonBookmarks.Stats.MediaGone, stats.MastodonBookmarks.Stats.MediaErrors, stats.MastodonBookmarks.Stats.MediaBlocked); err != nil {
 			return err
 		}
 	}

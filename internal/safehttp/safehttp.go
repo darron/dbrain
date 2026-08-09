@@ -23,14 +23,18 @@ type Policy struct {
 	AllowedPrivateOrigins []string
 	// AllowedOrigins restricts every request and redirect to one of these exact
 	// canonical origins. It is independent from private-network permission.
-	AllowedOrigins        []string
-	DisableCompression    bool
-	LookupNetIP           func(context.Context, string, string) ([]netip.Addr, error)
-	DialContext           func(context.Context, string, string) (net.Conn, error)
-	TLSClientConfig       *tls.Config
-	ConnectTimeout        time.Duration
-	TLSHandshakeTimeout   time.Duration
-	ResponseHeaderTimeout time.Duration
+	AllowedOrigins []string
+	// RejectCredentialQueryOnRedirect rejects credential-looking query
+	// parameters added by a redirect, even when the redirect stays on an
+	// otherwise allowed origin.
+	RejectCredentialQueryOnRedirect bool
+	DisableCompression              bool
+	LookupNetIP                     func(context.Context, string, string) ([]netip.Addr, error)
+	DialContext                     func(context.Context, string, string) (net.Conn, error)
+	TLSClientConfig                 *tls.Config
+	ConnectTimeout                  time.Duration
+	TLSHandshakeTimeout             time.Duration
+	ResponseHeaderTimeout           time.Duration
 }
 
 type PolicyError struct {
@@ -89,10 +93,27 @@ func NewClient(policy Policy) *http.Client {
 			if len(via) > maxRedirects {
 				return &PolicyError{Reason: fmt.Sprintf("stopped after %d redirects", maxRedirects)}
 			}
+			if policy.RejectCredentialQueryOnRedirect && hasCredentialQuery(req.URL) {
+				return &PolicyError{Reason: "redirect URL contains credential query parameters"}
+			}
 			_, err := compiled.privateNetworkAllowed(req.URL)
 			return err
 		},
 	}
+}
+
+func hasCredentialQuery(target *url.URL) bool {
+	if target == nil {
+		return true
+	}
+	for key := range target.Query() {
+		normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "").Replace(strings.TrimSpace(key)))
+		switch normalized {
+		case "accesstoken", "bearertoken", "refreshtoken", "clientsecret", "authorization", "authorizationcode", "pkceverifier", "codeverifier", "apikey", "password", "secret", "secretkey", "token":
+			return true
+		}
+	}
+	return false
 }
 
 func compilePolicy(policy Policy) compiledPolicy {

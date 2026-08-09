@@ -48,6 +48,7 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain import apple-notes snapshot --dir <path>`
 - `dbrain import bluesky bookmarks`
 - `dbrain import github stars`
+- `dbrain import mastodon bookmarks --account <account-key>`
 - `dbrain import safari-tabs`
 - `dbrain import safari-tabs devices`
 - `dbrain import x-bookmarks`
@@ -513,6 +514,28 @@ dbrain import bluesky bookmarks --profile Default --limit 25
 dbrain import bluesky bookmarks --profile Default --json
 ```
 
+### `dbrain import mastodon bookmarks`
+
+Imports bookmarks from one configured Mastodon account through its canonical
+HTTPS origin. The bearer token is resolved only from the account's typed secret
+reference and is used only for same-origin API requests; public media URLs are
+downloaded without the bearer token. The importer verifies the account before
+reading bookmarks, follows only validated server-provided `Link` cursors, and
+stores opaque checkpoint state in the database. `--limit` is a smoke-run bound;
+partial pages retain a bounded resume offset so repeated limited runs continue
+through the backfill. Text-only, card-only, and supported media-only statuses
+are retained, while malformed or unsupported statuses are counted explicitly.
+The import is append-only when a remote bookmark disappears. A live Hachyderm
+run requires the operator to complete OAuth first; this documentation does not
+claim an authenticated smoke test. Completed runs also perform a bounded
+retry sweep for older retryable Mastodon media failures, and JSON/human output
+includes API-error, rate-limit, and retry counters.
+
+```sh
+dbrain import mastodon bookmarks --account hachyderm --limit 25
+dbrain import mastodon bookmarks --account hachyderm --json
+```
+
 ### `dbrain import apple-notes`
 
 Imports Apple Notes directly from the local Notes SQLite store through a
@@ -572,7 +595,7 @@ dbrain import safari-tabs --device phone --limit 100
 
 Runs the regular incremental refresh pipeline in one command: optional Apple
 Notes import, optional Safari tabs import, optional Bluesky bookmark import,
-direct X bookmark import, X
+optional Mastodon bookmark import, direct X bookmark import, X
 hydration, X media audio transcription, X photo OCR, link
 discovery/enrichment, GitHub stars import, YouTube, RSS/Atom/JSON Feed
 import, and an optional source-backlog worker batch. It then categorizes
@@ -593,7 +616,7 @@ The durable `sync_all.imports` map controls which source importers both manual
 and scheduled runs may contact. Existing configs without this map retain the
 legacy defaults: X, GitHub stars, both YouTube lists, and feeds are enabled;
 Apple Notes and Safari tabs continue to follow their existing `*.enabled`
-settings, and Bluesky bookmarks are disabled by default. Environment variables
+settings, Bluesky bookmarks, and Mastodon bookmarks are disabled by default. Environment variables
 named `DBRAIN_SYNC_ALL_IMPORT_*` override the map, and explicit CLI flags remain
 one-run overrides. Scheduler-specific
 `skip_*` settings are applied afterward as scheduled-run-only restrictions.
@@ -620,7 +643,7 @@ the stage or `--feed-limit` to cap checks in one run.
 dbrain sync all --length short --timeout 5m
 dbrain sync all --apple-notes --length short --timeout 5m
 dbrain sync all --safari-tabs --safari-tabs-device phone --length short --timeout 5m
-dbrain sync all --bluesky-bookmarks --bluesky-bookmarks-limit 25 --bluesky-bookmarks-timeout 30s --length short --timeout 5m
+dbrain sync all --bluesky-bookmarks --bluesky-bookmarks-limit 25 --bluesky-bookmarks-timeout 30s --mastodon-bookmarks --mastodon-bookmarks-limit 25 --mastodon-bookmarks-timeout 30s --length short --timeout 5m
 dbrain sync all --skip-categorize --length short --timeout 5m
 dbrain sync all --okf-export --length short --timeout 5m
 dbrain sync all --categorize-limit 25 --categorize-concurrency 2 --length short --timeout 5m

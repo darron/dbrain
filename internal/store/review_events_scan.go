@@ -123,7 +123,7 @@ func reviewEventImportance(event ReviewEvent) int {
 
 func isHighIntentReviewSource(sourceType string) bool {
 	switch sourceType {
-	case "apple_note", "safari_tab", "x_bookmark", "github_star", "feed_entry":
+	case "apple_note", "safari_tab", "x_bookmark", "mastodon_bookmark", "mastodon_quote", "mastodon_reblog", "github_star", "feed_entry":
 		return true
 	default:
 		return false

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 
 	"github.com/darron/dbrain/internal/model"
 )
@@ -14,17 +15,22 @@ func Compute(item model.Item) string {
 	replyCount := item.ReplyCount
 	quoteCount := item.QuoteCount
 	bookmarkCount := item.BookmarkCount
-	if item.SourceType == "x_bookmark" || item.SourceType == "bsky_bookmark" || item.SourceType == "bsky_quote" {
+	externalID := ""
+	if item.SourceType == "x_bookmark" || item.SourceType == "bsky_bookmark" || item.SourceType == "bsky_quote" || item.SourceType == "mastodon_bookmark" || item.SourceType == "mastodon_quote" || item.SourceType == "mastodon_reblog" {
 		likeCount = 0
 		repostCount = 0
 		replyCount = 0
 		quoteCount = 0
 		bookmarkCount = 0
 	}
+	if strings.HasPrefix(item.SourceType, "mastodon_") {
+		externalID = item.ExternalID
+	}
 
 	payload := struct {
 		SourceType      string `json:"source_type"`
 		SourceKey       string `json:"source_key"`
+		ExternalID      string `json:"external_id,omitempty"`
 		CanonicalURL    string `json:"canonical_url"`
 		Title           string `json:"title"`
 		AuthorHandle    string `json:"author_handle"`
@@ -50,6 +56,7 @@ func Compute(item model.Item) string {
 	}{
 		SourceType:      item.SourceType,
 		SourceKey:       item.SourceKey,
+		ExternalID:      externalID,
 		CanonicalURL:    item.CanonicalURL,
 		Title:           item.Title,
 		AuthorHandle:    item.AuthorHandle,

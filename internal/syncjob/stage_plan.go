@@ -11,19 +11,20 @@ import (
 type syncStageID string
 
 const (
-	syncStageAppleNotes       syncStageID = "apple_notes"
-	syncStageSafariTabs       syncStageID = "safari_tabs"
-	syncStageBlueskyBookmarks syncStageID = "bluesky_bookmarks"
-	syncStageXFrontier        syncStageID = "x_frontier"
-	syncStageXMedia           syncStageID = "x_media"
-	syncStageXPhotoOCR        syncStageID = "x_photo_ocr"
-	syncStageGitHub           syncStageID = "github"
-	syncStageYouTube          syncStageID = "youtube"
-	syncStageFeeds            syncStageID = "feeds"
-	syncStageSources          syncStageID = "sources"
-	syncStageCategorize       syncStageID = "categorize"
-	syncStageMediaArchive     syncStageID = "media_archive"
-	syncStageOKFExport        syncStageID = "okf_export"
+	syncStageAppleNotes        syncStageID = "apple_notes"
+	syncStageSafariTabs        syncStageID = "safari_tabs"
+	syncStageBlueskyBookmarks  syncStageID = "bluesky_bookmarks"
+	syncStageMastodonBookmarks syncStageID = "mastodon_bookmarks"
+	syncStageXFrontier         syncStageID = "x_frontier"
+	syncStageXMedia            syncStageID = "x_media"
+	syncStageXPhotoOCR         syncStageID = "x_photo_ocr"
+	syncStageGitHub            syncStageID = "github"
+	syncStageYouTube           syncStageID = "youtube"
+	syncStageFeeds             syncStageID = "feeds"
+	syncStageSources           syncStageID = "sources"
+	syncStageCategorize        syncStageID = "categorize"
+	syncStageMediaArchive      syncStageID = "media_archive"
+	syncStageOKFExport         syncStageID = "okf_export"
 )
 
 type syncStage struct {
@@ -56,11 +57,22 @@ func defaultSyncStagePlan() []syncStage {
 			Run:     runBlueskyBookmarksSyncStage,
 		},
 		{
+			ID: syncStageMastodonBookmarks,
+			After: []syncStageID{
+				syncStageAppleNotes,
+				syncStageSafariTabs,
+				syncStageBlueskyBookmarks,
+			},
+			Enabled: func(opts stageOptions) bool { return opts.MastodonBookmarks.Enabled },
+			Run:     runMastodonBookmarksSyncStage,
+		},
+		{
 			ID: syncStageXFrontier,
 			After: []syncStageID{
 				syncStageAppleNotes,
 				syncStageSafariTabs,
 				syncStageBlueskyBookmarks,
+				syncStageMastodonBookmarks,
 			},
 			Enabled: syncXFrontierEnabled,
 			Run:     runXFrontierSyncStage,
@@ -98,7 +110,7 @@ func defaultSyncStagePlan() []syncStage {
 		},
 		{
 			ID:      syncStageSources,
-			After:   []syncStageID{syncStageBlueskyBookmarks, syncStageXFrontier, syncStageGitHub, syncStageYouTube, syncStageFeeds},
+			After:   []syncStageID{syncStageBlueskyBookmarks, syncStageMastodonBookmarks, syncStageXFrontier, syncStageGitHub, syncStageYouTube, syncStageFeeds},
 			Enabled: func(opts stageOptions) bool { return opts.Sources.Enabled },
 			Run:     runSourcesSyncStage,
 		},
@@ -180,6 +192,12 @@ func runSafariTabsSyncStage(ctx context.Context, cfg config.Config, st *store.St
 func runBlueskyBookmarksSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
 	stage, err := executeBlueskyBookmarksStage(ctx, cfg, st, opts)
 	stats.BlueskyBookmarks = stage
+	return err
+}
+
+func runMastodonBookmarksSyncStage(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats) error {
+	stage, err := executeMastodonBookmarksStage(ctx, cfg, st, opts)
+	stats.MastodonBookmarks = stage
 	return err
 }
 

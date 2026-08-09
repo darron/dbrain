@@ -16,6 +16,7 @@ func TestDefaultSyncStagePlanOrder(t *testing.T) {
 		syncStageAppleNotes,
 		syncStageSafariTabs,
 		syncStageBlueskyBookmarks,
+		syncStageMastodonBookmarks,
 		syncStageXFrontier,
 		syncStageXMedia,
 		syncStageXPhotoOCR,
@@ -51,6 +52,14 @@ func TestDefaultSyncStagePlanEnabledPredicates(t *testing.T) {
 	if byID[syncStageBlueskyBookmarks].Enabled(opts) {
 		t.Fatal("Bluesky bookmarks should be disabled by default")
 	}
+	if byID[syncStageMastodonBookmarks].Enabled(opts) {
+		t.Fatal("Mastodon bookmarks should be disabled by default")
+	}
+	opts.MastodonBookmarks.Enabled = true
+	if !byID[syncStageMastodonBookmarks].Enabled(opts) {
+		t.Fatal("Mastodon bookmarks should be enabled by its own stage option")
+	}
+	opts.MastodonBookmarks.Enabled = false
 	opts.BlueskyBookmarks.Enabled = true
 	if !byID[syncStageBlueskyBookmarks].Enabled(opts) {
 		t.Fatal("Bluesky bookmarks should be enabled by its own stage option")
@@ -81,6 +90,7 @@ func TestDefaultSyncStagePlanEnabledPredicates(t *testing.T) {
 		{syncStageAppleNotes, func(opts *stageOptions) { opts.AppleNotes.Enabled = true }},
 		{syncStageSafariTabs, func(opts *stageOptions) { opts.SafariTabs.Enabled = true }},
 		{syncStageBlueskyBookmarks, func(opts *stageOptions) { opts.BlueskyBookmarks.Enabled = true }},
+		{syncStageMastodonBookmarks, func(opts *stageOptions) { opts.MastodonBookmarks.Enabled = true }},
 		{syncStageXMedia, func(opts *stageOptions) { opts.XMedia.Enabled = true }},
 		{syncStageXPhotoOCR, func(opts *stageOptions) { opts.XPhotoOCR.Enabled = true }},
 		{syncStageGitHub, func(opts *stageOptions) { opts.GitHub.Enabled = true }},

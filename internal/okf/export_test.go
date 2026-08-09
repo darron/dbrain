@@ -15,6 +15,15 @@ import (
 	"github.com/darron/dbrain/internal/topics"
 )
 
+func TestItemDescriptionRecognizesMastodonItems(t *testing.T) {
+	for _, sourceType := range []string{"mastodon_bookmark", "mastodon_quote", "mastodon_reblog"} {
+		got := itemDescription(model.Item{SourceType: sourceType, AuthorHandle: "alice@hachyderm.io"})
+		if got != "Saved Mastodon item from alice@hachyderm.io." {
+			t.Fatalf("itemDescription(%q) = %q", sourceType, got)
+		}
+	}
+}
+
 func TestBuildBundleDeterministicItemSourceMediaFixture(t *testing.T) {
 	t.Parallel()
 

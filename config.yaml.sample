@@ -155,6 +155,7 @@ sync_all:
     apple_notes: false # DBRAIN_SYNC_ALL_IMPORT_APPLE_NOTES; falls back to apple_notes.enabled when omitted
     safari_tabs: false # DBRAIN_SYNC_ALL_IMPORT_SAFARI_TABS; falls back to safari_tabs.enabled when omitted
     bluesky_bookmarks: false # DBRAIN_SYNC_ALL_IMPORT_BLUESKY_BOOKMARKS; opt-in Chrome profile-backed bookmark import
+    mastodon_bookmarks: false # DBRAIN_SYNC_ALL_IMPORT_MASTODON_BOOKMARKS; opt-in configured Mastodon bookmark imports
 
 apple_notes:
   enabled: false # DBRAIN_APPLE_NOTES_ENABLED; opt into sync all
@@ -185,9 +186,12 @@ scheduler:
     run_on_start: false # DBRAIN_SCHEDULER_SYNC_ALL_RUN_ON_START
     jitter: "" # DBRAIN_SCHEDULER_SYNC_ALL_JITTER; optional, for example 5m
     bluesky_bookmarks: false # DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS
+    mastodon_bookmarks: false # DBRAIN_SCHEDULER_SYNC_ALL_MASTODON_BOOKMARKS
     x_bookmarks_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_BOOKMARKS_LIMIT
     bluesky_bookmarks_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS_LIMIT
     bluesky_bookmarks_timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS_TIMEOUT; 0 uses the 30s importer default
+    mastodon_bookmarks_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_MASTODON_BOOKMARKS_LIMIT
+    mastodon_bookmarks_timeout: "" # DBRAIN_SCHEDULER_SYNC_ALL_MASTODON_BOOKMARKS_TIMEOUT; per-request API timeout, 0 uses the 30s default
     x_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_LIMIT
     x_media_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_MEDIA_LIMIT
     x_photo_ocr_limit: 0 # DBRAIN_SCHEDULER_SYNC_ALL_X_PHOTO_OCR_LIMIT
