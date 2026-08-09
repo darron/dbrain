@@ -36,6 +36,11 @@ development date for the change set.
   Mastodon import or sync `--force` runs retry terminal blocked media through
   the same exact-origin, credential-free download policy. Ordinary imports
   continue to leave terminal media blocked.
+- **Shared media lifecycle**: Social-only syncs now order shared transcription
+  and OCR after Bluesky and Mastodon imports; changed ordered media clears all
+  canonical, compatibility, and search projections; archive/prune and explicit
+  pruned-media repair use the shared social source predicate. Mastodon repair
+  reconstructs the exact media origin without forwarding API credentials.
 
 ### Reusable Bluesky bookmark import (2026-08-08)
 

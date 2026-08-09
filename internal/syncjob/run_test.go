@@ -21,10 +21,12 @@ import (
 	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
+	"github.com/darron/dbrain/internal/mastodonapi"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/metrics"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/okf"
+	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/safaritabs"
 	"github.com/darron/dbrain/internal/sourceenrich"
 	"github.com/darron/dbrain/internal/store"
@@ -747,6 +749,147 @@ func TestRunUsesSeparateXMediaAndPhotoOCRLimits(t *testing.T) {
 	if stats.XPhotoOCR == nil || stats.XPhotoOCR.Stats.ItemsProcessed != 5 {
 		t.Fatalf("expected x photo OCR stats, got %+v", stats.XPhotoOCR)
 	}
+}
+
+func TestRunSocialOnlyImportsReachSharedMediaWorkersWithXDisabled(t *testing.T) {
+	cfg, st := testSyncStore(t)
+	t.Setenv("DBRAIN_TEST_MASTODON_TOKEN", "test-token")
+	restoreConfig := runtimeenv.RegisterConfigSnapshot(cfg.RootDir, map[string]any{
+		"mastodon": map[string]any{
+			"enabled": true,
+			"accounts": map[string]any{
+				"test": map[string]any{
+					"origin":            "https://mastodon.example",
+					"access_token_ref":  "env:DBRAIN_TEST_MASTODON_TOKEN",
+					"client_id_ref":     "env:DBRAIN_TEST_MASTODON_TOKEN",
+					"client_secret_ref": "env:DBRAIN_TEST_MASTODON_TOKEN",
+				},
+			},
+		},
+	}, nil)
+	t.Cleanup(restoreConfig)
+
+	origBluesky := runBlueskyBookmarkImport
+	origMastodon := runMastodonImport
+	origX := runXHydrate
+	origXMedia := runXMediaStage
+	origOCR := runXPhotoOCRStage
+	t.Cleanup(func() {
+		runBlueskyBookmarkImport = origBluesky
+		runMastodonImport = origMastodon
+		runXHydrate = origX
+		runXMediaStage = origXMedia
+		runXPhotoOCRStage = origOCR
+	})
+
+	var calls []string
+	runBlueskyBookmarkImport = func(ctx context.Context, _ config.Config, gotStore *store.Store, _ bskyapi.BookmarkOptions) (bskyapi.BookmarkStats, error) {
+		calls = append(calls, "bluesky-import")
+		seedSocialMediaWorkerFixture(t, ctx, gotStore, "bsky:fixture", "bsky_bookmark", "bsky")
+		return bskyapi.BookmarkStats{Created: 1, MediaDownloaded: 2}, nil
+	}
+	runMastodonImport = func(ctx context.Context, _ config.Config, gotStore *store.Store, _ *mastodonapi.Client, _ mastodonapi.BookmarkOptions) (mastodonapi.BookmarkStats, error) {
+		calls = append(calls, "mastodon-import")
+		seedSocialMediaWorkerFixture(t, ctx, gotStore, "mastodon:fixture", "mastodon_bookmark", "mastodon")
+		return mastodonapi.BookmarkStats{AccountKey: "test", Created: 1, MediaDownloaded: 2}, nil
+	}
+	runXHydrate = func(context.Context, config.Config, *store.Store, xapi.Options) (xapi.Stats, error) {
+		t.Fatal("X hydration ran during social-only sync")
+		return xapi.Stats{}, nil
+	}
+	runXMediaStage = func(ctx context.Context, _ config.Config, gotStore *store.Store, _ xmediatranscribe.Options) (xmediatranscribe.Stats, error) {
+		calls = append(calls, "transcription")
+		items, err := gotStore.ListItemsForXMediaTranscription(ctx, 10, false)
+		if err != nil {
+			t.Fatalf("ListItemsForXMediaTranscription: %v", err)
+		}
+		if got := itemSourceKeys(items); !slices.Equal(got, []string{"mastodon:fixture", "bsky:fixture"}) {
+			t.Fatalf("transcription worker fixtures = %v", got)
+		}
+		return xmediatranscribe.Stats{ItemsProcessed: 2, MediaTranscribed: 2}, nil
+	}
+	runXPhotoOCRStage = func(ctx context.Context, _ config.Config, gotStore *store.Store, _ xphotoocr.Options) (xphotoocr.Stats, error) {
+		calls = append(calls, "ocr")
+		items, err := gotStore.ListItemsForXPhotoOCR(ctx, 10, false)
+		if err != nil {
+			t.Fatalf("ListItemsForXPhotoOCR: %v", err)
+		}
+		if got := itemSourceKeys(items); !slices.Equal(got, []string{"mastodon:fixture", "bsky:fixture"}) {
+			t.Fatalf("OCR worker fixtures = %v", got)
+		}
+		return xphotoocr.Stats{ItemsProcessed: 2, PhotosOCRed: 2}, nil
+	}
+
+	var progress bytes.Buffer
+	stats, err := Run(t.Context(), cfg, st, Options{
+		BlueskyBookmarksEnabled:  true,
+		MastodonBookmarksEnabled: true,
+		XMediaEnabled:            true,
+		XPhotoOCREnabled:         true,
+		Progress:                 &progress,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !slices.Equal(calls, []string{"bluesky-import", "mastodon-import", "transcription", "ocr"}) {
+		t.Fatalf("social-only stage calls = %v", calls)
+	}
+	if stats.BlueskyBookmarks == nil || stats.BlueskyBookmarks.Stats.Created != 1 ||
+		stats.MastodonBookmarks == nil || stats.MastodonBookmarks.Stats.Created != 1 ||
+		stats.XMedia == nil || stats.XMedia.Stats.MediaTranscribed != 2 ||
+		stats.XPhotoOCR == nil || stats.XPhotoOCR.Stats.PhotosOCRed != 2 {
+		t.Fatalf("typed social-only stats were not preserved: %+v", stats)
+	}
+	for _, want := range []string{"==> import bluesky-bookmarks", "==> import mastodon-bookmarks", "==> transcribe x-media", "==> ocr x-photos"} {
+		if !strings.Contains(progress.String(), want) {
+			t.Fatalf("progress missing %q:\n%s", want, progress.String())
+		}
+	}
+}
+
+func seedSocialMediaWorkerFixture(t *testing.T, ctx context.Context, st *store.Store, sourceKey, sourceType, namespace string) {
+	t.Helper()
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	item, err := st.UpsertItem(ctx, model.Item{
+		SourceKey: sourceKey, SourceType: sourceType, ExternalID: sourceKey,
+		CanonicalURL: "https://social.example/" + sourceKey, Title: sourceKey,
+		ContentHash: sourceKey + "-hash", LinksJSON: "[]", NotePath: "items/" + namespace + "/fixture.md", RawJSON: "{}",
+		ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+	}
+	if _, err := st.SaveItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{
+		{RemoteURL: "https://media.example/" + namespace + "/photo.jpg", MediaType: "photo"},
+		{RemoteURL: "https://media.example/" + namespace + "/video.mp4", MediaType: "video"},
+	}); err != nil {
+		t.Fatalf("SaveItemMediaCandidates %s: %v", sourceKey, err)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, item.ItemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs %s: %v", sourceKey, err)
+	}
+	for _, ref := range refs {
+		ext := ".jpg"
+		if ref.MediaType == "video" {
+			ext = ".mp4"
+		}
+		if _, err := st.SaveMediaDownload(ctx, ref.MediaAssetID, model.MediaDownloadResult{
+			LocalPath:   "media/" + namespace + "/" + ref.MediaType + "/fixture" + ext,
+			ContentHash: sourceKey + "-" + ref.MediaType,
+			Status:      model.MediaDownloadStatusDownloaded, DownloadedAt: now,
+		}); err != nil {
+			t.Fatalf("SaveMediaDownload %s/%s: %v", sourceKey, ref.MediaType, err)
+		}
+	}
+}
+
+func itemSourceKeys(items []model.Item) []string {
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		keys = append(keys, item.SourceKey)
+	}
+	return keys
 }
 
 func TestRunDrainsQuoteHydrationTailBeforeXMediaStage(t *testing.T) {

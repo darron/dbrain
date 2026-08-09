@@ -113,6 +113,116 @@ func TestRunDefersPruneWhenSameLocalPathStillNeedsCoverage(t *testing.T) {
 	}
 }
 
+func TestRunArchivesBlueskyAndMastodonSharedPathBeforePruneAndRefreshesBothProjections(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	localPath := "media/shared/photo/content-hash.jpg"
+	bskyItemID, bskyAssetID, bskyNote := setupSocialArchivedPhotoWithSharedPath(t, cfg, st,
+		"bsky:archive-shared", "bsky_bookmark", "https://cdn.bsky.example/shared.jpg", localPath)
+	mastodonItemID, mastodonAssetID, mastodonNote := setupSocialArchivedPhotoWithSharedPath(t, cfg, st,
+		"mastodon:archive-shared", "mastodon_bookmark", "https://mastodon.example/media/shared.jpg", localPath)
+
+	stats, err := Run(t.Context(), cfg, st, Options{
+		Bucket:        "dbrain",
+		PublicBaseURL: "https://archive.example",
+		PruneLocal:    true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.Candidates != 2 || stats.Archived != 2 || stats.LocalFilesPruned != 1 || stats.LocalRowsPruned != 2 || stats.PruneSkipped != 1 {
+		t.Fatalf("shared social archive stats = %+v", stats)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.VaultDir, filepath.FromSlash(localPath))); !os.IsNotExist(err) {
+		t.Fatalf("shared local file still exists or stat failed: %v", err)
+	}
+	for _, check := range []struct {
+		itemID  int64
+		assetID int64
+		note    string
+	}{
+		{itemID: bskyItemID, assetID: bskyAssetID, note: bskyNote},
+		{itemID: mastodonItemID, assetID: mastodonAssetID, note: mastodonNote},
+	} {
+		asset, err := st.GetMediaAsset(t.Context(), check.assetID)
+		if err != nil {
+			t.Fatalf("GetMediaAsset(%d): %v", check.assetID, err)
+		}
+		if asset.ArchiveStatus != model.MediaArchiveStatusArchived || asset.LocalPrunedAt.IsZero() {
+			t.Fatalf("asset was not archived before shared prune: %+v", asset)
+		}
+		refs, err := st.ListItemMediaRefs(t.Context(), check.itemID)
+		if err != nil || len(refs) != 1 || refs[0].ArchiveURL != "https://archive.example/"+localPath {
+			t.Fatalf("archived item refs=%+v err=%v", refs, err)
+		}
+		body, err := os.ReadFile(filepath.Join(cfg.VaultDir, filepath.FromSlash(check.note)))
+		if err != nil {
+			t.Fatalf("read refreshed note %s: %v", check.note, err)
+		}
+		if !strings.Contains(string(body), "![](https://archive.example/"+localPath+")") || strings.Contains(string(body), "![["+localPath+"]]") {
+			t.Fatalf("projection %s was not refreshed after prune:\n%s", check.note, body)
+		}
+	}
+}
+
+func setupSocialArchivedPhotoWithSharedPath(t *testing.T, cfg config.Config, st *store.Store, sourceKey, sourceType, remoteURL, localPath string) (int64, int64, string) {
+	t.Helper()
+	now := time.Date(2026, 8, 9, 16, 0, 0, 0, time.UTC)
+	namespace := "bsky"
+	if strings.HasPrefix(sourceType, "mastodon_") {
+		namespace = "mastodon"
+	}
+	notePath := "items/" + namespace + "/2026/archive-shared.md"
+	item, err := st.UpsertItem(t.Context(), model.Item{
+		SourceKey: sourceKey, SourceType: sourceType, ExternalID: sourceKey,
+		CanonicalURL: "https://social.example/" + sourceKey, Title: sourceKey, Text: "shared photo",
+		ContentHash: sourceKey + "-hash", LinksJSON: "[]", NotePath: notePath, RawJSON: "{}",
+		ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+	}
+	if _, err := st.SaveItemMediaCandidates(t.Context(), item.ItemID, []model.MediaCandidate{{
+		RemoteURL: remoteURL, MediaType: "photo", ExpandedURL: "https://social.example/" + sourceKey + "/media/1", Width: 1200, Height: 800,
+	}}); err != nil {
+		t.Fatalf("SaveItemMediaCandidates %s: %v", sourceKey, err)
+	}
+	refs, err := st.ListItemMediaRefs(t.Context(), item.ItemID)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("ListItemMediaRefs %s: refs=%+v err=%v", sourceKey, refs, err)
+	}
+	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(localPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll shared media: %v", err)
+	}
+	if err := os.WriteFile(fullPath, []byte("identical-photo-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile shared media: %v", err)
+	}
+	if _, err := st.SaveMediaDownload(t.Context(), refs[0].MediaAssetID, model.MediaDownloadResult{
+		MIMEType: "image/jpeg", ByteSize: int64(len("identical-photo-bytes")), ContentHash: "sha256:shared",
+		LocalPath: localPath, Status: model.MediaDownloadStatusDownloaded, DownloadedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMediaDownload %s: %v", sourceKey, err)
+	}
+	if _, err := st.SaveItemOCR(t.Context(), item.ItemID, model.OCRResult{
+		Text: "shared photo text", Status: model.ItemOCRStatusOK, Model: "test/ocr", Tool: "test", ToolVersion: "v1", FetchedAt: now,
+	}, "sha256:shared-ocr"); err != nil {
+		t.Fatalf("SaveItemOCR %s: %v", sourceKey, err)
+	}
+	return item.ItemID, refs[0].MediaAssetID, notePath
+}
+
 func TestPruneLocalPathRejectsTraversalAndSymlinkEscape(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

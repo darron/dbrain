@@ -7,7 +7,8 @@ import (
 )
 
 const xItemSourceTypeWhere = "(source_type = 'x_bookmark' OR source_type = 'x_quote')"
-const mediaEnrichmentItemSourceTypeWhere = "(source_type = 'x_bookmark' OR source_type = 'x_quote' OR source_type = 'bsky_bookmark' OR source_type = 'bsky_quote' OR source_type = 'mastodon_bookmark' OR source_type = 'mastodon_quote' OR source_type = 'mastodon_reblog')"
+const mediaEnrichmentItemSourceTypesSQL = "'x_bookmark', 'x_quote', 'bsky_bookmark', 'bsky_quote', 'mastodon_bookmark', 'mastodon_quote', 'mastodon_reblog'"
+const mediaEnrichmentItemSourceTypeWhere = "source_type IN (" + mediaEnrichmentItemSourceTypesSQL + ")"
 const linkDiscoveryItemSourceTypeWhere = "(source_type = 'x_bookmark' OR source_type = 'x_quote' OR source_type = 'bsky_bookmark' OR source_type = 'bsky_quote' OR source_type = 'mastodon_bookmark' OR source_type = 'mastodon_quote' OR source_type = 'mastodon_reblog' OR source_type = 'apple_note' OR source_type = 'safari_tab')"
 const sourceCategorizationEvidenceWhere = `(trim(summary_text) != '' OR trim(extracted_text) != '')`
 const xTopLevelMediaObjectsWhere = `(json_valid(x_post_json) AND json_extract(x_post_json, '$.snapshot.media_objects[0].type') IS NOT NULL)`
@@ -126,4 +127,12 @@ func mediaDownloadRetryableWhere(alias string) string {
 		model.MediaDownloadStatusPending,
 		model.MediaDownloadStatusError,
 	)
+}
+
+func mediaEnrichmentItemSourceTypeWhereFor(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return prefix + "source_type IN (" + mediaEnrichmentItemSourceTypesSQL + ")"
 }

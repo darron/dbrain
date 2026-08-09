@@ -163,7 +163,7 @@ func (s *AuditReadSnapshot) MediaLocalEvidence(ctx context.Context) (AuditMediaL
 		{&out.EligibleLocalCount, `SELECT COUNT(*) FROM media_assets a WHERE ` + mediaArchiveCandidateWhere("a", false)},
 		{&out.UncoveredPrunedCount, `SELECT COUNT(*) FROM media_assets a
 			WHERE a.local_pruned_at != ''
-			AND EXISTS (SELECT 1 FROM item_media_links l WHERE l.media_asset_id = a.id)
+			AND ` + mediaArchiveSupportedOwnerExistsWhere("a") + `
 			AND NOT ` + mediaArchiveEnrichmentCompleteWhere("a")},
 		{&out.OrphanCount, `SELECT COUNT(*) FROM media_assets a
 			WHERE a.download_status = '` + model.MediaDownloadStatusDownloaded + `'

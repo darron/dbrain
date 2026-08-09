@@ -76,7 +76,7 @@ func auditLocalIdentifierQuery(checkID string, now time.Time) (string, []any, bo
 			LEFT JOIN item_media_links l ON l.media_asset_id = a.id
 			LEFT JOIN items i ON i.id = l.item_id
 			WHERE (a.local_pruned_at != ''
-				AND EXISTS (SELECT 1 FROM item_media_links linked WHERE linked.media_asset_id = a.id)
+				AND ` + mediaArchiveSupportedOwnerExistsWhere("a") + `
 				AND NOT ` + mediaArchiveEnrichmentCompleteWhere("a") + `)
 			OR (a.download_status = '` + model.MediaDownloadStatusDownloaded + `'
 				AND NOT EXISTS (SELECT 1 FROM item_media_links orphan WHERE orphan.media_asset_id = a.id))

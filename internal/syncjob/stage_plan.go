@@ -78,14 +78,22 @@ func defaultSyncStagePlan() []syncStage {
 			Run:     runXFrontierSyncStage,
 		},
 		{
-			ID:      syncStageXMedia,
-			After:   []syncStageID{syncStageXFrontier},
+			ID: syncStageXMedia,
+			After: []syncStageID{
+				syncStageBlueskyBookmarks,
+				syncStageMastodonBookmarks,
+				syncStageXFrontier,
+			},
 			Enabled: func(opts stageOptions) bool { return opts.XMedia.Enabled },
 			Run:     runXMediaSyncStage,
 		},
 		{
-			ID:      syncStageXPhotoOCR,
-			After:   []syncStageID{syncStageXFrontier},
+			ID: syncStageXPhotoOCR,
+			After: []syncStageID{
+				syncStageBlueskyBookmarks,
+				syncStageMastodonBookmarks,
+				syncStageXFrontier,
+			},
 			Enabled: func(opts stageOptions) bool { return opts.XPhotoOCR.Enabled },
 			Run:     runXPhotoOCRSyncStage,
 		},

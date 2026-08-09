@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mastodonapi"
 	"github.com/darron/dbrain/internal/mediadownload"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -45,6 +47,10 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 }
 
 func runWithDownloader(ctx context.Context, cfg config.Config, st *store.Store, opts Options, download downloadItemFunc) (Stats, error) {
+	return runWithDownloaderAndMastodonPolicy(ctx, cfg, st, opts, download, nil)
+}
+
+func runWithDownloaderAndMastodonPolicy(ctx context.Context, cfg config.Config, st *store.Store, opts Options, download downloadItemFunc, mastodonPolicyBase *safehttp.Policy) (Stats, error) {
 	stats := Stats{Apply: opts.Apply}
 	if opts.Limit <= 0 {
 		return stats, fmt.Errorf("pruned media repair limit must be positive")
@@ -88,7 +94,7 @@ func runWithDownloader(ctx context.Context, cfg config.Config, st *store.Store, 
 		}
 		_, selectedForOCR := ocrItems[itemID]
 		_, selectedForTranscript := transcriptItems[itemID]
-		assetIDs := make([]int64, 0, len(refs))
+		selectedRefs := make([]model.ItemMediaRef, 0, len(refs))
 		for _, ref := range refs {
 			if !eligiblePrunedArchivedRef(ref, selectedForOCR, selectedForTranscript) {
 				continue
@@ -97,9 +103,9 @@ func runWithDownloader(ctx context.Context, cfg config.Config, st *store.Store, 
 				continue
 			}
 			seenAssets[ref.MediaAssetID] = struct{}{}
-			assetIDs = append(assetIDs, ref.MediaAssetID)
+			selectedRefs = append(selectedRefs, ref)
 		}
-		if len(assetIDs) == 0 {
+		if len(selectedRefs) == 0 {
 			continue
 		}
 
@@ -108,23 +114,65 @@ func runWithDownloader(ctx context.Context, cfg config.Config, st *store.Store, 
 			return stats, fmt.Errorf("load pruned media item %d: %w", itemID, err)
 		}
 		namespace := mediadownload.MediaNamespaceForSourceType(item.SourceType)
-		mediaStats, err := download(ctx, cfg, st, itemID, mediadownload.Options{Force: true, AllowedAssetIDs: assetIDs, MediaNamespace: namespace, Timeout: opts.Timeout, Logger: opts.Logger})
 		stats.ItemsVisited++
-		if mediaStats.Downloaded > 0 {
-			stats.ItemsRestored++
+		itemDownloaded := 0
+		if namespace == "mastodon" {
+			for _, ref := range selectedRefs {
+				policy, err := mastodonapi.MediaHTTPPolicy(ref.RemoteURL, mastodonPolicyBase)
+				if err != nil {
+					changed, saveErr := st.SaveMediaDownload(ctx, ref.MediaAssetID, model.MediaDownloadResult{
+						Status: model.MediaDownloadStatusBlocked, Error: err.Error(), AttemptedAt: time.Now().UTC(),
+					})
+					stats.MediaCandidates++
+					stats.MediaRequested++
+					stats.MediaBlocked++
+					if changed {
+						stats.MediaChanged++
+					}
+					if saveErr != nil {
+						return stats, fmt.Errorf("block unsafe Mastodon pruned media for item %d asset %d: %w", itemID, ref.MediaAssetID, saveErr)
+					}
+					continue
+				}
+				mediaStats, err := download(ctx, cfg, st, itemID, mediadownload.Options{
+					Force: true, AllowedAssetIDs: []int64{ref.MediaAssetID}, MediaNamespace: namespace,
+					Timeout: opts.Timeout, Logger: opts.Logger, HTTPPolicy: &policy,
+				})
+				addMediaDownloadStats(&stats, mediaStats)
+				itemDownloaded += mediaStats.Downloaded
+				if err != nil {
+					return stats, fmt.Errorf("restore pruned media for item %d: %w", itemID, err)
+				}
+			}
+		} else {
+			assetIDs := make([]int64, 0, len(selectedRefs))
+			for _, ref := range selectedRefs {
+				assetIDs = append(assetIDs, ref.MediaAssetID)
+			}
+			mediaStats, err := download(ctx, cfg, st, itemID, mediadownload.Options{
+				Force: true, AllowedAssetIDs: assetIDs, MediaNamespace: namespace, Timeout: opts.Timeout, Logger: opts.Logger,
+			})
+			addMediaDownloadStats(&stats, mediaStats)
+			itemDownloaded += mediaStats.Downloaded
+			if err != nil {
+				return stats, fmt.Errorf("restore pruned media for item %d: %w", itemID, err)
+			}
 		}
-		stats.MediaCandidates += mediaStats.Candidates
-		stats.MediaRequested += mediaStats.Requested
-		stats.MediaDownloaded += mediaStats.Downloaded
-		stats.MediaGone += mediaStats.Gone
-		stats.MediaErrors += mediaStats.Errors
-		stats.MediaBlocked += mediaStats.Blocked
-		stats.MediaChanged += mediaStats.Changed
-		if err != nil {
-			return stats, fmt.Errorf("restore pruned media for item %d: %w", itemID, err)
+		if itemDownloaded > 0 {
+			stats.ItemsRestored++
 		}
 	}
 	return stats, nil
+}
+
+func addMediaDownloadStats(stats *Stats, mediaStats mediadownload.Stats) {
+	stats.MediaCandidates += mediaStats.Candidates
+	stats.MediaRequested += mediaStats.Requested
+	stats.MediaDownloaded += mediaStats.Downloaded
+	stats.MediaGone += mediaStats.Gone
+	stats.MediaErrors += mediaStats.Errors
+	stats.MediaBlocked += mediaStats.Blocked
+	stats.MediaChanged += mediaStats.Changed
 }
 
 func eligiblePrunedArchivedRef(ref model.ItemMediaRef, selectedForOCR, selectedForTranscript bool) bool {

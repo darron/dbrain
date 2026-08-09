@@ -153,6 +153,39 @@ func TestListPrunedMediaRepairCandidatesSelectsMultipleItemsSharingOnePrunedAsse
 	}
 }
 
+func TestListPrunedMediaRepairCandidatesUsesSharedSocialSourcePredicate(t *testing.T) {
+	ctx := t.Context()
+	st := openTestStore(t)
+	now := time.Now().UTC()
+	supported := []string{
+		"x_bookmark", "x_quote",
+		"bsky_bookmark", "bsky_quote",
+		"mastodon_bookmark", "mastodon_quote", "mastodon_reblog",
+	}
+	want := make([]int64, 0, len(supported))
+	for _, sourceType := range supported {
+		itemID, assetID := seedPrunedMediaRepairItem(t, ctx, st, sourceType+":repair", "photo", now)
+		if _, err := st.db.ExecContext(ctx, `UPDATE items SET source_type = ? WHERE id = ?`, sourceType, itemID); err != nil {
+			t.Fatalf("set source type %s: %v", sourceType, err)
+		}
+		markRepairAssetPrunedAndArchived(t, ctx, st, assetID, now)
+		want = append(want, itemID)
+	}
+	unsupportedID, unsupportedAssetID := seedPrunedMediaRepairItem(t, ctx, st, "github_star:repair", "photo", now)
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET source_type = 'github_star' WHERE id = ?`, unsupportedID); err != nil {
+		t.Fatalf("set unsupported source type: %v", err)
+	}
+	markRepairAssetPrunedAndArchived(t, ctx, st, unsupportedAssetID, now)
+
+	got, err := st.ListPrunedMediaRepairCandidates(ctx, true, false, 100)
+	if err != nil {
+		t.Fatalf("ListPrunedMediaRepairCandidates: %v", err)
+	}
+	if !slices.Equal(got.OCRItemIDs, want) {
+		t.Fatalf("repair lifecycle item IDs = %v, want supported %v without %d", got.OCRItemIDs, want, unsupportedID)
+	}
+}
+
 func seedPrunedMediaRepairItem(t *testing.T, ctx context.Context, st *Store, sourceKey, mediaType string, now time.Time) (int64, int64) {
 	t.Helper()
 	result, err := st.UpsertItem(ctx, model.Item{

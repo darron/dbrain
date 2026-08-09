@@ -55,18 +55,30 @@ func mediaArchiveBaseWhere(alias string) string {
 	return alias + `.download_status = '` + model.MediaDownloadStatusDownloaded + `'
 		AND ` + alias + `.local_path != ''
 		AND ` + alias + `.local_pruned_at = ''
-		AND EXISTS (SELECT 1 FROM item_media_links l WHERE l.media_asset_id = ` + alias + `.id)`
+		AND ` + mediaArchiveSupportedOwnerExistsWhere(alias)
 }
 
 func mediaArchiveEnrichmentCompleteWhere(alias string) string {
 	return `((` + alias + `.media_type = 'photo' AND NOT EXISTS (
 		SELECT 1 FROM item_media_links l JOIN items i ON i.id = l.item_id
-		WHERE l.media_asset_id = ` + alias + `.id AND i.ocr_status != '` + model.ItemOCRStatusOK + `'
+		WHERE l.media_asset_id = ` + alias + `.id
+			AND ` + mediaEnrichmentItemSourceTypeWhereFor("i") + `
+			AND i.ocr_status != '` + model.ItemOCRStatusOK + `'
 	)) OR (` + alias + `.media_type IN ('video', 'animated_gif') AND NOT EXISTS (
 		SELECT 1 FROM item_media_links l JOIN items i ON i.id = l.item_id
 		WHERE l.media_asset_id = ` + alias + `.id
+			AND ` + mediaEnrichmentItemSourceTypeWhereFor("i") + `
 			AND i.x_media_transcript_status NOT IN ('` + model.XMediaTranscriptStatusOK + `', '` + model.XMediaTranscriptStatusNoAudio + `', '` + model.XMediaTranscriptStatusNoise + `', '` + model.XMediaTranscriptStatusTooShort + `', '` + model.XMediaTranscriptStatusEmpty + `')
 	)) OR ` + alias + `.media_type = 'audio')`
+}
+
+func mediaArchiveSupportedOwnerExistsWhere(alias string) string {
+	return `EXISTS (
+		SELECT 1 FROM item_media_links l
+		JOIN items i ON i.id = l.item_id
+		WHERE l.media_asset_id = ` + alias + `.id
+			AND ` + mediaEnrichmentItemSourceTypeWhereFor("i") + `
+	)`
 }
 
 func mediaArchiveCandidateWhere(alias string, force bool) string {
