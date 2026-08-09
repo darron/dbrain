@@ -107,10 +107,7 @@ func runWithDownloader(ctx context.Context, cfg config.Config, st *store.Store, 
 		if err != nil {
 			return stats, fmt.Errorf("load pruned media item %d: %w", itemID, err)
 		}
-		namespace := "x"
-		if item.SourceType == "bsky_bookmark" {
-			namespace = "bsky"
-		}
+		namespace := mediadownload.MediaNamespaceForSourceType(item.SourceType)
 		mediaStats, err := download(ctx, cfg, st, itemID, mediadownload.Options{Force: true, AllowedAssetIDs: assetIDs, MediaNamespace: namespace, Timeout: opts.Timeout, Logger: opts.Logger})
 		stats.ItemsVisited++
 		if mediaStats.Downloaded > 0 {

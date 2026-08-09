@@ -160,7 +160,7 @@ func runBookmarksWithResolver(ctx context.Context, cfg config.Config, st *store.
 				}
 			}
 			downloadStats, err := mediadownload.RunForItem(ctx, cfg, st, result.ItemID, mediadownload.Options{
-				MediaNamespace: "bsky",
+				MediaNamespace: mediadownload.MediaNamespaceForSourceType(item.SourceType),
 				HTTPPolicy:     opts.MediaHTTPPolicy,
 			})
 			if err != nil {

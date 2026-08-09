@@ -214,6 +214,48 @@ func TestBookmarkViewToProjectionKeepsTextOptionalAndDecodesImageViews(t *testin
 	}
 }
 
+func TestBookmarkViewToProjectionKeepsTextOptionalAndDecodesGalleryViews(t *testing.T) {
+	view := bookmarkView{
+		Subject: bookmarkSubject{URI: "at://did:plc:one/app.bsky.feed.post/3lq7gallery"},
+		Item: json.RawMessage(`{
+  "uri": "at://did:plc:one/app.bsky.feed.post/3lq7gallery",
+  "author": {"did": "did:plc:one", "handle": "alice.example"},
+  "record": {"text": "", "createdAt": "2026-08-07T17:00:00Z"},
+  "embed": {
+    "$type": "app.bsky.embed.gallery#view",
+    "items": [
+      {"$type": "app.bsky.embed.gallery#viewImage", "fullsize": "https://cdn.example/one.jpg", "thumbnail": "https://cdn.example/one-thumb.jpg", "alt": "First gallery image", "aspectRatio": {"width": 1200, "height": 800}},
+      {"$type": "app.bsky.embed.gallery#viewImage", "fullsize": "https://cdn.example/two.jpg", "thumbnail": "https://cdn.example/two-thumb.jpg", "alt": "Second gallery image", "aspectRatio": {"width": 800, "height": 1200}}
+    ]
+  }
+}`),
+	}
+
+	projection, err := bookmarkViewToProjection(context.Background(), view, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("bookmarkViewToProjection: %v", err)
+	}
+	if projection.Item.Text != "" {
+		t.Fatalf("text = %q, want empty text to remain importable", projection.Item.Text)
+	}
+	if projection.Item.Title != "First gallery image" {
+		t.Fatalf("title = %q, want first gallery alt text", projection.Item.Title)
+	}
+	if !projection.MediaKnown || projection.MediaUnavailable {
+		t.Fatalf("media state = known=%v unavailable=%v", projection.MediaKnown, projection.MediaUnavailable)
+	}
+	if len(projection.MediaCandidates) != 2 {
+		t.Fatalf("media candidates = %#v", projection.MediaCandidates)
+	}
+	want := []model.MediaCandidate{
+		{RemoteURL: "https://cdn.example/one.jpg", ExpandedURL: "https://bsky.app/profile/alice.example/post/3lq7gallery", MediaType: "photo", Width: 1200, Height: 800},
+		{RemoteURL: "https://cdn.example/two.jpg", ExpandedURL: "https://bsky.app/profile/alice.example/post/3lq7gallery", MediaType: "photo", Width: 800, Height: 1200},
+	}
+	if got := projection.MediaCandidates; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("media candidates = %#v, want %#v", got, want)
+	}
+}
+
 func TestBookmarkViewToProjectionCollectsNestedExternalLinksWithoutMediaURLs(t *testing.T) {
 	view := bookmarkView{
 		Subject: bookmarkSubject{URI: "at://did:plc:one/app.bsky.feed.post/3lq7nested"},

@@ -73,6 +73,34 @@ func decodeBookmarkMediaView(ctx context.Context, did, canonicalURL string, reco
 			})
 		}
 		return bookmarkMediaDecode{candidates: candidates, known: true, supported: true}
+	case "app.bsky.embed.gallery#view", "app.bsky.embed.gallery":
+		var view struct {
+			Items []struct {
+				Fullsize    string `json:"fullsize"`
+				AspectRatio struct {
+					Width  int `json:"width"`
+					Height int `json:"height"`
+				} `json:"aspectRatio"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(raw, &view); err != nil || len(view.Items) == 0 {
+			return bookmarkMediaDecode{unavailable: true, supported: true}
+		}
+		candidates := make([]model.MediaCandidate, 0, len(view.Items))
+		for _, image := range view.Items {
+			remoteURL := strings.TrimSpace(image.Fullsize)
+			if !validHTTPURL(remoteURL) {
+				return bookmarkMediaDecode{unavailable: true, supported: true}
+			}
+			candidates = append(candidates, model.MediaCandidate{
+				RemoteURL:   remoteURL,
+				ExpandedURL: canonicalURL,
+				MediaType:   "photo",
+				Width:       image.AspectRatio.Width,
+				Height:      image.AspectRatio.Height,
+			})
+		}
+		return bookmarkMediaDecode{candidates: candidates, known: true, supported: true}
 	case "app.bsky.embed.video#view", "app.bsky.embed.video":
 		media := bookmarkMediaDecode{supported: true}
 		playlist := rawString(object["playlist"])
@@ -245,6 +273,21 @@ func collectEmbedTitle(raw json.RawMessage, title *string) {
 		}
 		if json.Unmarshal(raw, &images) == nil {
 			for _, image := range images.Images {
+				if alt := deriveTitle(image.Alt); alt != "" {
+					*title = alt
+					return
+				}
+			}
+		}
+	}
+	if typeName == "app.bsky.embed.gallery#view" || typeName == "app.bsky.embed.gallery" {
+		var gallery struct {
+			Items []struct {
+				Alt string `json:"alt"`
+			} `json:"items"`
+		}
+		if json.Unmarshal(raw, &gallery) == nil {
+			for _, image := range gallery.Items {
 				if alt := deriveTitle(image.Alt); alt != "" {
 					*title = alt
 					return

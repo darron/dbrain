@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +22,75 @@ import (
 	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 )
+
+func TestDownloadRefClosesOriginalResponseBody(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	body := &trackingReadCloser{Reader: strings.NewReader("jpeg-bytes")}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"content-type": []string{"image/jpeg"}},
+			Body:          body,
+			ContentLength: int64(len("jpeg-bytes")),
+		}, nil
+	})}
+
+	result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{
+		RemoteURL: "https://media.example/image.jpg",
+		MediaType: "photo",
+	}, "x", progressOptions{})
+	if err != nil {
+		t.Fatalf("downloadRef: %v", err)
+	}
+	if result.Status != model.MediaDownloadStatusDownloaded {
+		t.Fatalf("result = %#v", result)
+	}
+	if !body.closed {
+		t.Fatal("downloadRef did not close the original response body")
+	}
+}
+
+func TestMediaNamespaceForSourceType(t *testing.T) {
+	for _, test := range []struct {
+		sourceType string
+		want       string
+	}{
+		{sourceType: "x_bookmark", want: "x"},
+		{sourceType: "x_quote", want: "x"},
+		{sourceType: "bsky_bookmark", want: "bsky"},
+		{sourceType: "bsky_quote", want: "bsky"},
+	} {
+		t.Run(test.sourceType, func(t *testing.T) {
+			if got := MediaNamespaceForSourceType(test.sourceType); got != test.want {
+				t.Fatalf("MediaNamespaceForSourceType(%q) = %q, want %q", test.sourceType, got, test.want)
+			}
+		})
+	}
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	closed bool
+}
+
+func (b *trackingReadCloser) Close() error {
+	b.closed = true
+	return nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestRunForItemBlocksPrivateMediaWithoutWritingFile(t *testing.T) {
 	hits := 0

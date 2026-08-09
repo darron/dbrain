@@ -94,8 +94,6 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 			mediaType = "video/mp4"
 		}
 	}
-	resp.Body = io.NopCloser(bufferedBody)
-
 	tmpDir := filepath.Join(cfg.MediaDir, ".tmp")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		return model.MediaDownloadResult{}, fmt.Errorf("create media temp dir: %w", err)
@@ -117,7 +115,7 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 	if tracker != nil {
 		writer = tracker
 	}
-	written, copyErr := io.Copy(writer, resp.Body)
+	written, copyErr := io.Copy(writer, bufferedBody)
 	if tracker != nil {
 		tracker.finish()
 	}
@@ -168,6 +166,15 @@ func downloadRef(ctx context.Context, client *http.Client, cfg config.Config, re
 
 func normalizedMediaNamespace(value string) string {
 	if strings.TrimSpace(strings.ToLower(value)) == "bsky" {
+		return "bsky"
+	}
+	return "x"
+}
+
+// MediaNamespaceForSourceType keeps all Bluesky source types in the same
+// vault namespace, including child sources introduced by later importers.
+func MediaNamespaceForSourceType(sourceType string) string {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(sourceType)), "bsky_") {
 		return "bsky"
 	}
 	return "x"
