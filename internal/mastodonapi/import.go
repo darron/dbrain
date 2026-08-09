@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -299,7 +298,7 @@ func RunBookmarksWithClient(ctx context.Context, cfg config.Config, st *store.St
 			if mediaChanged {
 				stats.MediaLinked++
 			}
-			downloadStats, downloadErr := downloadMastodonItemMedia(ctx, cfg, st, result.ItemID, projection.Item.SourceType, projection.MediaCandidates, opts.MediaHTTPPolicy)
+			downloadStats, downloadErr := downloadMastodonItemMedia(ctx, cfg, st, result.ItemID, projection.Item.SourceType, projection.MediaCandidates, opts.Force, opts.MediaHTTPPolicy)
 			if downloadErr != nil {
 				return stats, downloadErr
 			}
@@ -366,7 +365,7 @@ func RunBookmarksWithClient(ctx context.Context, cfg config.Config, st *store.St
 	if stats.StoppedReason == "limit reached" {
 		return stats, nil
 	}
-	mediaStats, mediaErr := retryMastodonMedia(ctx, cfg, st, opts.MediaRetryLimit, opts.MediaHTTPPolicy)
+	mediaStats, mediaErr := retryMastodonMedia(ctx, cfg, st, opts.MediaRetryLimit, opts.Force, opts.MediaHTTPPolicy)
 	if mediaErr != nil {
 		return stats, mediaErr
 	}
@@ -462,8 +461,8 @@ func redactMastodonError(err error) string {
 	return value
 }
 
-func retryMastodonMedia(ctx context.Context, cfg config.Config, st *store.Store, limit int, basePolicy *safehttp.Policy) (mediadownload.Stats, error) {
-	refs, err := st.ListMastodonMediaRefsForDownload(ctx, limit, false)
+func retryMastodonMedia(ctx context.Context, cfg config.Config, st *store.Store, limit int, force bool, basePolicy *safehttp.Policy) (mediadownload.Stats, error) {
+	refs, err := st.ListMastodonMediaRefsForDownload(ctx, limit, force)
 	if err != nil {
 		return mediadownload.Stats{}, err
 	}
@@ -474,11 +473,12 @@ func retryMastodonMedia(ctx context.Context, cfg config.Config, st *store.Store,
 			continue
 		}
 		seenAssets[ref.MediaAssetID] = struct{}{}
-		policy, ok := mastodonMediaHTTPPolicy(ref.RemoteURL, basePolicy)
-		if !ok {
-			continue
+		policy, policyErr := MediaHTTPPolicy(ref.RemoteURL, basePolicy)
+		if policyErr != nil {
+			return total, fmt.Errorf("build Mastodon media recovery policy: %w", policyErr)
 		}
 		stats, runErr := mediadownload.RunForItem(ctx, cfg, st, ref.ItemID, mediadownload.Options{
+			Force:           force,
 			MediaNamespace:  mediadownload.MediaNamespaceForSourceType("mastodon_bookmark"),
 			AllowedAssetIDs: []int64{ref.MediaAssetID},
 			HTTPPolicy:      &policy,
@@ -497,12 +497,12 @@ func retryMastodonMedia(ctx context.Context, cfg config.Config, st *store.Store,
 	return total, nil
 }
 
-func downloadMastodonItemMedia(ctx context.Context, cfg config.Config, st *store.Store, itemID int64, sourceType string, candidates []model.MediaCandidate, basePolicy *safehttp.Policy) (mediadownload.Stats, error) {
+func downloadMastodonItemMedia(ctx context.Context, cfg config.Config, st *store.Store, itemID int64, sourceType string, candidates []model.MediaCandidate, force bool, basePolicy *safehttp.Policy) (mediadownload.Stats, error) {
 	var total mediadownload.Stats
 	for _, candidate := range candidates {
-		policy, ok := mastodonMediaHTTPPolicy(candidate.RemoteURL, basePolicy)
-		if !ok {
-			continue
+		policy, policyErr := MediaHTTPPolicy(candidate.RemoteURL, basePolicy)
+		if policyErr != nil {
+			return total, fmt.Errorf("build Mastodon media download policy: %w", policyErr)
 		}
 		refs, err := st.ListItemMediaRefs(ctx, itemID)
 		if err != nil {
@@ -512,7 +512,7 @@ func downloadMastodonItemMedia(ctx context.Context, cfg config.Config, st *store
 			if ref.RemoteURL != candidate.RemoteURL {
 				continue
 			}
-			stats, runErr := mediadownload.RunForItem(ctx, cfg, st, itemID, mediadownload.Options{MediaNamespace: mediadownload.MediaNamespaceForSourceType(sourceType), AllowedAssetIDs: []int64{ref.MediaAssetID}, HTTPPolicy: &policy})
+			stats, runErr := mediadownload.RunForItem(ctx, cfg, st, itemID, mediadownload.Options{Force: force, MediaNamespace: mediadownload.MediaNamespaceForSourceType(sourceType), AllowedAssetIDs: []int64{ref.MediaAssetID}, HTTPPolicy: &policy})
 			if runErr != nil {
 				return total, fmt.Errorf("download Mastodon media %s: %w", candidate.RemoteURL, runErr)
 			}
@@ -526,24 +526,6 @@ func downloadMastodonItemMedia(ctx context.Context, cfg config.Config, st *store
 		}
 	}
 	return total, nil
-}
-
-func mastodonMediaHTTPPolicy(rawURL string, basePolicy *safehttp.Policy) (safehttp.Policy, bool) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Hostname() == "" {
-		return safehttp.Policy{}, false
-	}
-	origin, err := safehttp.CanonicalOriginEndpoint(parsed.Scheme + "://" + parsed.Host)
-	if err != nil {
-		return safehttp.Policy{}, false
-	}
-	policy := safehttp.Policy{AllowedOrigins: []string{origin}, RejectCredentialQueryOnRedirect: true}
-	if basePolicy != nil {
-		policy = *basePolicy
-		policy.AllowedOrigins = []string{origin}
-		policy.RejectCredentialQueryOnRedirect = true
-	}
-	return policy, true
 }
 
 func firstNonEmpty(values ...string) string {

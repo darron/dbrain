@@ -55,7 +55,7 @@ func bindSyncAllFlags(cmd *cobra.Command, flags *syncAllFlags) {
 	cmd.Flags().DurationVar(&flags.pollInterval, "poll-interval", 30*time.Second, "How often to poll for new source backlog while watching")
 	cmd.Flags().DurationVar(&flags.idleExitAfter, "idle-exit-after", 0, "Optional maximum idle watch duration before exiting")
 	cmd.Flags().IntVar(&flags.maxCycles, "max-cycles", 0, "Optional maximum source worker cycles before exiting")
-	cmd.Flags().BoolVar(&flags.force, "force", false, "Reprocess existing items and sources instead of only incrementally handling new or stale work")
+	cmd.Flags().BoolVar(&flags.force, "force", false, "Reprocess existing items and sources, including retrying terminal blocked Mastodon media")
 	cmd.Flags().BoolVar(&flags.summarize, "summarize", true, "Run summarize.sh summarization during import and enrichment stages")
 	cmd.Flags().StringVar(&flags.model, "model", "", "Optional summarize model override")
 	cmd.Flags().StringVar(&flags.cliProvider, "cli", defaultCLIProvider, "Summarize CLI provider")

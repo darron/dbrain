@@ -31,6 +31,11 @@ development date for the change set.
   expanded raw/error credential variants, and non-RFC timestamps are rejected
   or redacted; API-error, rate-limit, and retry counters are preserved in
   direct and sync summaries.
+- **Explicit blocked-media recovery**: Production media validation now
+  registers JPEG and PNG decoders alongside GIF and WebP, and explicit
+  Mastodon import or sync `--force` runs retry terminal blocked media through
+  the same exact-origin, credential-free download policy. Ordinary imports
+  continue to leave terminal media blocked.
 
 ### Reusable Bluesky bookmark import (2026-08-08)
 

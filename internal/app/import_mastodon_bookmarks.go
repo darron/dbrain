@@ -100,7 +100,7 @@ func newImportMastodonBookmarksCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&accountKey, "account", "", "Configured Mastodon account key")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Optional maximum number of bookmark statuses to process")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Per-request timeout for Mastodon API calls; media downloads use their own bounded timeout")
-	cmd.Flags().BoolVar(&force, "force", false, "Restart the account's bookmark backfill from the endpoint head")
+	cmd.Flags().BoolVar(&force, "force", false, "Restart the account's bookmark backfill from the endpoint head and retry terminal blocked Mastodon media")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print import stats as JSON")
 	_ = cmd.MarkFlagRequired("account")
 	return cmd
