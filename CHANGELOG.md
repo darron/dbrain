@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Mastodon account authorization (2026-08-09)
+
+- **Instance-scoped read-only OAuth**: Added canonical per-account Mastodon
+  origins, typed secret references, PKCE login, verified-account status, and
+  revoke-first logout. Bookmark import and sync-all integration follow in the
+  stacked Mastodon parity changes.
+
 ### Reusable Bluesky bookmark import (2026-08-08)
 
 - **Profile-backed bookmark ingestion**: Added an opt-in `dbrain import bluesky

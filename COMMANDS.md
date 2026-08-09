@@ -8,6 +8,9 @@ This document is the detailed command and task reference for `dbrain`. Every com
 - `dbrain auth github approve <username>`
 - `dbrain auth github list`
 - `dbrain auth github remove <username>`
+- `dbrain auth mastodon login <account-key>`
+- `dbrain auth mastodon status <account-key>`
+- `dbrain auth mastodon logout <account-key>`
 - `dbrain auth mcp token add <name>`
 - `dbrain auth mcp token list`
 - `dbrain auth mcp token revoke <id-or-name-or-fingerprint>`

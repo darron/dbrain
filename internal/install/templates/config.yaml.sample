@@ -20,6 +20,16 @@ auth:
     client_id: "" # DBRAIN_AUTH_GITHUB_CLIENT_ID
     client_secret: "" # DBRAIN_AUTH_GITHUB_CLIENT_SECRET; secret ref supported
 
+mastodon:
+  enabled: false # Enable configured Mastodon bookmark imports
+  accounts: {} # Each account requires a canonical HTTPS origin and typed secret refs
+  # hachyderm:
+  #   enabled: true
+  #   origin: "https://hachyderm.io"
+  #   access_token_ref: "keychain://dbrain/mastodon-hachyderm-access-token"
+  #   client_id_ref: "keychain://dbrain/mastodon-hachyderm-client-id"
+  #   client_secret_ref: "keychain://dbrain/mastodon-hachyderm-client-secret"
+
 mcp:
   auth:
     enabled: false # DBRAIN_MCP_AUTH_ENABLED; require DB-backed Bearer tokens for HTTP/tsnet MCP

@@ -15,7 +15,7 @@ func newAuthCommand(root *rootOptions) *cobra.Command {
 		Short: "Manage authentication approvals and tokens",
 		RunE:  helpCommand,
 	}
-	cmd.AddCommand(newAuthGitHubCommand(root), newAuthMCPCommand(root))
+	cmd.AddCommand(newAuthGitHubCommand(root), newAuthMCPCommand(root), newAuthMastodonCommand(root))
 	return cmd
 }
 
