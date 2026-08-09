@@ -975,6 +975,42 @@ session-authenticated or public-share route.
 When bearer auth is enabled, MCP HTTP access logs include the token record name
 and fingerprint, never the raw token.
 
+### Mastodon bookmark account authorization
+
+Mastodon is decentralized, so each configured bookmark account names its
+canonical HTTPS instance origin. The importer is not tied to Hachyderm; that
+is only the first instance used for testing. Configure deterministic typed
+secret references before starting OAuth:
+
+```yaml
+mastodon:
+  enabled: true
+  accounts:
+    hachyderm:
+      enabled: true
+      origin: "https://hachyderm.io"
+      access_token_ref: "keychain://dbrain/mastodon-hachyderm-access-token"
+      client_id_ref: "keychain://dbrain/mastodon-hachyderm-client-id"
+      client_secret_ref: "keychain://dbrain/mastodon-hachyderm-client-secret"
+```
+
+Run the local, read-only PKCE login with the configured account key:
+
+```sh
+dbrain auth mastodon login hachyderm --instance https://hachyderm.io
+dbrain auth mastodon status hachyderm
+dbrain auth mastodon logout hachyderm
+```
+
+The fixed loopback callback is
+`http://127.0.0.1:8743/oauth/mastodon/callback`. Login prints the authorization
+URL even when automatic browser opening is unavailable. `status` verifies the
+token against the configured origin and prints only the verified account,
+read-only scopes, and a non-secret token fingerprint. `logout` revokes the
+token remotely before deleting its Keychain entry; use `--local-only` only when
+remote revocation is unavailable and `--forget-client` when the per-instance
+OAuth application should also be removed.
+
 ### Import Credentials
 
 For GitHub stars, use a fine-grained PAT with:
