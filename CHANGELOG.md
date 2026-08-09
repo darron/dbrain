@@ -42,7 +42,8 @@ development date for the change set.
   source-neutral for every linked media owner while social owners still gate
   OCR/transcription completeness. Explicit pruned-media repair uses the shared
   social source predicate and reconstructs the exact Mastodon media origin
-  without forwarding API credentials.
+  without forwarding API credentials; shared assets prefer a selected Mastodon
+  owner before reconstructing that policy.
 
 ### Reusable Bluesky bookmark import (2026-08-08)
 

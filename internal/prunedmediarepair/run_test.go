@@ -388,6 +388,61 @@ func TestRunApplyDownloadsSharedAssetOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestRunApplyPrefersMastodonOwnerForSharedAssetPolicy(t *testing.T) {
+	t.Parallel()
+
+	cfg, st := openPrunedMediaRepairTestStore(t)
+	remoteURL := "https://media.mastodon.example/shared-photo.jpg"
+	bskyItemID := seedSocialCoordinatorRepairItem(t, st, "bsky:shared-mastodon-policy", "bsky_bookmark", "photo", remoteURL)
+	mastodonItemID := seedSocialCoordinatorRepairItem(t, st, "mastodon:shared-mastodon-policy", "mastodon_bookmark", "photo", remoteURL)
+	if bskyItemID >= mastodonItemID {
+		t.Fatalf("test fixture item ordering = bsky %d, Mastodon %d; want lower-ID Bluesky owner", bskyItemID, mastodonItemID)
+	}
+	bskyRefs, err := st.ListItemMediaRefs(t.Context(), bskyItemID)
+	if err != nil || len(bskyRefs) != 1 {
+		t.Fatalf("Bluesky refs=%+v err=%v", bskyRefs, err)
+	}
+	mastodonRefs, err := st.ListItemMediaRefs(t.Context(), mastodonItemID)
+	if err != nil || len(mastodonRefs) != 1 {
+		t.Fatalf("Mastodon refs=%+v err=%v", mastodonRefs, err)
+	}
+	if bskyRefs[0].MediaAssetID != mastodonRefs[0].MediaAssetID {
+		t.Fatalf("shared asset IDs = Bluesky %d, Mastodon %d", bskyRefs[0].MediaAssetID, mastodonRefs[0].MediaAssetID)
+	}
+
+	calls := 0
+	stats, err := runWithDownloader(t.Context(), cfg, st, Options{
+		Apply: true, OCR: true, Limit: 5000, Timeout: 45 * time.Second,
+	}, func(_ context.Context, _ config.Config, _ *store.Store, itemID int64, opts mediadownload.Options) (mediadownload.Stats, error) {
+		calls++
+		if itemID != mastodonItemID {
+			t.Fatalf("shared asset owner item=%d, want Mastodon item %d", itemID, mastodonItemID)
+		}
+		if opts.MediaNamespace != "mastodon" || len(opts.AllowedAssetIDs) != 1 || opts.AllowedAssetIDs[0] != mastodonRefs[0].MediaAssetID {
+			t.Fatalf("Mastodon shared-asset options = %+v", opts)
+		}
+		if opts.HTTPPolicy == nil {
+			t.Fatal("Mastodon shared-asset repair omitted HTTPPolicy")
+		}
+		wantPolicy, err := mastodonapi.MediaHTTPPolicy(mastodonRefs[0].RemoteURL, nil)
+		if err != nil {
+			t.Fatalf("MediaHTTPPolicy: %v", err)
+		}
+		if !slices.Equal(opts.HTTPPolicy.AllowedOrigins, wantPolicy.AllowedOrigins) ||
+			!opts.HTTPPolicy.RejectCredentialQueryOnRedirect || opts.HTTPPolicy.AllowPrivateNetwork ||
+			len(opts.HTTPPolicy.AllowedPrivateOrigins) != 0 {
+			t.Fatalf("shared-asset Mastodon policy = %+v, want exact public origin", opts.HTTPPolicy)
+		}
+		return mediadownload.Stats{Candidates: 1, Requested: 1, Downloaded: 1, Changed: 1}, nil
+	})
+	if err != nil {
+		t.Fatalf("runWithDownloader: %v", err)
+	}
+	if calls != 1 || stats.OCRCandidates != 2 || stats.ItemsVisited != 1 || stats.MediaDownloaded != 1 {
+		t.Fatalf("shared Mastodon-preferred repair calls=%d stats=%+v", calls, stats)
+	}
+}
+
 func openPrunedMediaRepairTestStore(t *testing.T) (config.Config, *store.Store) {
 	t.Helper()
 	root := t.TempDir()
