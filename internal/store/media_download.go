@@ -108,7 +108,9 @@ func (s *Store) SaveMediaDownload(ctx context.Context, assetID int64, result mod
 			if nextErrorCount < model.MediaDownloadMaxConsecutiveErrors {
 				nextErrorCount = model.MediaDownloadMaxConsecutiveErrors
 			}
-			nextError = terminalMediaDownloadError(nextErrorCount, nextError)
+			if strings.TrimSpace(nextError) == "" {
+				nextError = "media download blocked"
+			}
 		case model.MediaDownloadStatusDownloaded, model.MediaDownloadStatusGone:
 			nextErrorCount = 0
 			nextLastAttemptAt = lastAttemptAt

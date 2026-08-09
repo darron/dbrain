@@ -161,7 +161,11 @@ func (s *Store) upsertMediaAssetTx(ctx context.Context, tx *sql.Tx, media model.
 	default:
 	}
 
-	nextType := firstNonEmpty(media.MediaType, currentType)
+	// A remote URL is the asset identity. Once its family is established,
+	// later source projections must not relabel a downloaded photo as audio or
+	// video (which would make the existing bytes, extension, and enrichment
+	// state lie about the asset).
+	nextType := firstNonEmpty(currentType, media.MediaType)
 	nextWidth := maxInt(media.Width, currentWidth)
 	nextHeight := maxInt(media.Height, currentHeight)
 	nextStatus := currentStatus
@@ -224,6 +228,68 @@ func (s *Store) SaveItemMediaCandidates(ctx context.Context, itemID int64, candi
 				}
 			}
 			return changed, nil
+		})
+	})
+}
+
+// MergeItemMediaCandidates adds validated candidates to the current item
+// links without treating an incomplete source projection as authoritative.
+// Existing links are retained when a server includes an unsupported or
+// malformed attachment alongside valid media.
+func (s *Store) MergeItemMediaCandidates(ctx context.Context, itemID int64, candidates []model.MediaCandidate) (bool, error) {
+	return withBusyRetry(ctx, func() (bool, error) {
+		return withAuthoritativeWriteTx(ctx, s, "merge-item-media", func(ctx context.Context, tx authoritativeWriteTx) (bool, error) {
+			current, err := s.listItemMediaRefsTx(ctx, tx, itemID)
+			if err != nil {
+				return false, err
+			}
+			merged := make([]model.MediaCandidate, 0, len(current)+len(candidates))
+			byRemoteURL := make(map[string]int, len(current)+len(candidates))
+			for _, ref := range current {
+				remoteURL := strings.TrimSpace(ref.RemoteURL)
+				if remoteURL == "" {
+					continue
+				}
+				byRemoteURL[remoteURL] = len(merged)
+				merged = append(merged, model.MediaCandidate{
+					RemoteURL:   remoteURL,
+					ExpandedURL: strings.TrimSpace(ref.ExpandedURL),
+					MediaType:   strings.TrimSpace(ref.MediaType),
+					Width:       ref.Width,
+					Height:      ref.Height,
+				})
+			}
+			for _, candidate := range candidates {
+				remoteURL := strings.TrimSpace(candidate.RemoteURL)
+				if remoteURL == "" {
+					continue
+				}
+				if index, ok := byRemoteURL[remoteURL]; ok {
+					current := &merged[index]
+					if strings.TrimSpace(candidate.ExpandedURL) != "" {
+						current.ExpandedURL = strings.TrimSpace(candidate.ExpandedURL)
+					}
+					if strings.TrimSpace(candidate.MediaType) != "" {
+						current.MediaType = strings.TrimSpace(candidate.MediaType)
+					}
+					if candidate.Width > current.Width {
+						current.Width = candidate.Width
+					}
+					if candidate.Height > current.Height {
+						current.Height = candidate.Height
+					}
+					continue
+				}
+				byRemoteURL[remoteURL] = len(merged)
+				merged = append(merged, model.MediaCandidate{
+					RemoteURL:   remoteURL,
+					ExpandedURL: strings.TrimSpace(candidate.ExpandedURL),
+					MediaType:   strings.TrimSpace(candidate.MediaType),
+					Width:       candidate.Width,
+					Height:      candidate.Height,
+				})
+			}
+			return s.replaceItemMediaLinksTx(ctx, tx, itemID, merged, time.Now().UTC())
 		})
 	})
 }

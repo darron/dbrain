@@ -753,6 +753,7 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SYNC_ALL_IMPORT_APPLE_NOTES` | `sync_all.imports.apple_notes` | `apple_notes.enabled` | Shared `sync all` Apple Notes selection; falls back to `apple_notes.enabled` when omitted. |
 | `DBRAIN_SYNC_ALL_IMPORT_SAFARI_TABS` | `sync_all.imports.safari_tabs` | `safari_tabs.enabled` | Shared `sync all` Safari tabs selection; falls back to `safari_tabs.enabled` when omitted. |
 | `DBRAIN_SYNC_ALL_IMPORT_BLUESKY_BOOKMARKS` | `sync_all.imports.bluesky_bookmarks` | `false` | Include the opt-in Bluesky bookmark import from the Chrome profile session. |
+| `DBRAIN_SYNC_ALL_IMPORT_MASTODON_BOOKMARKS` | `sync_all.imports.mastodon_bookmarks` | `false` | Include configured Mastodon bookmark account imports in `sync all`. |
 | `DBRAIN_OKF_EXPORT_ENABLED` / `DBRAIN_SYNC_OKF_EXPORT` | `okf.export.enabled` | `false` | Export a full private OKF bundle at the end of `sync all`; use `--skip-okf-export` for a one-off opt-out. |
 | `DBRAIN_APPLE_NOTES_ENABLED` | `apple_notes.enabled` | `false` | Include Apple Notes import in `sync all` when enabled; the standalone import command remains explicit. |
 | `DBRAIN_APPLE_NOTES_DB_PATH` | `apple_notes.db_path` | `` | Optional Apple Notes `NoteStore.sqlite` path override. |
@@ -834,6 +835,9 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS` | `scheduler.sync_all.bluesky_bookmarks` | `false` | Include Bluesky bookmark import in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS_LIMIT` | `scheduler.sync_all.bluesky_bookmarks_limit` | `0` | Optional scheduled Bluesky bookmark import limit; 0 uses the `sync all` default. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_BLUESKY_BOOKMARKS_TIMEOUT` | `scheduler.sync_all.bluesky_bookmarks_timeout` | `30s` | Optional scheduled Bluesky bookmark API timeout; empty or 0 uses the importer default. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_MASTODON_BOOKMARKS` | `scheduler.sync_all.mastodon_bookmarks` | `false` | Include configured Mastodon bookmark imports in scheduled `sync all` runs. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_MASTODON_BOOKMARKS_LIMIT` | `scheduler.sync_all.mastodon_bookmarks_limit` | `0` | Optional scheduled Mastodon bookmark import limit per account. |
+| `DBRAIN_SCHEDULER_SYNC_ALL_MASTODON_BOOKMARKS_TIMEOUT` | `scheduler.sync_all.mastodon_bookmarks_timeout` | `30s` | Optional scheduled Mastodon bookmark API timeout; empty or 0 uses the importer default. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_APPLE_NOTES` | `scheduler.sync_all.apple_notes` | `false` | Include configured Apple Notes import in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_SAFARI_TABS` | `scheduler.sync_all.safari_tabs` | `false` | Include configured Safari tabs import in scheduled `sync all` runs. |
 | `DBRAIN_SCHEDULER_SYNC_ALL_ARCHIVE_MEDIA` | `scheduler.sync_all.archive_media` | `false` | Run media archive at the end of scheduled `sync all` runs. |
@@ -1000,6 +1004,7 @@ Run the local, read-only PKCE login with the configured account key:
 dbrain auth mastodon login hachyderm --instance https://hachyderm.io
 dbrain auth mastodon status hachyderm
 dbrain auth mastodon logout hachyderm
+dbrain import mastodon bookmarks --account hachyderm
 ```
 
 The fixed loopback callback is
@@ -1010,6 +1015,19 @@ read-only scopes, and a non-secret token fingerprint. `logout` revokes the
 token remotely before deleting its Keychain entry; use `--local-only` only when
 remote revocation is unavailable and `--forget-client` when the per-instance
 OAuth application should also be removed.
+
+Bookmark import follows the configured instance's authenticated
+`/api/v1/bookmarks` endpoint and persists only validated same-origin cursors.
+Use `--limit` for a bounded smoke run; if it stops inside a page, the next run
+resumes that page without losing its position. Status text, links, cards, and
+supported image/video/GIFV/audio attachments enter the normal item, source, and
+media-download pipelines; image OCR and video/GIFV transcription use the
+existing enrichment workers. Completed runs perform a bounded retry sweep for
+older retryable Mastodon media failures. Remote bookmark removal is
+append-only locally. The command exposes JSON and human-readable API-error,
+rate-limit, retry, and media counters; an
+authenticated Hachyderm smoke test requires the operator's completed OAuth
+setup and is not implied by the examples above.
 
 ### Import Credentials
 
@@ -1461,7 +1479,7 @@ backlog and explicit non-goals.
   presentation, and cleaner outbound link handling.
 - Add optional importers when they become high-value enough to justify first-
   class support: X profile/likes, Apple News bookmarks, native Substack data
-  beyond RSS/manual links, Mastodon, Instagram, MakerWorld bookmarks,
+  beyond RSS/manual links, Instagram, MakerWorld bookmarks,
   Goodreads, and Apple Podcasts.
 
 ### Pipeline gaps

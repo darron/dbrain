@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mastodonapi"
+	"github.com/darron/dbrain/internal/runtimeenv"
 	"github.com/darron/dbrain/internal/syncjob"
 )
 
@@ -44,6 +47,9 @@ type syncAllFlags struct {
 	blueskyBookmarks             bool
 	blueskyBookmarksLimit        int
 	blueskyBookmarksTimeout      time.Duration
+	mastodonBookmarks            bool
+	mastodonBookmarksLimit       int
+	mastodonBookmarksTimeout     time.Duration
 	safariTabs                   bool
 	safariTabsDBPath             string
 	safariTabsDevice             string
@@ -115,6 +121,11 @@ func syncOptionsFromFlags(ctx context.Context, cfg config.Config, flags syncAllF
 			return syncjob.Options{}, err
 		}
 	}
+	if flags.mastodonBookmarks {
+		if err := preflightMastodonBookmarks(ctx, cfg); err != nil {
+			return syncjob.Options{}, err
+		}
+	}
 
 	var archiveAccessKeyID string
 	var archiveSecretKey string
@@ -140,6 +151,9 @@ func syncOptionsFromFlags(ctx context.Context, cfg config.Config, flags syncAllF
 		BlueskyBookmarksEnabled:      flags.blueskyBookmarks,
 		BlueskyBookmarksLimit:        flags.blueskyBookmarksLimit,
 		BlueskyBookmarksTimeout:      flags.blueskyBookmarksTimeout,
+		MastodonBookmarksEnabled:     flags.mastodonBookmarks,
+		MastodonBookmarksLimit:       flags.mastodonBookmarksLimit,
+		MastodonBookmarksTimeout:     flags.mastodonBookmarksTimeout,
 		XEnabled:                     !flags.skipX,
 		XLimit:                       flags.xLimit,
 		XConcurrency:                 flags.xConcurrency,
@@ -214,4 +228,32 @@ func syncOptionsFromFlags(ctx context.Context, cfg config.Config, flags syncAllF
 		Logger:                       logger,
 		Progress:                     progress,
 	}, nil
+}
+
+func preflightMastodonBookmarks(ctx context.Context, cfg config.Config) error {
+	raw, ok := runtimeenv.ConfigMap(cfg.RootDir, "mastodon")
+	if !ok {
+		return fmt.Errorf("mastodon bookmark import requested but mastodon configuration is missing")
+	}
+	mastodonConfig, err := mastodonapi.ParseConfig(raw)
+	if err != nil {
+		return err
+	}
+	if !mastodonConfig.Enabled {
+		return fmt.Errorf("mastodon bookmark import requested but mastodon is disabled in configuration")
+	}
+	enabled := 0
+	for _, account := range mastodonConfig.Accounts {
+		if !account.Enabled {
+			continue
+		}
+		enabled++
+		if _, err := mastodonapi.ResolveTypedSecretRef(ctx, account.AccessTokenRef); err != nil {
+			return fmt.Errorf("mastodon account %q is not ready: resolve access token: %w", account.Key, err)
+		}
+	}
+	if enabled == 0 {
+		return fmt.Errorf("mastodon bookmark import requested but no enabled mastodon accounts are configured")
+	}
+	return nil
 }

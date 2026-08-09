@@ -91,6 +91,11 @@ func emitSyncStageMetrics(run metrics.RunContext, opts stageOptions, stats *Stat
 			"limit":      opts.BlueskyBookmarks.Limit,
 			"timeout_ms": metrics.DurationMillis(opts.BlueskyBookmarks.Timeout),
 		})
+	case syncStageMastodonBookmarks:
+		emitStage(run, "mastodon_bookmarks", stats.MastodonBookmarks, stageErr, map[string]any{
+			"limit":      opts.MastodonBookmarks.Limit,
+			"timeout_ms": metrics.DurationMillis(opts.MastodonBookmarks.Timeout),
+		})
 	case syncStageXFrontier:
 		emitStage(run, "x_bookmarks", stats.XBookmarks, stageErr, nil)
 		emitStage(run, "x", stats.X, stageErr, nil)
@@ -143,6 +148,9 @@ func selectedMetricStages(opts Options) []string {
 	if opts.BlueskyBookmarksEnabled {
 		out = append(out, "bluesky_bookmarks")
 	}
+	if opts.MastodonBookmarksEnabled {
+		out = append(out, "mastodon_bookmarks")
+	}
 	if opts.XBookmarksEnabled {
 		out = append(out, "x_bookmarks")
 	}
@@ -185,12 +193,13 @@ func selectedMetricStages(opts Options) []string {
 func emitSyncImportMetrics(run metrics.RunContext, stats Stats, stageErrors map[syncStageID]error) {
 	opts := newStageOptions(Options{
 		AppleNotesEnabled: stats.AppleNotes != nil, SafariTabsEnabled: stats.SafariTabs != nil,
-		BlueskyBookmarksEnabled: stats.BlueskyBookmarks != nil,
-		XBookmarksEnabled:       stats.XBookmarks != nil, GitHubEnabled: stats.GitHub != nil,
+		BlueskyBookmarksEnabled:  stats.BlueskyBookmarks != nil,
+		MastodonBookmarksEnabled: stats.MastodonBookmarks != nil,
+		XBookmarksEnabled:        stats.XBookmarks != nil, GitHubEnabled: stats.GitHub != nil,
 		YouTubeEnabled: stats.YouTube != nil, WatchLater: stats.YouTube != nil, Liked: stats.YouTube != nil,
 		FeedsEnabled: stats.Feeds != nil,
 	})
-	for _, stage := range []syncStageID{syncStageAppleNotes, syncStageSafariTabs, syncStageBlueskyBookmarks, syncStageXFrontier, syncStageGitHub, syncStageYouTube, syncStageFeeds} {
+	for _, stage := range []syncStageID{syncStageAppleNotes, syncStageSafariTabs, syncStageBlueskyBookmarks, syncStageMastodonBookmarks, syncStageXFrontier, syncStageGitHub, syncStageYouTube, syncStageFeeds} {
 		emitSyncImportStageMetric(run, opts, stage, stats, stageErrors[stage])
 	}
 }
@@ -247,6 +256,26 @@ func emitSyncImportStageMetric(run metrics.RunContext, opts stageOptions, stage 
 			emit("bluesky_bookmarks", value.Duration, counts, s.MediaErrors > 0)
 		} else if opts.BlueskyBookmarks.Enabled {
 			emit("bluesky_bookmarks", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
+		}
+	case syncStageMastodonBookmarks:
+		if value := stats.MastodonBookmarks; value != nil {
+			s := value.Stats
+			counts := importCounts(s.Created, s.Updated, s.Unchanged, s.Skipped, 0, 0, s.MediaErrors)
+			counts["skipped_unsupported"] = s.SkippedUnsupported
+			counts["skipped_malformed"] = s.SkippedMalformed
+			counts["media_discovered"] = s.MediaDiscovered
+			counts["media_linked"] = s.MediaLinked
+			counts["media_unavailable"] = s.MediaUnavailable
+			counts["media_downloaded"] = s.MediaDownloaded
+			counts["media_gone"] = s.MediaGone
+			counts["media_failures"] = s.MediaErrors
+			counts["media_blocked"] = s.MediaBlocked
+			counts["api_errors"] = s.APIErrors
+			counts["rate_limits"] = s.RateLimits
+			counts["retries"] = s.Retries
+			emit("mastodon_bookmarks", value.Duration, counts, s.MediaErrors+s.APIErrors > 0)
+		} else if opts.MastodonBookmarks.Enabled {
+			emit("mastodon_bookmarks", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)
 		}
 	case syncStageXFrontier:
 		if value := stats.XBookmarks; value != nil {
@@ -478,6 +507,11 @@ func stageMetrics(value any) (time.Duration, any, bool) {
 			return 0, nil, false
 		}
 		return stage.Duration, stage.Stats, true
+	case *MastodonBookmarksStage:
+		if stage == nil {
+			return 0, nil, false
+		}
+		return stage.Duration, stage.Stats, true
 	case *XBookmarksStage:
 		if stage == nil {
 			return 0, nil, false
@@ -563,6 +597,7 @@ func completedStageCount(stats Stats) int {
 		stats.AppleNotes != nil,
 		stats.SafariTabs != nil,
 		stats.BlueskyBookmarks != nil,
+		stats.MastodonBookmarks != nil,
 		stats.XBookmarks != nil,
 		stats.X != nil,
 		stats.Links != nil,

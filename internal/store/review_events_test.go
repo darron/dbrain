@@ -13,6 +13,14 @@ import (
 	"github.com/darron/dbrain/internal/model"
 )
 
+func TestMastodonSourcesAreHighIntentReviewSources(t *testing.T) {
+	for _, sourceType := range []string{"mastodon_bookmark", "mastodon_quote", "mastodon_reblog"} {
+		if !isHighIntentReviewSource(sourceType) {
+			t.Fatalf("%s should be high-intent", sourceType)
+		}
+	}
+}
+
 func TestReviewCursorTokenRoundTrip(t *testing.T) {
 	t.Parallel()
 

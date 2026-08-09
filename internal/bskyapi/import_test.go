@@ -1,9 +1,14 @@
 package bskyapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -160,7 +165,7 @@ func TestRunBookmarksPersistsAndDownloadsTextlessImageBookmark(t *testing.T) {
 		if r.URL.Path == "/image.jpg" {
 			imageHits++
 			w.Header().Set("Content-Type", "image/jpeg")
-			_, _ = w.Write([]byte("image-bytes"))
+			_, _ = w.Write(testJPEGBytes())
 			return
 		}
 		_ = json.NewEncoder(w).Encode(bookmarkPage{Bookmarks: []bookmarkView{{
@@ -213,7 +218,7 @@ func TestRunBookmarksRetriesUnavailableVideoResolutionOnUnchangedItem(t *testing
 		if r.URL.Path == "/video" {
 			videoHits++
 			w.Header().Set("Content-Type", "video/mp4")
-			_, _ = w.Write([]byte("mp4-bytes"))
+			_, _ = w.Write(testMP4Bytes())
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -268,7 +273,7 @@ func TestRunBookmarksHydratesBlueskyQuoteChildWithMediaAndLinks(t *testing.T) {
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/quote.jpg" {
 			w.Header().Set("Content-Type", "image/jpeg")
-			_, _ = w.Write([]byte("quote-image-bytes"))
+			_, _ = w.Write(testJPEGBytes())
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -632,4 +637,40 @@ func testBookmarkStore(t *testing.T) (config.Config, *store.Store) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return cfg, st
+}
+
+func testJPEGBytes() []byte {
+	imageData := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	imageData.SetRGBA(0, 0, color.RGBA{R: 0x33, G: 0x66, B: 0x99, A: 0xff})
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, imageData, nil); err != nil {
+		panic(err)
+	}
+	return encoded.Bytes()
+}
+
+func testMP4Bytes() []byte {
+	avcConfig := []byte{1, 0x64, 0, 0x1f, 0xff, 0xe1, 0, 4, 0x67, 0x64, 0, 0x1f, 1, 0, 2, 0x68, 0xeb}
+	sampleEntry := make([]byte, 8+78+8+len(avcConfig))
+	binary.BigEndian.PutUint32(sampleEntry[:4], uint32(len(sampleEntry)))
+	copy(sampleEntry[4:8], []byte("avc1"))
+	binary.BigEndian.PutUint32(sampleEntry[8+78:8+78+4], uint32(8+len(avcConfig)))
+	copy(sampleEntry[8+78+4:8+78+8], []byte("avcC"))
+	copy(sampleEntry[8+78+8:], avcConfig)
+	stsdPayload := append([]byte{0, 0, 0, 0, 0, 0, 0, 1}, sampleEntry...)
+	stsd := testISOBox("stsd", stsdPayload)
+	stbl := testISOBox("stbl", stsd)
+	minf := testISOBox("minf", stbl)
+	mdia := testISOBox("mdia", minf)
+	trak := testISOBox("trak", mdia)
+	moov := testISOBox("moov", trak)
+	nal := append([]byte{0, 0, 0, 16, 0x65, 0x88, 0x84, 0x21}, bytes.Repeat([]byte{0x55}, 12)...)
+	return append(testISOBox("ftyp", []byte{'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm', 'i', 's', 'o', '2'}), append(moov, testISOBox("mdat", nal)...)...)
+}
+
+func testISOBox(boxType string, payload []byte) []byte {
+	result := make([]byte, 8, 8+len(payload))
+	binary.BigEndian.PutUint32(result[:4], uint32(8+len(payload)))
+	copy(result[4:], boxType)
+	return append(result, payload...)
 }

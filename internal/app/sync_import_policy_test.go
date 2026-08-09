@@ -35,8 +35,11 @@ sync_all:
 	if err != nil {
 		t.Fatalf("resolveSyncAllFlags: %v", err)
 	}
-	if !resolved.skipXBookmarks || !resolved.skipX || !resolved.skipXMedia || !resolved.skipXPhotoOCR {
-		t.Fatalf("disabled X selection should skip the full X family: %+v", resolved)
+	if !resolved.skipXBookmarks || !resolved.skipX {
+		t.Fatalf("disabled X selection should skip X bookmarks and enrichment: %+v", resolved)
+	}
+	if resolved.skipXMedia || resolved.skipXPhotoOCR {
+		t.Fatalf("enabled Bluesky bookmarks should keep shared media enrichment enabled: %+v", resolved)
 	}
 	if !resolved.skipGitHub || !resolved.skipFeeds {
 		t.Fatalf("disabled GitHub/feed selections were not applied: %+v", resolved)
@@ -52,6 +55,53 @@ sync_all:
 	}
 	if resolved.browser != "firefox" || resolved.profile != "research" {
 		t.Fatalf("shared browser/profile were not applied: %+v", resolved)
+	}
+}
+
+func TestResolveSyncAllFlagsKeepsSharedMediaEnrichmentForMastodonOnly(t *testing.T) {
+	clearSyncImportPolicyEnv(t)
+	root := t.TempDir()
+	writeSyncImportPolicyConfig(t, root, `
+sync_all:
+  imports:
+    x_bookmarks: false
+    mastodon_bookmarks: true
+`)
+
+	resolved, err := resolveSyncAllFlags(root, syncAllFlags{})
+	if err != nil {
+		t.Fatalf("resolveSyncAllFlags: %v", err)
+	}
+	if resolved.skipXMedia || resolved.skipXPhotoOCR {
+		t.Fatalf("Mastodon-only bookmark import disabled shared media enrichment: %+v", resolved)
+	}
+}
+
+func TestResolveSyncAllFlagsUsesEffectiveCLIAndSchedulerMastodonSelection(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		overrides syncAllFlagOverrides
+	}{
+		{name: "cli", overrides: syncAllFlagOverrides{mastodonBookmarks: true}},
+		{name: "scheduler"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clearSyncImportPolicyEnv(t)
+			root := t.TempDir()
+			writeSyncImportPolicyConfig(t, root, `
+sync_all:
+  imports:
+    x_bookmarks: false
+    mastodon_bookmarks: false
+`)
+			resolved, err := resolveSyncAllFlags(root, syncAllFlags{mastodonBookmarks: true}, test.overrides)
+			if err != nil {
+				t.Fatalf("resolveSyncAllFlags: %v", err)
+			}
+			if resolved.skipXMedia || resolved.skipXPhotoOCR {
+				t.Fatalf("effective Mastodon selection disabled shared enrichment: %+v", resolved)
+			}
+		})
 	}
 }
 

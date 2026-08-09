@@ -144,6 +144,28 @@ func TestClientAllowsExactPrivateOriginAndSameOriginRedirect(t *testing.T) {
 	}
 }
 
+func TestClientRejectsCredentialQueryAddedBySameOriginRedirect(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final?access_token=redirect-secret", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("must not be reached"))
+	}))
+	defer server.Close()
+
+	client := NewClient(Policy{AllowPrivateNetwork: true, RejectCredentialQueryOnRedirect: true})
+	_, err := client.Get(server.URL + "/start")
+	if !IsPolicyError(err) || !strings.Contains(err.Error(), "credential query") {
+		t.Fatalf("redirect error = %v, want credential-query policy error", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want only initial request", requests)
+	}
+}
+
 func TestClientDoesNotLeakPrivateOriginAllowanceToFallbackHost(t *testing.T) {
 	client := NewClient(Policy{
 		AllowedPrivateOrigins: []string{"http://reader.test"},

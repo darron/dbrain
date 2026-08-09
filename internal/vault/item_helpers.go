@@ -28,6 +28,10 @@ func isXItem(item model.Item) bool {
 	return itemSourceFamily(item.SourceType) == "x"
 }
 
+func isMastodonItem(item model.Item) bool {
+	return itemSourceFamily(item.SourceType) == "mastodon"
+}
+
 func isYouTubeItem(item model.Item) bool {
 	return itemSourceFamily(item.SourceType) == "youtube"
 }
@@ -41,7 +45,7 @@ func isAppleNoteItem(item model.Item) bool {
 }
 
 func itemSavedLabel(item model.Item) string {
-	if isXItem(item) {
+	if isXItem(item) || isMastodonItem(item) {
 		return "Bookmarked"
 	}
 	if isGitHubItem(item) {
@@ -68,7 +72,7 @@ func firstNonEmptyString(values ...string) string {
 }
 
 func itemTextHeading(item model.Item) string {
-	if isXItem(item) {
+	if isXItem(item) || isMastodonItem(item) {
 		return "Bookmark Text"
 	}
 	if isYouTubeItem(item) {

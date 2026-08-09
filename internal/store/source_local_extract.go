@@ -23,7 +23,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 					WHEN i.source_type = 'apple_note' THEN ''
 					ELSE i.article_text
 				END AS article_text,
-				CASE WHEN i.source_type IN ('bsky_bookmark', 'bsky_quote') THEN COALESCE(NULLIF(i.text, ''), '') ELSE '' END AS item_text,
+				CASE WHEN i.source_type IN ('bsky_bookmark', 'bsky_quote', 'mastodon_bookmark', 'mastodon_quote', 'mastodon_reblog') THEN COALESCE(NULLIF(i.text, ''), '') ELSE '' END AS item_text,
 				i.author_handle AS author_handle,
 				i.x_post_json AS x_post_json,
 				i.updated_at AS updated_at,
@@ -52,7 +52,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 					END,
 					''
 				) AS article_text,
-				CASE WHEN p.source_type IN ('bsky_bookmark', 'bsky_quote') THEN COALESCE(NULLIF(p.text, ''), '') ELSE '' END AS item_text,
+				CASE WHEN p.source_type IN ('bsky_bookmark', 'bsky_quote', 'mastodon_bookmark', 'mastodon_quote', 'mastodon_reblog') THEN COALESCE(NULLIF(p.text, ''), '') ELSE '' END AS item_text,
 				p.author_handle AS author_handle,
 				p.x_post_json AS x_post_json,
 				p.updated_at AS updated_at,
@@ -61,7 +61,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				p.id AS item_id
 			FROM item_source_links l
 			JOIN items i ON i.id = l.item_id
-			JOIN item_item_links q ON q.child_item_id = i.id AND q.link_kind = 'quoted_post'
+			JOIN item_item_links q ON q.child_item_id = i.id AND q.link_kind IN ('quoted_post', 'reposted_post')
 			JOIN items p ON p.id = q.parent_item_id
 			JOIN sources s ON s.id = l.source_id
 			WHERE l.source_id = ?

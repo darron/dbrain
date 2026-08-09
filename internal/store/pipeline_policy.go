@@ -66,7 +66,7 @@ func mediaArchiveEnrichmentCompleteWhere(alias string) string {
 		SELECT 1 FROM item_media_links l JOIN items i ON i.id = l.item_id
 		WHERE l.media_asset_id = ` + alias + `.id
 			AND i.x_media_transcript_status NOT IN ('` + model.XMediaTranscriptStatusOK + `', '` + model.XMediaTranscriptStatusNoAudio + `', '` + model.XMediaTranscriptStatusNoise + `', '` + model.XMediaTranscriptStatusTooShort + `', '` + model.XMediaTranscriptStatusEmpty + `')
-	)))`
+	)) OR ` + alias + `.media_type = 'audio')`
 }
 
 func mediaArchiveCandidateWhere(alias string, force bool) string {

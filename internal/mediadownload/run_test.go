@@ -3,7 +3,11 @@ package mediadownload
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"log/slog"
 	"net"
@@ -33,13 +37,13 @@ func TestDownloadRefClosesOriginalResponseBody(t *testing.T) {
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
-	body := &trackingReadCloser{Reader: strings.NewReader("jpeg-bytes")}
+	body := &trackingReadCloser{Reader: bytes.NewReader(fakeJPEGBytes())}
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode:    http.StatusOK,
 			Header:        http.Header{"content-type": []string{"image/jpeg"}},
 			Body:          body,
-			ContentLength: int64(len("jpeg-bytes")),
+			ContentLength: int64(len(fakeJPEGBytes())),
 		}, nil
 	})}
 
@@ -58,6 +62,251 @@ func TestDownloadRefClosesOriginalResponseBody(t *testing.T) {
 	}
 }
 
+func TestDownloadRefRejectsChunkedBodyOverConfiguredLimit(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"content-type": []string{"audio/mpeg"}},
+			Body:          io.NopCloser(strings.NewReader("0123456789")),
+			ContentLength: -1,
+		}, nil
+	})}
+	result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{RemoteURL: "https://media.example/audio.mp3", MediaType: "audio"}, "mastodon", progressOptions{MaxBytes: 4})
+	if err != nil {
+		t.Fatalf("downloadRef: %v", err)
+	}
+	if result.Status != model.MediaDownloadStatusBlocked || !strings.Contains(result.Error, "exceeds 4") {
+		t.Fatalf("result = %#v", result)
+	}
+	assertNoMediaFiles(t, cfg.MediaDir)
+}
+
+func TestDownloadRefTreatsRequestTimeoutAsRetryable(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusRequestTimeout, Body: io.NopCloser(strings.NewReader("timeout"))}, nil
+	})}
+	result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{RemoteURL: "https://media.example/image.jpg", MediaType: "photo"}, "mastodon", progressOptions{})
+	if err != nil {
+		t.Fatalf("downloadRef: %v", err)
+	}
+	if result.Status != model.MediaDownloadStatusError {
+		t.Fatalf("result = %#v, want retryable error status", result)
+	}
+}
+
+func TestDownloadRefRejectsMislabeledJSONAsPhoto(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"content-type": []string{"image/jpeg"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"not media"}`)),
+		}, nil
+	})}
+	result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{RemoteURL: "https://media.example/image.jpg", MediaType: "photo"}, "mastodon", progressOptions{})
+	if err != nil {
+		t.Fatalf("downloadRef: %v", err)
+	}
+	if result.Status != model.MediaDownloadStatusBlocked || !strings.Contains(result.Error, "content sniffed") {
+		t.Fatalf("result = %#v, want a content validation error", result)
+	}
+	assertNoMediaFiles(t, cfg.MediaDir)
+}
+
+func TestDownloadRefRejectsUnrecognizedVideoAndAudioBytes(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		mediaType string
+		mimeType  string
+	}{
+		{name: "video", mediaType: "video", mimeType: "video/mp4"},
+		{name: "audio", mediaType: "audio", mimeType: "audio/mpeg"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := config.Load(t.TempDir())
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				t.Fatalf("EnsureDirs: %v", err)
+			}
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"content-type": []string{test.mimeType}},
+					Body:       io.NopCloser(strings.NewReader("arbitrary binary bytes")),
+				}, nil
+			})}
+			result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{RemoteURL: "https://media.example/content", MediaType: test.mediaType}, "mastodon", progressOptions{})
+			if err != nil {
+				t.Fatalf("downloadRef: %v", err)
+			}
+			if result.Status != model.MediaDownloadStatusBlocked || (!strings.Contains(result.Error, "content sniffed") && !strings.Contains(result.Error, "recognized")) {
+				t.Fatalf("result = %#v, want format validation error", result)
+			}
+			assertNoMediaFiles(t, cfg.MediaDir)
+		})
+	}
+}
+
+func TestDownloadRefRejectsTruncatedContainerMagicForVideoAndAudio(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		mediaType string
+		mimeType  string
+		body      []byte
+	}{
+		{
+			name:      "truncated mp4 ftyp box",
+			mediaType: "video",
+			mimeType:  "video/mp4",
+			body:      []byte{0, 0, 0, 0, 'f', 't', 'y', 'p', 'm', 'p', '4', '2'},
+		},
+		{
+			name:      "truncated ogg page",
+			mediaType: "audio",
+			mimeType:  "audio/ogg",
+			body:      []byte{'O', 'g', 'g', 'S'},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := config.Load(t.TempDir())
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				t.Fatalf("EnsureDirs: %v", err)
+			}
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"content-type": []string{test.mimeType}},
+					Body:       io.NopCloser(bytes.NewReader(test.body)),
+				}, nil
+			})}
+			result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{RemoteURL: "https://media.example/content", MediaType: test.mediaType}, "mastodon", progressOptions{})
+			if err != nil {
+				t.Fatalf("downloadRef: %v", err)
+			}
+			if result.Status != model.MediaDownloadStatusBlocked {
+				t.Fatalf("result = %#v, want a container validation error", result)
+			}
+			assertNoMediaFiles(t, cfg.MediaDir)
+		})
+	}
+}
+
+func TestValidateMediaFileRejectsHeaderOnlyOrGarbageForEveryAcceptedContainer(t *testing.T) {
+	wav := []byte{'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x44, 0xac, 0, 0, 0x88, 0x58, 1, 0, 2, 0, 16, 0, 'd', 'a', 't', 'a', 2, 0, 0, 0, 0, 0}
+	binary.LittleEndian.PutUint32(wav[4:8], uint32(len(wav)-8))
+	flac := append([]byte("fLaC"), []byte{0x80, 0, 0, 34}...)
+	flac = append(flac, make([]byte, 34)...)
+	flac = append(flac, 0xff, 0xf8, 0, 0)
+	mp3 := append([]byte{0xff, 0xfb, 0x90, 0x64}, bytes.Repeat([]byte{0}, 413)...)
+	cases := []struct {
+		name, expected, declared string
+		valid, invalid           []byte
+	}{
+		{name: "mp4 video", expected: "video", declared: "video/mp4", valid: genuineMP4VideoBytes(), invalid: withGarbage(genuineMP4VideoBytes()[:24])},
+		{name: "mp4 audio", expected: "audio", declared: "audio/mp4", valid: genuineMP4AudioBytes(), invalid: withGarbage(genuineMP4AudioBytes()[:24])},
+		{name: "webm video", expected: "video", declared: "video/webm", valid: genuineWebMVideoBytes(), invalid: withGarbage(genuineWebMVideoBytes()[:12])},
+		{name: "webm audio", expected: "audio", declared: "audio/webm", valid: genuineWebMAudioBytes(), invalid: withGarbage(genuineWebMAudioBytes()[:12])},
+		{name: "ogg audio", expected: "audio", declared: "audio/ogg", valid: genuineOggAudioBytes(), invalid: withGarbage(genuineOggAudioBytes()[:4])},
+		{name: "mpeg ts", expected: "video", declared: "video/mp2t", valid: genuineMPEGTSVideoBytes(), invalid: withGarbage(genuineMPEGTSVideoBytes()[:4])},
+		{name: "wav", expected: "audio", declared: "audio/wav", valid: wav, invalid: withGarbage(wav[:12])},
+		{name: "flac", expected: "audio", declared: "audio/flac", valid: flac, invalid: withGarbage(flac[:4])},
+		{name: "mp3", expected: "audio", declared: "audio/mpeg", valid: mp3, invalid: withGarbage(mp3[:4])},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			prefix := test.valid
+			if len(prefix) > 512 {
+				prefix = prefix[:512]
+			}
+			if err := validateMediaFile(test.expected, test.declared, prefix, bytes.NewReader(test.valid), int64(len(test.valid))); err != nil {
+				t.Fatalf("valid fixture rejected: %v", err)
+			}
+			invalidPrefix := test.invalid
+			if len(invalidPrefix) > 512 {
+				invalidPrefix = invalidPrefix[:512]
+			}
+			if err := validateMediaFile(test.expected, test.declared, invalidPrefix, bytes.NewReader(test.invalid), int64(len(test.invalid))); err == nil {
+				t.Fatal("header-only or garbage fixture was accepted")
+			}
+		})
+	}
+}
+
+func TestValidateMediaFileRejectsSyntheticContainerShapes(t *testing.T) {
+	ogg := make([]byte, 29)
+	copy(ogg, []byte("OggS"))
+	ogg[26] = 1
+	ogg[27] = 1
+	ogg[28] = 1
+	ts := make([]byte, 188*4)
+	for index := 0; index < 4; index++ {
+		packet := ts[index*188 : (index+1)*188]
+		packet[0], packet[1], packet[2], packet[3] = 0x47, 0, 1, 0x10
+		for offset := 4; offset < len(packet); offset++ {
+			packet[offset] = 0xaa
+		}
+	}
+	cases := []struct {
+		name, expected, declared string
+		body                     []byte
+	}{
+		{name: "iso track plus arbitrary mdat", expected: "video", declared: "video/mp4", body: fakeMP4WithRawPayload([]byte("arbitrary payload"))},
+		{name: "ebml track plus arbitrary block", expected: "video", declared: "video/webm", body: fakeEBMLVideoWithFrame([]byte("arbitrary payload"))},
+		{name: "ogg page without codec headers", expected: "audio", declared: "audio/ogg", body: ogg},
+		{name: "transport packets without tables or pes", expected: "video", declared: "video/mp2t", body: ts},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			prefix := test.body
+			if len(prefix) > 512 {
+				prefix = prefix[:512]
+			}
+			if err := validateMediaFile(test.expected, test.declared, prefix, bytes.NewReader(test.body), int64(len(test.body))); err == nil {
+				t.Fatal("synthetic container shape was accepted")
+			}
+		})
+	}
+}
+
+func TestValidateMediaFileRejectsFabricatedJPEGPayload(t *testing.T) {
+	fabricated := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9}
+	if err := validateMediaFile("photo", "image/jpeg", fabricated, bytes.NewReader(fabricated), int64(len(fabricated))); err == nil {
+		t.Fatal("fabricated JPEG payload was accepted")
+	}
+}
+
+func TestValidateMediaFileRejectsFabricatedMP4Payload(t *testing.T) {
+	fabricated := fakeMP4WithPayload([]byte{0})
+	if err := validateMediaFile("video", "video/mp4", fabricated, bytes.NewReader(fabricated), int64(len(fabricated))); err == nil {
+		t.Fatal("fabricated MP4 payload was accepted")
+	}
+}
+
 func TestMediaNamespaceForSourceType(t *testing.T) {
 	for _, test := range []struct {
 		sourceType string
@@ -67,6 +316,9 @@ func TestMediaNamespaceForSourceType(t *testing.T) {
 		{sourceType: "x_quote", want: "x"},
 		{sourceType: "bsky_bookmark", want: "bsky"},
 		{sourceType: "bsky_quote", want: "bsky"},
+		{sourceType: "mastodon_bookmark", want: "mastodon"},
+		{sourceType: "mastodon_quote", want: "mastodon"},
+		{sourceType: "mastodon_reblog", want: "mastodon"},
 	} {
 		t.Run(test.sourceType, func(t *testing.T) {
 			if got := MediaNamespaceForSourceType(test.sourceType); got != test.want {
@@ -223,7 +475,7 @@ func TestRunForItemDownloadsMediaIntoVault(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "image/jpeg")
-		_, _ = w.Write([]byte("jpeg-bytes"))
+		_, _ = w.Write(fakeJPEGBytes())
 	}))
 	defer server.Close()
 	publicMediaURL := strings.Replace(server.URL, "127.0.0.1", "media.test", 1) + "/image.jpg"
@@ -314,17 +566,91 @@ func TestRunForItemRejectsHLSPlaylistAsVideoAsset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunForItem: %v", err)
 	}
-	if stats.Errors != 1 || stats.Downloaded != 0 {
+	if stats.Blocked != 1 || stats.Errors != 0 || stats.Downloaded != 0 {
 		t.Fatalf("unexpected playlist stats: %+v", stats)
 	}
 	refs, err := st.ListItemMediaRefs(ctx, itemID)
 	if err != nil {
 		t.Fatalf("ListItemMediaRefs: %v", err)
 	}
-	if len(refs) != 1 || refs[0].DownloadStatus != model.MediaDownloadStatusError || refs[0].LocalPath != "" {
+	if len(refs) != 1 || refs[0].DownloadStatus != model.MediaDownloadStatusBlocked || refs[0].LocalPath != "" {
 		t.Fatalf("playlist ref = %#v", refs)
 	}
 	assertNoMediaFiles(t, cfg.MediaDir)
+}
+
+func TestRunForItemBlocksDeterministicMediaFailuresOnFirstAttempt(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		mediaType string
+		mimeType  string
+		body      []byte
+		status    int
+		maxBytes  int64
+	}{
+		{name: "html", mediaType: "video", mimeType: "text/html", body: []byte("<html>error</html>"), status: http.StatusOK},
+		{name: "playlist", mediaType: "video", mimeType: "application/vnd.apple.mpegurl", body: []byte("#EXTM3U\n"), status: http.StatusOK},
+		{name: "oversize", mediaType: "photo", mimeType: "image/jpeg", body: fakeJPEGBytes(), status: http.StatusOK, maxBytes: 4},
+		{name: "unsupported", mediaType: "video", mimeType: "application/pdf", body: []byte("%PDF-1.7\n"), status: http.StatusOK},
+		{name: "invalid-container", mediaType: "audio", mimeType: "audio/ogg", body: []byte("OggS"), status: http.StatusOK},
+		{name: "unavailable", mediaType: "photo", mimeType: "text/plain", body: []byte("forbidden"), status: http.StatusForbidden},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			hits := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits++
+				w.Header().Set("content-type", test.mimeType)
+				w.WriteHeader(test.status)
+				_, _ = w.Write(test.body)
+			}))
+			defer server.Close()
+			cfg, err := config.Load(t.TempDir())
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				t.Fatalf("EnsureDirs: %v", err)
+			}
+			st := openTestStore(t, cfg.DBPath)
+			itemID := insertTestItem(t, st, "x:terminal-media-"+test.name, time.Now().UTC())
+			if _, err := st.SaveItemMediaCandidates(context.Background(), itemID, []model.MediaCandidate{{RemoteURL: server.URL + "/asset", MediaType: test.mediaType}}); err != nil {
+				t.Fatalf("SaveItemMediaCandidates: %v", err)
+			}
+			opts := Options{HTTPPolicy: privateNetworkTestPolicy()}
+			if test.maxBytes > 0 {
+				opts.MaxBytes = test.maxBytes
+			}
+			stats, err := RunForItem(context.Background(), cfg, st, itemID, opts)
+			if err != nil {
+				t.Fatalf("RunForItem: %v", err)
+			}
+			if stats.Blocked != 1 || stats.Errors != 0 || stats.Downloaded != 0 {
+				t.Fatalf("first-attempt terminal stats = %+v", stats)
+			}
+			refs, err := st.ListItemMediaRefs(context.Background(), itemID)
+			if err != nil || len(refs) != 1 || refs[0].DownloadStatus != model.MediaDownloadStatusBlocked {
+				t.Fatalf("terminal media ref = %#v, err=%v", refs, err)
+			}
+			asset, err := st.GetMediaAsset(context.Background(), refs[0].MediaAssetID)
+			if err != nil {
+				t.Fatalf("GetMediaAsset: %v", err)
+			}
+			if strings.Contains(asset.DownloadError, "after 3 failed") {
+				t.Fatalf("first-attempt terminal error falsely reports retries: %q", asset.DownloadError)
+			}
+			second, err := RunForItem(context.Background(), cfg, st, itemID, opts)
+			if err != nil {
+				t.Fatalf("second RunForItem: %v", err)
+			}
+			if second.Requested != 0 || hits != 1 {
+				t.Fatalf("terminal media retried: second=%+v hits=%d", second, hits)
+			}
+		})
+	}
 }
 
 func TestRunForItemUsesBlueskyMediaNamespace(t *testing.T) {
@@ -332,7 +658,7 @@ func TestRunForItemUsesBlueskyMediaNamespace(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "image/jpeg")
-		_, _ = w.Write([]byte("bsky-image"))
+		_, _ = w.Write(fakeJPEGBytes())
 	}))
 	defer server.Close()
 
@@ -380,8 +706,7 @@ func TestRunForItemStoresHeaderlessBlueskyVideoAsMP4(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Minimal MP4 signature: ftyp immediately follows the box size.
-		_, _ = w.Write([]byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm', 'i', 's', 'o', '2', 0})
+		_, _ = w.Write(genuineMP4VideoBytes())
 	}))
 	defer server.Close()
 
@@ -428,7 +753,7 @@ func TestRunForItemAssetAllowlistFiltersRefsAndCandidateCount(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "image/jpeg")
-		_, _ = w.Write([]byte("jpeg-" + r.URL.Path))
+		_, _ = w.Write(append(fakeJPEGBytes(), []byte(r.URL.Path)...))
 	}))
 	defer server.Close()
 
@@ -483,7 +808,7 @@ func TestRunForItemAssetAllowlistFiltersRefsAndCandidateCount(t *testing.T) {
 func TestRunForItemLogsLargeDownloadProgress(t *testing.T) {
 	t.Parallel()
 
-	payload := []byte("progress-bytes")
+	payload := largeGenuineMP4VideoBytes()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "video/mp4")
 		w.Header().Set("content-length", strconv.Itoa(len(payload)))
@@ -738,6 +1063,80 @@ func insertTestItem(t *testing.T, st *store.Store, sourceKey string, now time.Ti
 		t.Fatalf("UpsertItem: %v", err)
 	}
 	return result.ItemID
+}
+
+func fakeJPEGBytes() []byte {
+	imageData := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	imageData.SetRGBA(0, 0, color.RGBA{R: 0x33, G: 0x66, B: 0x99, A: 0xff})
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, imageData, nil); err != nil {
+		panic(err)
+	}
+	return encoded.Bytes()
+}
+
+func largeGenuineMP4VideoBytes() []byte {
+	result := append([]byte(nil), genuineMP4VideoBytes()...)
+	reader := bytes.NewReader(result)
+	var mdatOffset int64 = -1
+	var mdatEnd int64
+	for offset := int64(0); offset < int64(len(result)); {
+		boxType, _, _, next, ok := readISOBoxHeader(reader, int64(len(result)), offset)
+		if !ok {
+			break
+		}
+		if boxType == "mdat" {
+			mdatOffset = offset
+			mdatEnd = next
+			break
+		}
+		offset = next
+	}
+	if mdatOffset < 0 {
+		panic("genuine MP4 fixture has no mdat box")
+	}
+	boxSize := binary.BigEndian.Uint32(result[mdatOffset : mdatOffset+4])
+	if mdatEnd > int64(len(result)) {
+		panic("genuine MP4 fixture has a truncated mdat box")
+	}
+	extra := bytes.Repeat([]byte("p"), 64*1024)
+	result = append(result[:mdatEnd], append(extra, result[mdatEnd:]...)...)
+	binary.BigEndian.PutUint32(result[mdatOffset:mdatOffset+4], boxSize+uint32(len(extra)))
+	return result
+}
+
+func withGarbage(prefix []byte) []byte {
+	result := append([]byte(nil), prefix...)
+	return append(result, []byte("garbage")...)
+}
+
+func fakeMP4WithPayload(payload []byte) []byte {
+	mediaPayload := append([]byte{0, 0, 0, 4, 0x65, 0x88, 0x00, 0x01}, payload...)
+	return fakeMP4WithRawPayload(mediaPayload)
+}
+
+func fakeMP4WithRawPayload(mediaPayload []byte) []byte {
+	result := []byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm', 'i', 's', 'o', '2'}
+	sampleEntry := make([]byte, 8+78+12)
+	binary.BigEndian.PutUint32(sampleEntry[:4], uint32(len(sampleEntry)))
+	copy(sampleEntry[4:8], []byte("avc1"))
+	// A visual sample entry needs a codec configuration box before its media
+	// payload can be treated as a valid MP4 rather than a superficial ftyp/stsd
+	// shape. The remaining description bytes are intentionally zeroed because
+	// these tests exercise downloader validation, not video playback.
+	binary.BigEndian.PutUint32(sampleEntry[8+78:8+78+4], 12)
+	copy(sampleEntry[8+78+4:8+78+8], []byte("avcC"))
+	copy(sampleEntry[8+78+8:], []byte{1, 0x64, 0, 0x1f})
+	stsdPayload := []byte{0, 0, 0, 0, 0, 0, 0, 1}
+	stsdPayload = append(stsdPayload, sampleEntry...)
+	stsdSize := 8 + len(stsdPayload)
+	moovPayload := append([]byte{byte(stsdSize >> 24), byte(stsdSize >> 16), byte(stsdSize >> 8), byte(stsdSize), 's', 't', 's', 'd'}, stsdPayload...)
+	moovSize := 8 + len(moovPayload)
+	result = append(result, byte(moovSize>>24), byte(moovSize>>16), byte(moovSize>>8), byte(moovSize), 'm', 'o', 'o', 'v')
+	result = append(result, moovPayload...)
+	boxSize := 8 + len(mediaPayload)
+	result = append(result, byte(boxSize>>24), byte(boxSize>>16), byte(boxSize>>8), byte(boxSize), 'm', 'd', 'a', 't')
+	return append(result, mediaPayload...)
 }
 
 func privateNetworkTestPolicy() *safehttp.Policy {

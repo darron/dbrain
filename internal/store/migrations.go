@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	currentSchemaVersion                       = 29
+	currentSchemaVersion                       = 30
 	auditProvenanceMigrationVersion            = 12
 	auditProvenanceMigrationName               = "audit_provenance_v1"
 	retrievalMigrationVersion                  = 13
@@ -46,6 +46,8 @@ const (
 	retrievalProjectionStagingEpochName        = "retrieval_projection_staging_expected_purge_epoch"
 	semanticSegmentedDirtyTriggerVersion       = 29
 	semanticSegmentedDirtyTriggerName          = "retrieval_segmented_dirty_trigger_repair"
+	mastodonSyncStateVersion                   = 30
+	mastodonSyncStateName                      = "mastodon_sync_state_v1"
 )
 
 type schemaMigration struct {
@@ -292,6 +294,13 @@ var schemaMigrations = []schemaMigration{
 			return s.ensureSemanticProjectionDirtyTriggers()
 		},
 	},
+	{
+		Version: mastodonSyncStateVersion,
+		Name:    mastodonSyncStateName,
+		Run: func(s *Store) error {
+			return ensureMastodonSyncStateTable(s.db)
+		},
+	},
 }
 
 func newRetrievalDatabaseID() (string, error) {
@@ -356,10 +365,15 @@ func (s *Store) migrate(reporter MigrationReporter) error {
 			Name:          migration.Name,
 		})
 	}
-	// Repair databases whose local migration history was stamped before the
+	// Repair databases whose local migration history was stamped before a
 	// schema mutation completed. Migration numbers are immutable, so reopening
-	// must make the v28 invariant true even when its metadata row already exists.
+	// must make these invariants true even when their metadata rows already exist.
 	if err := s.ensureRetrievalProjectionStagingPurgeEpoch(); err != nil {
+		return err
+	}
+	// Repair the v30 Mastodon state invariant even when the migration metadata
+	// was stamped before its table or index was fully created.
+	if err := ensureMastodonSyncStateTable(s.db); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {

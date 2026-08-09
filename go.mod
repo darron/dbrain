@@ -24,6 +24,7 @@ require (
 	github.com/unum-cloud/usearch/golang v0.0.0-20260710183501-cc23bbaf21ef
 	github.com/yuin/goldmark v1.8.2
 	github.com/zalando/go-keyring v0.2.6
+	golang.org/x/image v0.27.0
 	golang.org/x/net v0.55.0
 	golang.org/x/oauth2 v0.33.0
 	golang.org/x/sync v0.20.0

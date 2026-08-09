@@ -22,6 +22,7 @@ type Options struct {
 	Timeout          time.Duration
 	ProgressInterval time.Duration
 	ProgressBytes    int64
+	MaxBytes         int64
 	Logger           *slog.Logger
 	HTTPPolicy       *safehttp.Policy
 	httpPolicy       *safehttp.Policy
@@ -31,6 +32,7 @@ const (
 	DefaultTimeout          = 30 * time.Minute
 	DefaultProgressInterval = 5 * time.Second
 	DefaultProgressBytes    = 32 * 1024 * 1024
+	DefaultMaxBytes         = 256 * 1024 * 1024
 )
 
 type Stats struct {
@@ -52,6 +54,9 @@ func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID 
 	}
 	if opts.ProgressBytes <= 0 {
 		opts.ProgressBytes = DefaultProgressBytes
+	}
+	if opts.MaxBytes <= 0 {
+		opts.MaxBytes = DefaultMaxBytes
 	}
 
 	refs, err := st.ListItemMediaRefs(ctx, itemID)
@@ -97,6 +102,7 @@ func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID 
 			Logger:   opts.Logger,
 			Interval: opts.ProgressInterval,
 			Bytes:    opts.ProgressBytes,
+			MaxBytes: opts.MaxBytes,
 		})
 		if err != nil {
 			return stats, err
@@ -123,7 +129,7 @@ func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID 
 			stats.Blocked++
 		}
 
-		debugLog(opts.Logger, "x media download result",
+		debugLog(opts.Logger, "media download result",
 			"item_id", itemID,
 			"media_asset_id", ref.MediaAssetID,
 			"remote_url", ref.RemoteURL,

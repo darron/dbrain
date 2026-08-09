@@ -9,8 +9,28 @@ development date for the change set.
 
 - **Instance-scoped read-only OAuth**: Added canonical per-account Mastodon
   origins, typed secret references, PKCE login, verified-account status, and
-  revoke-first logout. Bookmark import and sync-all integration follow in the
-  stacked Mastodon parity changes.
+  revoke-first logout.
+
+### Mastodon bookmark import (2026-08-09)
+
+- **Direct bookmark parity**: Added account/origin-scoped Mastodon bookmark
+  import and `sync all` integration with verified identity, opaque Link cursor
+  checkpoints, partial-page resume, bounded status/media payloads, typed
+  unavailable counters, source discovery, and append-only local behavior.
+- **Generic media pipeline**: Mastodon image, video/GIFV, and audio attachments
+  now use the existing media download, retry, and content-addressed vault paths
+  without sending bearer tokens to CDN origins; image OCR and video/GIFV
+  transcription use the existing enrichment workers.
+- **Schema and CLI**: Added migration-backed `mastodon_sync_state`, the
+  `dbrain import mastodon bookmarks` command, scheduler settings, and JSON/
+  progress metrics. An authenticated Hachyderm smoke test remains operator
+  dependent and is not claimed here.
+- **Retry and safety hardening**: Completed runs retry a bounded set of older
+  Mastodon media failures; migration repair restores the account/origin and
+  verified-identity constraints; redirect-added credential query parameters,
+  expanded raw/error credential variants, and non-RFC timestamps are rejected
+  or redacted; API-error, rate-limit, and retry counters are preserved in
+  direct and sync summaries.
 
 ### Reusable Bluesky bookmark import (2026-08-08)
 

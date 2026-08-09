@@ -37,6 +37,7 @@ var enumValues = map[string]map[string]bool{
 	"kind": {
 		"item": true, "source": true,
 		"x_bookmark": true, "x_quote": true, "x_photo": true, "x_video": true, "x_animated_gif": true,
+		"mastodon_bookmark": true, "mastodon_quote": true, "mastodon_reblog": true,
 		"apple_note": true, "safari_tab": true, "feed": true, "feed_entry": true,
 		"github_star": true, "youtube_liked": true, "youtube_watch_later": true,
 		"web": true, "pdf": true, "github": true, "youtube": true, "x_article": true,

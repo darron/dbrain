@@ -55,6 +55,65 @@ func (s *Store) ListItemMediaRefs(ctx context.Context, itemID int64) ([]model.It
 	return refs, nil
 }
 
+// ListMastodonMediaRefsForDownload returns retryable media linked from
+// Mastodon records. Keeping the source filter in SQL prevents a Mastodon run
+// from accidentally retrying unrelated X or Bluesky media.
+func (s *Store) ListMastodonMediaRefsForDownload(ctx context.Context, limit int, force bool) ([]model.ItemMediaRef, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := `
+		SELECT
+			l.item_id,
+			l.media_asset_id,
+			l.ordinal,
+			l.expanded_url,
+			a.remote_url,
+			a.media_type,
+			a.download_status,
+			a.download_error_count,
+			a.last_download_attempt_at,
+			a.local_path,
+			a.archive_provider,
+			a.archive_bucket,
+			a.archive_key,
+			a.archive_url,
+			a.archive_status,
+			a.width,
+			a.height,
+			a.local_pruned_at
+		FROM items i
+		JOIN item_media_links l ON l.item_id = i.id
+		JOIN media_assets a ON a.id = l.media_asset_id
+		WHERE i.source_type IN ('mastodon_bookmark', 'mastodon_quote', 'mastodon_reblog')
+			AND a.remote_url != ''`
+	if !force {
+		query += `
+			AND ` + mediaDownloadRetryableWhere("a")
+	}
+	query += `
+		ORDER BY a.discovered_at ASC, a.id ASC, i.id ASC, l.ordinal ASC
+		LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list Mastodon media refs for download: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	refs := make([]model.ItemMediaRef, 0, limit)
+	for rows.Next() {
+		var ref model.ItemMediaRef
+		if err := scanItemMediaRef(rows.Scan, &ref); err != nil {
+			return nil, fmt.Errorf("scan Mastodon media ref for download: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate Mastodon media refs for download: %w", err)
+	}
+	return refs, nil
+}
+
 func (s *Store) ListItemMediaRefsForSourceKeys(ctx context.Context, sourceKeys []string) (map[string][]model.ItemMediaRef, error) {
 	seen := make(map[string]struct{}, len(sourceKeys))
 	keys := make([]string, 0, len(sourceKeys))
