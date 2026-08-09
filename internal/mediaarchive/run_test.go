@@ -132,6 +132,8 @@ func TestRunArchivesBlueskyAndMastodonSharedPathBeforePruneAndRefreshesBothProje
 		"bsky:archive-shared", "bsky_bookmark", "https://cdn.bsky.example/shared.jpg", localPath)
 	mastodonItemID, mastodonAssetID, mastodonNote := setupSocialArchivedPhotoWithSharedPath(t, cfg, st,
 		"mastodon:archive-shared", "mastodon_bookmark", "https://mastodon.example/media/shared.jpg", localPath)
+	nonSocialItemID, nonSocialAssetID, nonSocialNote := setupNonSocialArchivedPhotoWithSharedPath(t, cfg, st,
+		"github:archive-shared", "https://github.example/media/shared.jpg", localPath)
 
 	stats, err := Run(t.Context(), cfg, st, Options{
 		Bucket:        "dbrain",
@@ -141,7 +143,7 @@ func TestRunArchivesBlueskyAndMastodonSharedPathBeforePruneAndRefreshesBothProje
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if stats.Candidates != 2 || stats.Archived != 2 || stats.LocalFilesPruned != 1 || stats.LocalRowsPruned != 2 || stats.PruneSkipped != 1 {
+	if stats.Candidates != 3 || stats.Archived != 3 || stats.LocalFilesPruned != 1 || stats.LocalRowsPruned != 3 || stats.PruneSkipped != 0 {
 		t.Fatalf("shared social archive stats = %+v", stats)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.VaultDir, filepath.FromSlash(localPath))); !os.IsNotExist(err) {
@@ -154,6 +156,7 @@ func TestRunArchivesBlueskyAndMastodonSharedPathBeforePruneAndRefreshesBothProje
 	}{
 		{itemID: bskyItemID, assetID: bskyAssetID, note: bskyNote},
 		{itemID: mastodonItemID, assetID: mastodonAssetID, note: mastodonNote},
+		{itemID: nonSocialItemID, assetID: nonSocialAssetID, note: nonSocialNote},
 	} {
 		asset, err := st.GetMediaAsset(t.Context(), check.assetID)
 		if err != nil {
@@ -176,12 +179,71 @@ func TestRunArchivesBlueskyAndMastodonSharedPathBeforePruneAndRefreshesBothProje
 	}
 }
 
+func TestRunPruneLocalLimitOneAdvancesPastArchivedSharedPathRow(t *testing.T) {
+	t.Parallel()
+
+	cfg, st, _, localPath := setupArchivedPhotoItem(t, "x:archive-limit-one-a", "https://pbs.twimg.com/media/limit-one-a.jpg", true)
+	_, secondAssetID, _, _ := setupArchivedPhotoItemWithSharedPath(t, cfg, st, "x:archive-limit-one-b", "https://pbs.twimg.com/media/limit-one-b.jpg", localPath, true)
+
+	firstStats, err := Run(t.Context(), cfg, st, Options{
+		Bucket: "dbrain", PublicBaseURL: "https://archive.example", PruneLocal: true, Limit: 1,
+	})
+	if err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if firstStats.Candidates != 1 || firstStats.Archived != 1 || firstStats.LocalFilesPruned != 0 || firstStats.PruneSkipped != 1 {
+		t.Fatalf("first limited archive stats = %+v", firstStats)
+	}
+	second, err := st.GetMediaAsset(t.Context(), secondAssetID)
+	if err != nil {
+		t.Fatalf("GetMediaAsset(second): %v", err)
+	}
+	if second.ArchiveStatus == model.MediaArchiveStatusArchived {
+		t.Fatal("second shared-path asset was archived during the first limited run")
+	}
+
+	secondStats, err := Run(t.Context(), cfg, st, Options{
+		Bucket: "dbrain", PublicBaseURL: "https://archive.example", PruneLocal: true, Limit: 1,
+	})
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if secondStats.Candidates != 1 || secondStats.Archived != 1 || secondStats.LocalFilesPruned != 1 || secondStats.LocalRowsPruned != 2 || secondStats.PruneSkipped != 0 {
+		t.Fatalf("second limited archive stats = %+v", secondStats)
+	}
+	assets, err := st.ListMediaAssetsByLocalPath(t.Context(), localPath)
+	if err != nil {
+		t.Fatalf("ListMediaAssetsByLocalPath: %v", err)
+	}
+	if len(assets) != 2 {
+		t.Fatalf("expected two shared-path assets, got %+v", assets)
+	}
+	for _, asset := range assets {
+		if asset.ArchiveStatus != model.MediaArchiveStatusArchived || asset.LocalPrunedAt.IsZero() {
+			t.Fatalf("shared-path asset did not finish archive/prune lifecycle: %+v", asset)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cfg.VaultDir, filepath.FromSlash(localPath))); !os.IsNotExist(err) {
+		t.Fatalf("expected limited shared file to be pruned on second run, stat err=%v", err)
+	}
+}
+
 func setupSocialArchivedPhotoWithSharedPath(t *testing.T, cfg config.Config, st *store.Store, sourceKey, sourceType, remoteURL, localPath string) (int64, int64, string) {
+	return setupArchivedPhotoWithSourceAndSharedPath(t, cfg, st, sourceKey, sourceType, remoteURL, localPath, true)
+}
+
+func setupNonSocialArchivedPhotoWithSharedPath(t *testing.T, cfg config.Config, st *store.Store, sourceKey, remoteURL, localPath string) (int64, int64, string) {
+	return setupArchivedPhotoWithSourceAndSharedPath(t, cfg, st, sourceKey, "github_star", remoteURL, localPath, false)
+}
+
+func setupArchivedPhotoWithSourceAndSharedPath(t *testing.T, cfg config.Config, st *store.Store, sourceKey, sourceType, remoteURL, localPath string, ocrReady bool) (int64, int64, string) {
 	t.Helper()
 	now := time.Date(2026, 8, 9, 16, 0, 0, 0, time.UTC)
 	namespace := "bsky"
 	if strings.HasPrefix(sourceType, "mastodon_") {
 		namespace = "mastodon"
+	} else if !strings.HasPrefix(sourceType, "bsky_") {
+		namespace = "external"
 	}
 	notePath := "items/" + namespace + "/2026/archive-shared.md"
 	item, err := st.UpsertItem(t.Context(), model.Item{
@@ -215,10 +277,12 @@ func setupSocialArchivedPhotoWithSharedPath(t *testing.T, cfg config.Config, st 
 	}); err != nil {
 		t.Fatalf("SaveMediaDownload %s: %v", sourceKey, err)
 	}
-	if _, err := st.SaveItemOCR(t.Context(), item.ItemID, model.OCRResult{
-		Text: "shared photo text", Status: model.ItemOCRStatusOK, Model: "test/ocr", Tool: "test", ToolVersion: "v1", FetchedAt: now,
-	}, "sha256:shared-ocr"); err != nil {
-		t.Fatalf("SaveItemOCR %s: %v", sourceKey, err)
+	if ocrReady {
+		if _, err := st.SaveItemOCR(t.Context(), item.ItemID, model.OCRResult{
+			Text: "shared photo text", Status: model.ItemOCRStatusOK, Model: "test/ocr", Tool: "test", ToolVersion: "v1", FetchedAt: now,
+		}, "sha256:shared-ocr"); err != nil {
+			t.Fatalf("SaveItemOCR %s: %v", sourceKey, err)
+		}
 	}
 	return item.ItemID, refs[0].MediaAssetID, notePath
 }

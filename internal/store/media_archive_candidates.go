@@ -53,7 +53,7 @@ func (s *Store) ListMediaAssetsForPrune(ctx context.Context, limit int) ([]model
 			AND local_path != ''
 			AND archive_status = '`+model.MediaArchiveStatusArchived+`'
 			AND local_pruned_at = ''
-			AND `+mediaArchiveSupportedOwnerExistsWhere("media_assets")+`
+			AND `+mediaArchiveAnyLinkedOwnerExistsWhere("media_assets")+`
 		ORDER BY local_path ASC, id ASC
 		LIMIT ?`, limit)
 	if err != nil {

@@ -457,7 +457,7 @@ func assertEveryMediaDerivedFieldCleared(t *testing.T, ctx context.Context, st *
 	}
 }
 
-func TestListMediaAssetsForArchiveUsesSharedSocialSourcePredicateAndKeepsAudioEligible(t *testing.T) {
+func TestListMediaAssetsForArchiveUsesSourceNeutralOwnerEligibilityAndKeepsAudioEligible(t *testing.T) {
 	st := openTestStore(t)
 	ctx := t.Context()
 	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC)
@@ -470,7 +470,8 @@ func TestListMediaAssetsForArchiveUsesSharedSocialSourcePredicateAndKeepsAudioEl
 	for _, sourceType := range supported {
 		wantURLs = append(wantURLs, seedArchiveAudioCandidate(t, ctx, st, sourceType, now))
 	}
-	unsupportedURL := seedArchiveAudioCandidate(t, ctx, st, "github_star", now)
+	nonSocialURL := seedArchiveAudioCandidate(t, ctx, st, "github_star", now)
+	wantURLs = append(wantURLs, nonSocialURL)
 
 	assets, err := st.ListMediaAssetsForArchive(ctx, 100, false)
 	if err != nil {
@@ -484,7 +485,7 @@ func TestListMediaAssetsForArchiveUsesSharedSocialSourcePredicateAndKeepsAudioEl
 		}
 	}
 	if !slices.Equal(gotURLs, wantURLs) {
-		t.Fatalf("archive lifecycle URLs = %v, want supported %v without %q", gotURLs, wantURLs, unsupportedURL)
+		t.Fatalf("archive lifecycle URLs = %v, want every linked owner %v", gotURLs, wantURLs)
 	}
 	if _, err := st.db.ExecContext(ctx, `UPDATE media_assets SET archive_status = ?`, model.MediaArchiveStatusArchived); err != nil {
 		t.Fatalf("mark archive candidates archived: %v", err)
@@ -501,7 +502,33 @@ func TestListMediaAssetsForArchiveUsesSharedSocialSourcePredicateAndKeepsAudioEl
 	slices.Sort(wantPruneURLs)
 	slices.Sort(gotURLs)
 	if !slices.Equal(gotURLs, wantPruneURLs) {
-		t.Fatalf("prune lifecycle URLs = %v, want supported %v without %q", gotURLs, wantPruneURLs, unsupportedURL)
+		t.Fatalf("prune lifecycle URLs = %v, want every linked owner %v", gotURLs, wantPruneURLs)
+	}
+}
+
+func TestListMediaAssetsForArchiveUsesCanonicalSocialEnrichmentStatus(t *testing.T) {
+	st := openTestStore(t)
+	ctx := t.Context()
+	now := time.Date(2026, 8, 9, 15, 30, 0, 0, time.UTC)
+
+	photoReady := seedArchiveEnrichmentCandidate(t, ctx, st, "bsky_bookmark", "photo", model.ItemOCRStatusOK, now)
+	photoBlocked := seedArchiveEnrichmentCandidate(t, ctx, st, "bsky_quote", "photo", model.ItemOCRStatusError, now)
+	videoReady := seedArchiveEnrichmentCandidate(t, ctx, st, "mastodon_bookmark", "video", model.XMediaTranscriptStatusOK, now)
+	videoBlocked := seedArchiveEnrichmentCandidate(t, ctx, st, "mastodon_quote", "video", model.XMediaTranscriptStatusError, now)
+
+	assets, err := st.ListMediaAssetsForArchive(ctx, 100, false)
+	if err != nil {
+		t.Fatalf("ListMediaAssetsForArchive: %v", err)
+	}
+	gotURLs := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		gotURLs = append(gotURLs, asset.RemoteURL)
+	}
+	wantURLs := []string{photoReady, videoReady}
+	slices.Sort(gotURLs)
+	slices.Sort(wantURLs)
+	if !slices.Equal(gotURLs, wantURLs) {
+		t.Fatalf("canonical archive URLs = %v, want successful canonical enrichments %v (blocked %q and %q excluded)", gotURLs, wantURLs, photoBlocked, videoBlocked)
 	}
 }
 
@@ -530,6 +557,62 @@ func seedArchiveAudioCandidate(t *testing.T, ctx context.Context, st *Store, sou
 		LocalPath: "media/social/audio/" + sourceType + ".ogg", Status: model.MediaDownloadStatusDownloaded, DownloadedAt: now,
 	}); err != nil {
 		t.Fatalf("SaveMediaDownload %s: %v", sourceType, err)
+	}
+	return remoteURL
+}
+
+func seedArchiveEnrichmentCandidate(t *testing.T, ctx context.Context, st *Store, sourceType, mediaType, status string, now time.Time) string {
+	t.Helper()
+	sourceKey := sourceType + ":archive-canonical-" + mediaType + "-" + status
+	item, err := st.UpsertItem(ctx, model.Item{
+		SourceKey: sourceKey, SourceType: sourceType, ExternalID: sourceKey,
+		CanonicalURL: "https://social.example/" + sourceKey, Title: sourceKey,
+		ContentHash: sourceKey + "-hash", LinksJSON: "[]", NotePath: "items/social/" + sourceKey + ".md", RawJSON: "{}",
+		ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+	}
+	remoteURL := "https://media.example/" + sourceType + "-" + mediaType + "-" + status
+	if _, err := st.SaveItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{{RemoteURL: remoteURL, MediaType: mediaType}}); err != nil {
+		t.Fatalf("SaveItemMediaCandidates %s: %v", sourceKey, err)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, item.ItemID)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("ListItemMediaRefs %s: refs=%+v err=%v", sourceKey, refs, err)
+	}
+	mimeType := "image/jpeg"
+	if mediaType != "photo" {
+		mimeType = "video/mp4"
+	}
+	if _, err := st.SaveMediaDownload(ctx, refs[0].MediaAssetID, model.MediaDownloadResult{
+		MIMEType: mimeType, ByteSize: 100, ContentHash: sourceKey + "-bytes",
+		LocalPath: "media/archive/" + sourceType + "-" + mediaType + "-" + status, Status: model.MediaDownloadStatusDownloaded, DownloadedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMediaDownload %s: %v", sourceKey, err)
+	}
+
+	switch mediaType {
+	case "photo":
+		if _, err := st.SaveItemOCR(ctx, item.ItemID, model.OCRResult{
+			Text: "canonical photo text", Status: status, Model: "test/ocr", Tool: "test", ToolVersion: "v1", FetchedAt: now,
+		}, sourceKey+"-ocr"); err != nil {
+			t.Fatalf("SaveItemOCR %s: %v", sourceKey, err)
+		}
+		if _, err := st.db.ExecContext(ctx, `UPDATE items SET ocr_status = '' WHERE id = ?`, item.ItemID); err != nil {
+			t.Fatalf("clear OCR compatibility status %s: %v", sourceKey, err)
+		}
+	case "video":
+		if err := st.SaveXMediaTranscription(ctx, item.ItemID, XMediaTranscriptionState{
+			Status: status, RawJSON: `{"transcript":"canonical video text"}`, Model: "test/transcript", Tool: "test", ToolVersion: "v1", InputHash: sourceKey + "-transcript", CompletedAt: now,
+		}); err != nil {
+			t.Fatalf("SaveXMediaTranscription %s: %v", sourceKey, err)
+		}
+		if _, err := st.db.ExecContext(ctx, `UPDATE items SET x_media_transcript_status = '', article_title = '', article_text = '' WHERE id = ?`, item.ItemID); err != nil {
+			t.Fatalf("clear transcript compatibility status %s: %v", sourceKey, err)
+		}
+	default:
+		t.Fatalf("unsupported test media type %q", mediaType)
 	}
 	return remoteURL
 }

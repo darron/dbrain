@@ -16,14 +16,12 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		return Stats{}, err
 	}
 
-	selectionForce := opts.Force || opts.PruneLocal
-	assets, err := st.ListMediaAssetsForArchive(ctx, opts.Limit, selectionForce)
+	assets, err := st.ListMediaAssetsForArchive(ctx, opts.Limit, opts.Force)
 	if err != nil {
 		return Stats{}, err
 	}
 
 	stats := Stats{Candidates: len(assets)}
-	prunedPaths := map[string]struct{}{}
 	for _, asset := range assets {
 		if err := ctx.Err(); err != nil {
 			return stats, err
@@ -55,13 +53,29 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		}
 
 		debugLog(opts.Logger, "media archive marked", "asset_id", asset.ID, "local_path", asset.LocalPath, "archive_key", result.Key, "archive_url", result.URL)
+	}
 
-		if !opts.PruneLocal || strings.TrimSpace(asset.LocalPath) == "" {
+	if !opts.PruneLocal {
+		return stats, nil
+	}
+
+	pruneAssets, err := st.ListMediaAssetsForPrune(ctx, opts.Limit)
+	if err != nil {
+		return stats, err
+	}
+	prunedPaths := map[string]struct{}{}
+	for _, asset := range pruneAssets {
+		if err := ctx.Err(); err != nil {
+			return stats, err
+		}
+
+		if strings.TrimSpace(asset.LocalPath) == "" {
 			continue
 		}
 		if _, seen := prunedPaths[asset.LocalPath]; seen {
 			continue
 		}
+		prunedPaths[asset.LocalPath] = struct{}{}
 
 		pruned, rows, err := pruneLocalPathIfSafe(ctx, cfg, st, asset.LocalPath, opts.Logger)
 		if err != nil {
@@ -73,7 +87,6 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 			stats.PruneSkipped++
 			continue
 		}
-		prunedPaths[asset.LocalPath] = struct{}{}
 		stats.LocalFilesPruned++
 		stats.LocalRowsPruned += rows
 		debugLog(opts.Logger, "media local file pruned", "local_path", asset.LocalPath, "rows_marked", rows)
