@@ -29,26 +29,33 @@ type BookmarkOptions struct {
 }
 
 type BookmarkStats struct {
-	PagesFetched       int    `json:"pages_fetched"`
-	Seen               int    `json:"seen"`
-	Processed          int    `json:"processed"`
-	Skipped            int    `json:"skipped"` // total skipped entries; typed skip counters below are subsets
-	SkippedBlocked     int    `json:"skipped_blocked"`
-	SkippedNotFound    int    `json:"skipped_not_found"`
-	SkippedUnsupported int    `json:"skipped_unsupported"`
-	SkippedMalformed   int    `json:"skipped_malformed"`
-	Created            int    `json:"created"`
-	Updated            int    `json:"updated"`
-	Unchanged          int    `json:"unchanged"`
-	Rendered           int    `json:"rendered"`
-	MediaDiscovered    int    `json:"media_discovered"`
-	MediaLinked        int    `json:"media_linked"`
-	MediaUnavailable   int    `json:"media_unavailable"`
-	MediaDownloaded    int    `json:"media_downloaded"`
-	MediaGone          int    `json:"media_gone"`
-	MediaErrors        int    `json:"media_errors"`
-	MediaBlocked       int    `json:"media_blocked"`
-	StoppedReason      string `json:"stopped_reason"`
+	PagesFetched            int    `json:"pages_fetched"`
+	Seen                    int    `json:"seen"`
+	Processed               int    `json:"processed"`
+	Skipped                 int    `json:"skipped"` // total skipped entries; typed skip counters below are subsets
+	SkippedBlocked          int    `json:"skipped_blocked"`
+	SkippedNotFound         int    `json:"skipped_not_found"`
+	SkippedUnsupported      int    `json:"skipped_unsupported"`
+	SkippedMalformed        int    `json:"skipped_malformed"`
+	Created                 int    `json:"created"`
+	Updated                 int    `json:"updated"`
+	Unchanged               int    `json:"unchanged"`
+	Rendered                int    `json:"rendered"`
+	MediaDiscovered         int    `json:"media_discovered"`
+	MediaLinked             int    `json:"media_linked"`
+	MediaUnavailable        int    `json:"media_unavailable"`
+	MediaDownloaded         int    `json:"media_downloaded"`
+	MediaGone               int    `json:"media_gone"`
+	MediaErrors             int    `json:"media_errors"`
+	MediaBlocked            int    `json:"media_blocked"`
+	QuoteLinked             int    `json:"quote_linked"`
+	QuoteSkipped            int    `json:"quote_skipped"`
+	QuoteSkippedBlocked     int    `json:"quote_skipped_blocked"`
+	QuoteSkippedNotFound    int    `json:"quote_skipped_not_found"`
+	QuoteSkippedDetached    int    `json:"quote_skipped_detached"`
+	QuoteSkippedUnsupported int    `json:"quote_skipped_unsupported"`
+	QuoteSkippedMalformed   int    `json:"quote_skipped_malformed"`
+	StoppedReason           string `json:"stopped_reason"`
 }
 
 func RunBookmarks(ctx context.Context, cfg config.Config, st *store.Store, opts BookmarkOptions) (BookmarkStats, error) {
@@ -171,7 +178,35 @@ func runBookmarksWithResolver(ctx context.Context, cfg config.Config, st *store.
 			stats.MediaErrors += downloadStats.Errors
 			stats.MediaBlocked += downloadStats.Blocked
 
-			shouldRender := result.Status != model.UpsertUnchanged || mediaChanged || downloadStats.Changed > 0
+			quoteStats, err := syncBskyQuoteTree(ctx, cfg, st, result.ItemID, item.ExternalID, projection.Quote, projection.QuoteSkip, now, videoResolver, opts.MediaHTTPPolicy, &renderer)
+			if err != nil {
+				return stats, fmt.Errorf("hydrate Bluesky quote %s: %w", item.SourceKey, err)
+			}
+			stats.MediaDiscovered += quoteStats.mediaCandidates
+			stats.MediaUnavailable += quoteStats.mediaUnavailable
+			stats.MediaLinked += quoteStats.mediaLinked
+			stats.MediaDownloaded += quoteStats.media.Downloaded
+			stats.MediaGone += quoteStats.media.Gone
+			stats.MediaErrors += quoteStats.media.Errors
+			stats.MediaBlocked += quoteStats.media.Blocked
+			stats.QuoteLinked += quoteStats.linked
+			stats.QuoteSkipped += quoteStats.skipped
+			for reason, count := range quoteStats.skipCounts {
+				switch reason {
+				case bskyQuoteSkipBlocked:
+					stats.QuoteSkippedBlocked += count
+				case bskyQuoteSkipNotFound:
+					stats.QuoteSkippedNotFound += count
+				case bskyQuoteSkipDetached:
+					stats.QuoteSkippedDetached += count
+				case bskyQuoteSkipUnsupported:
+					stats.QuoteSkippedUnsupported += count
+				case bskyQuoteSkipMalformed:
+					stats.QuoteSkippedMalformed += count
+				}
+			}
+
+			shouldRender := result.Status != model.UpsertUnchanged || mediaChanged || downloadStats.Changed > 0 || quoteStats.linkChanged
 			if !shouldRender {
 				if _, err := vault.StatNote(cfg, item.NotePath); err != nil {
 					shouldRender = true
@@ -183,6 +218,7 @@ func runBookmarksWithResolver(ctx context.Context, cfg config.Config, st *store.
 				}
 				stats.Rendered++
 			}
+			stats.Rendered += quoteStats.rendered
 		}
 		if stats.StoppedReason == "limit reached" {
 			break

@@ -357,6 +357,56 @@ func TestListItemsForLinkDiscoveryIncludesBlueskyBookmarks(t *testing.T) {
 	}
 }
 
+func TestGetPreferredLocalSourceExtractUsesBlueskyQuotedParentText(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	parent := testItem("bsky:parent-text", "bsky_bookmark", "https://bsky.app/profile/parent/post/parent", now)
+	parent.Text = "Parent Bluesky text used as the local source fallback."
+	parent.Title = "Parent Bluesky post"
+	parentResult, err := st.UpsertItem(ctx, parent)
+	if err != nil {
+		t.Fatalf("upsert parent: %v", err)
+	}
+	child := testItem("bsky:child-text", "bsky_quote", "https://bsky.app/profile/child/post/child", now)
+	child.Text = ""
+	child.Title = "Quoted child"
+	childResult, err := st.UpsertItem(ctx, child)
+	if err != nil {
+		t.Fatalf("upsert child: %v", err)
+	}
+	if _, err := st.ReplaceItemChildLinks(ctx, parentResult.ItemID, "quoted_post", []int64{childResult.ItemID}); err != nil {
+		t.Fatalf("link quote child: %v", err)
+	}
+
+	candidate := model.SourceCandidate{
+		SourceKey:     "src:bluesky-quoted-parent-text",
+		OriginalURL:   "https://example.com/quoted",
+		CanonicalURL:  "https://example.com/quoted",
+		NormalizedURL: "https://example.com/quoted",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      "sources/web/quoted.md",
+	}
+	link, err := st.UpsertSourceLink(ctx, childResult.ItemID, candidate)
+	if err != nil {
+		t.Fatalf("upsert source link: %v", err)
+	}
+	if link.SourceID <= 0 {
+		t.Fatalf("invalid source link result: %+v", link)
+	}
+
+	result, ok, err := st.GetPreferredLocalSourceExtract(ctx, link.SourceID)
+	if err != nil {
+		t.Fatalf("GetPreferredLocalSourceExtract: %v", err)
+	}
+	if !ok || result.Content != parent.Text {
+		t.Fatalf("expected Bluesky parent text fallback, ok=%t result=%+v", ok, result)
+	}
+}
+
 func TestResetSourceEnrichmentByDomainClearsCurrentState(t *testing.T) {
 	t.Parallel()
 

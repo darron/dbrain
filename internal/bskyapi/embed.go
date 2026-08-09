@@ -16,6 +16,8 @@ type bookmarkProjection struct {
 	MediaCandidates  []model.MediaCandidate
 	MediaKnown       bool
 	MediaUnavailable bool
+	Quote            *bskyQuoteView
+	QuoteSkip        bskyQuoteSkip
 }
 
 type bookmarkMediaDecode struct {
@@ -33,6 +35,36 @@ func decodeBookmarkMedia(ctx context.Context, did, canonicalURL string, recordEm
 		viewEmbed = recordEmbed
 	}
 	return decodeBookmarkMediaView(ctx, did, canonicalURL, recordEmbed, viewEmbed, resolver)
+}
+
+func decodeBookmarkMediaViews(ctx context.Context, did, canonicalURL string, recordEmbed json.RawMessage, viewEmbeds []json.RawMessage, resolver videoBlobResolver) bookmarkMediaDecode {
+	if len(viewEmbeds) == 0 {
+		return decodeBookmarkMedia(ctx, did, canonicalURL, recordEmbed, nil, resolver)
+	}
+	decoded := bookmarkMediaDecode{known: true}
+	for _, viewEmbed := range viewEmbeds {
+		media := decodeBookmarkMedia(ctx, did, canonicalURL, recordEmbed, viewEmbed, resolver)
+		decoded.candidates = appendUniqueMediaCandidates(decoded.candidates, media.candidates)
+		decoded.supported = decoded.supported || media.supported
+		decoded.unavailable = decoded.unavailable || media.unavailable
+		decoded.known = decoded.known && media.known
+	}
+	return decoded
+}
+
+func appendUniqueMediaCandidates(dst []model.MediaCandidate, candidates []model.MediaCandidate) []model.MediaCandidate {
+	seen := make(map[string]struct{}, len(dst)+len(candidates))
+	for _, candidate := range dst {
+		seen[candidate.RemoteURL] = struct{}{}
+	}
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate.RemoteURL]; ok {
+			continue
+		}
+		seen[candidate.RemoteURL] = struct{}{}
+		dst = append(dst, candidate)
+	}
+	return dst
 }
 
 func decodeBookmarkMediaView(ctx context.Context, did, canonicalURL string, recordEmbed, raw json.RawMessage, resolver videoBlobResolver) bookmarkMediaDecode {
@@ -131,7 +163,8 @@ func decodeBookmarkMediaView(ctx context.Context, did, canonicalURL string, reco
 		decoded := decodeBookmarkMediaView(ctx, did, canonicalURL, recordEmbed, media, resolver)
 		decoded.supported = true
 		return decoded
-	case "app.bsky.embed.external#view", "app.bsky.embed.external", "app.bsky.embed.record#viewRecord", "app.bsky.embed.record#view", "app.bsky.embed.record":
+	case "app.bsky.embed.external#view", "app.bsky.embed.external", "app.bsky.embed.record#viewRecord", "app.bsky.embed.record#view", "app.bsky.embed.record",
+		"app.bsky.embed.record#viewNotFound", "app.bsky.embed.record#viewBlocked", "app.bsky.embed.record#viewDetached":
 		return bookmarkMediaDecode{known: true, supported: true}
 	default:
 		if _, ok := object["external"]; ok {
@@ -190,6 +223,11 @@ func collectEmbeddedLinks(raw json.RawMessage, add func(string)) {
 	if external, ok := object["external"]; ok {
 		if externalObject, err := rawObject(external); err == nil {
 			add(rawString(externalObject["uri"]))
+		}
+	}
+	for _, key := range []string{"url", "uri"} {
+		if candidate := rawString(object[key]); validHTTPURL(candidate) {
+			add(candidate)
 		}
 	}
 	switch typeName {

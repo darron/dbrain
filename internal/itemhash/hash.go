@@ -14,7 +14,7 @@ func Compute(item model.Item) string {
 	replyCount := item.ReplyCount
 	quoteCount := item.QuoteCount
 	bookmarkCount := item.BookmarkCount
-	if item.SourceType == "x_bookmark" || item.SourceType == "bsky_bookmark" {
+	if item.SourceType == "x_bookmark" || item.SourceType == "bsky_bookmark" || item.SourceType == "bsky_quote" {
 		likeCount = 0
 		repostCount = 0
 		replyCount = 0

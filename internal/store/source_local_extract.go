@@ -17,12 +17,13 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				s.normalized_url AS normalized_url,
 				s.domain AS domain,
 				s.source_type AS source_type,
-				COALESCE(NULLIF(i.article_title, ''), s.title, '') AS title,
+				COALESCE(NULLIF(i.article_title, ''), NULLIF(i.title, ''), s.title, '') AS title,
 				CASE
 					WHEN i.article_title = '`+model.XMediaTranscriptArticleTitle+`' THEN ''
 					WHEN i.source_type = 'apple_note' THEN ''
 					ELSE i.article_text
 				END AS article_text,
+				CASE WHEN i.source_type IN ('bsky_bookmark', 'bsky_quote') THEN COALESCE(NULLIF(i.text, ''), '') ELSE '' END AS item_text,
 				i.author_handle AS author_handle,
 				i.x_post_json AS x_post_json,
 				i.updated_at AS updated_at,
@@ -41,7 +42,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				s.normalized_url AS normalized_url,
 				s.domain AS domain,
 				s.source_type AS source_type,
-				COALESCE(NULLIF(p.article_title, ''), NULLIF(i.article_title, ''), s.title, '') AS title,
+				COALESCE(NULLIF(p.article_title, ''), NULLIF(p.title, ''), NULLIF(i.article_title, ''), NULLIF(i.title, ''), s.title, '') AS title,
 				COALESCE(
 					NULLIF(CASE WHEN p.article_title = '`+model.XMediaTranscriptArticleTitle+`' THEN '' ELSE p.article_text END, ''),
 					CASE
@@ -51,6 +52,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 					END,
 					''
 				) AS article_text,
+				CASE WHEN p.source_type IN ('bsky_bookmark', 'bsky_quote') THEN COALESCE(NULLIF(p.text, ''), '') ELSE '' END AS item_text,
 				p.author_handle AS author_handle,
 				p.x_post_json AS x_post_json,
 				p.updated_at AS updated_at,
@@ -71,6 +73,7 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 			source_type,
 			title,
 			article_text,
+			item_text,
 			author_handle,
 			x_post_json,
 			updated_at
@@ -94,10 +97,11 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 		var sourceType string
 		var title string
 		var articleText string
+		var itemText string
 		var authorHandle string
 		var xPostJSON string
 		var updatedAt string
-		if err := rows.Scan(&canonicalURL, &normalizedURL, &domain, &sourceType, &title, &articleText, &authorHandle, &xPostJSON, &updatedAt); err != nil {
+		if err := rows.Scan(&canonicalURL, &normalizedURL, &domain, &sourceType, &title, &articleText, &itemText, &authorHandle, &xPostJSON, &updatedAt); err != nil {
 			return model.ExtractResult{}, false, fmt.Errorf("scan local source extract %d: %w", sourceID, err)
 		}
 
@@ -117,6 +121,19 @@ func (s *Store) GetPreferredLocalSourceExtract(ctx context.Context, sourceID int
 				ToolVersion:  "local-item-cache",
 			}
 			candidateRank = 2
+		} else if content := strings.TrimSpace(itemText); content != "" {
+			candidate = model.ExtractResult{
+				CanonicalURL: sourceURL,
+				FinalURL:     sourceURL,
+				Title:        title,
+				SiteName:     domain,
+				Content:      content,
+				Status:       model.SourceExtractStatusOK,
+				FetchedAt:    parseStoredTime(updatedAt),
+				Tool:         "item-cache",
+				ToolVersion:  "local-item-cache",
+			}
+			candidateRank = 1
 		} else if sourceType == "x_article" {
 			if preview, ok := parseXArticlePreview(xPostJSON, sourceURL); ok {
 				toolVersion := "local-article-preview-cache"

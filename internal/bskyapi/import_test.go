@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/model"
@@ -258,6 +259,324 @@ func TestRunBookmarksRetriesUnavailableVideoResolutionOnUnchangedItem(t *testing
 	}
 	if second.Unchanged != 1 || second.MediaUnavailable != 0 || second.MediaLinked != 1 || second.MediaDownloaded != 1 || videoHits != 1 {
 		t.Fatalf("second stats = %+v, video hits=%d", second, videoHits)
+	}
+}
+
+func TestRunBookmarksHydratesBlueskyQuoteChildWithMediaAndLinks(t *testing.T) {
+	cfg, st := testBookmarkStore(t)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/quote.jpg" {
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("quote-image-bytes"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(bookmarkPage{Bookmarks: []bookmarkView{{
+			CreatedAt: "2026-08-08T18:00:00Z",
+			Subject:   bookmarkSubject{URI: "at://did:plc:parent/app.bsky.feed.post/3lq7parent", CID: "bafy-parent"},
+			Item: json.RawMessage(`{
+  "uri": "at://did:plc:parent/app.bsky.feed.post/3lq7parent",
+  "cid": "bafy-parent",
+  "author": {"did": "did:plc:parent", "handle": "parent.example", "displayName": "Parent"},
+  "record": {"text": "Parent text", "createdAt": "2026-08-07T17:00:00Z"},
+  "embed": {
+    "$type": "app.bsky.embed.record#viewRecord",
+    "uri": "at://did:plc:quoted/app.bsky.feed.post/3lq7quoted",
+    "cid": "bafy-quoted",
+    "author": {"did": "did:plc:quoted", "handle": "quoted.example", "displayName": "Quoted"},
+    "value": {"$type": "app.bsky.feed.post", "text": "Quoted text https://quoted.example/article", "createdAt": "2026-08-06T17:00:00Z", "langs": ["en"]},
+    "embeds": [{
+      "$type": "app.bsky.embed.images#view",
+      "images": [{"fullsize": "` + server.URL + `/quote.jpg", "alt": "Quoted image", "aspectRatio": {"width": 1200, "height": 800}}]
+    }]
+  }
+}`),
+		}}})
+	}))
+	defer server.Close()
+	client, err := newBookmarkClient(sessionCredentials{PDSURL: server.URL, AccessJWT: "access-token"}, server.Client())
+	if err != nil {
+		t.Fatalf("newBookmarkClient: %v", err)
+	}
+
+	stats, err := runBookmarks(context.Background(), cfg, st, client, BookmarkOptions{MediaHTTPPolicy: &safehttp.Policy{AllowPrivateNetwork: true}})
+	if err != nil {
+		t.Fatalf("runBookmarks: %v", err)
+	}
+	if stats.Created != 1 || stats.QuoteLinked != 1 || stats.MediaDownloaded != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+
+	parent, err := st.GetItem(context.Background(), "bsky:at://did:plc:parent/app.bsky.feed.post/3lq7parent")
+	if err != nil {
+		t.Fatalf("GetItem parent: %v", err)
+	}
+	child, err := st.GetItem(context.Background(), "bsky:at://did:plc:quoted/app.bsky.feed.post/3lq7quoted")
+	if err != nil {
+		t.Fatalf("GetItem child: %v", err)
+	}
+	if child.SourceType != "bsky_quote" || child.SavedAt != "" || child.Text != "Quoted text https://quoted.example/article" {
+		t.Fatalf("child identity/content = %+v", child)
+	}
+	if !strings.Contains(child.LinksJSON, "https://quoted.example/article") {
+		t.Fatalf("child links = %q", child.LinksJSON)
+	}
+	refs, err := st.ListItemMediaRefs(context.Background(), child.ID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs child: %v", err)
+	}
+	if len(refs) != 1 || refs[0].DownloadStatus != model.MediaDownloadStatusDownloaded || !strings.HasPrefix(refs[0].LocalPath, "media/bsky/photo/") {
+		t.Fatalf("child media = %#v", refs)
+	}
+	childLinks, err := st.ListItemChildLinks(context.Background(), parent.ID, "quoted_post")
+	if err != nil {
+		t.Fatalf("ListItemChildLinks: %v", err)
+	}
+	if len(childLinks) != 1 || childLinks[0] != child.ID {
+		t.Fatalf("child links = %#v, want [%d]", childLinks, child.ID)
+	}
+	ocrItems, err := st.ListItemsForXPhotoOCR(context.Background(), 20, true)
+	if err != nil {
+		t.Fatalf("ListItemsForXPhotoOCR: %v", err)
+	}
+	if len(ocrItems) != 1 || ocrItems[0].ID != child.ID {
+		t.Fatalf("OCR candidates = %#v", ocrItems)
+	}
+
+	parentNote, err := os.ReadFile(filepath.Join(cfg.VaultDir, filepath.FromSlash(parent.NotePath)))
+	if err != nil {
+		t.Fatalf("read parent note: %v", err)
+	}
+	if !strings.Contains(string(parentNote), "## Quoted Bluesky Post") || !strings.Contains(string(parentNote), child.NotePath) || !strings.Contains(string(parentNote), "https://bsky.app/profile/quoted.example/post/3lq7quoted") || !strings.Contains(string(parentNote), "Quoted text https://quoted.example/article") {
+		t.Fatalf("parent note missing quote context: %s", parentNote)
+	}
+	childNote, err := os.ReadFile(filepath.Join(cfg.VaultDir, filepath.FromSlash(child.NotePath)))
+	if err != nil {
+		t.Fatalf("read child note: %v", err)
+	}
+	if !strings.Contains(string(childNote), "## Media") || !strings.Contains(string(childNote), "Quoted text https://quoted.example/article") {
+		t.Fatalf("child note missing content/media: %s", childNote)
+	}
+}
+
+func TestRunBookmarksPreservesDirectBlueskyBookmarkWhenItIsQuoted(t *testing.T) {
+	cfg, st := testBookmarkStore(t)
+	now := time.Date(2026, 8, 8, 18, 0, 0, 0, time.UTC)
+	directView := bookmarkView{
+		CreatedAt: now.Format(time.RFC3339),
+		Subject:   bookmarkSubject{URI: "at://did:plc:quoted/app.bsky.feed.post/3lq7quoted", CID: "bafy-quoted"},
+		Item: json.RawMessage(`{
+  "uri": "at://did:plc:quoted/app.bsky.feed.post/3lq7quoted",
+  "cid": "bafy-quoted",
+  "author": {"did": "did:plc:quoted", "handle": "quoted.example"},
+  "record": {"text": "Directly saved quoted post", "createdAt": "2026-08-06T17:00:00Z"}
+}`),
+	}
+	direct, err := bookmarkViewToItem(directView, now)
+	if err != nil {
+		t.Fatalf("bookmarkViewToItem: %v", err)
+	}
+	if _, err := st.UpsertItem(context.Background(), direct); err != nil {
+		t.Fatalf("UpsertItem direct: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(bookmarkPage{Bookmarks: []bookmarkView{{
+			Subject: bookmarkSubject{URI: "at://did:plc:parent/app.bsky.feed.post/3lq7parent"},
+			Item: json.RawMessage(`{
+  "uri": "at://did:plc:parent/app.bsky.feed.post/3lq7parent",
+  "author": {"did": "did:plc:parent", "handle": "parent.example"},
+  "record": {"text": "Parent text", "createdAt": "2026-08-07T17:00:00Z"},
+  "embed": {"$type": "app.bsky.embed.record#viewRecord", "uri": "at://did:plc:quoted/app.bsky.feed.post/3lq7quoted", "cid": "bafy-quoted", "author": {"did": "did:plc:quoted", "handle": "quoted.example"}, "value": {"text": "Quote preview", "createdAt": "2026-08-06T17:00:00Z"}}
+}`),
+		}}})
+	}))
+	defer server.Close()
+	client, err := newBookmarkClient(sessionCredentials{PDSURL: server.URL, AccessJWT: "access-token"}, server.Client())
+	if err != nil {
+		t.Fatalf("newBookmarkClient: %v", err)
+	}
+	if _, err := runBookmarks(context.Background(), cfg, st, client, BookmarkOptions{}); err != nil {
+		t.Fatalf("runBookmarks: %v", err)
+	}
+
+	refreshed, err := st.GetItem(context.Background(), direct.SourceKey)
+	if err != nil {
+		t.Fatalf("GetItem direct: %v", err)
+	}
+	if refreshed.SourceType != "bsky_bookmark" || refreshed.SavedAt != direct.SavedAt || refreshed.Text != direct.Text {
+		t.Fatalf("direct bookmark was downgraded: %+v", refreshed)
+	}
+	parent, err := st.GetItem(context.Background(), "bsky:at://did:plc:parent/app.bsky.feed.post/3lq7parent")
+	if err != nil {
+		t.Fatalf("GetItem parent: %v", err)
+	}
+	childLinks, err := st.ListItemChildLinks(context.Background(), parent.ID, "quoted_post")
+	if err != nil {
+		t.Fatalf("ListItemChildLinks: %v", err)
+	}
+	if len(childLinks) != 1 || childLinks[0] != refreshed.ID {
+		t.Fatalf("quoted direct link = %#v, want [%d]", childLinks, refreshed.ID)
+	}
+}
+
+func TestRunBookmarksBoundsNestedCyclicBlueskyQuotes(t *testing.T) {
+	cfg, st := testBookmarkStore(t)
+	quoteView := func(uri, cid, handle, text string, embeds ...json.RawMessage) json.RawMessage {
+		value := map[string]any{
+			"$type":     "app.bsky.feed.post",
+			"text":      text,
+			"createdAt": "2026-08-06T17:00:00Z",
+		}
+		view := map[string]any{
+			"$type": "app.bsky.embed.record#viewRecord",
+			"uri":   uri,
+			"cid":   cid,
+			"author": map[string]string{
+				"did":         strings.Split(uri, "/")[2],
+				"handle":      handle,
+				"displayName": handle,
+			},
+			"value": value,
+		}
+		if len(embeds) > 0 {
+			view["embeds"] = embeds
+		}
+		raw, err := json.Marshal(view)
+		if err != nil {
+			t.Fatalf("marshal quote view %s: %v", uri, err)
+		}
+		return raw
+	}
+	aURI := "at://did:plc:a/app.bsky.feed.post/3lq7a"
+	bURI := "at://did:plc:b/app.bsky.feed.post/3lq7b"
+	terminalA := quoteView(aURI, "bafy-a", "a.example", "A terminal cycle reference")
+	bView := quoteView(bURI, "bafy-b", "b.example", "B quote", terminalA)
+	aView := quoteView(aURI, "bafy-a", "a.example", "A quote", bView)
+	parentURI := "at://did:plc:parent/app.bsky.feed.post/3lq7parent-cycle"
+	parentItem, err := json.Marshal(map[string]any{
+		"uri": parentURI,
+		"cid": "bafy-parent",
+		"author": map[string]string{
+			"did":    "did:plc:parent",
+			"handle": "parent.example",
+		},
+		"record": map[string]string{
+			"text":      "Parent text",
+			"createdAt": "2026-08-07T17:00:00Z",
+		},
+		"embed": json.RawMessage(aView),
+	})
+	if err != nil {
+		t.Fatalf("marshal parent: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(bookmarkPage{Bookmarks: []bookmarkView{{
+			Subject: bookmarkSubject{URI: parentURI, CID: "bafy-parent"},
+			Item:    parentItem,
+		}}})
+	}))
+	defer server.Close()
+	client, err := newBookmarkClient(sessionCredentials{PDSURL: server.URL, AccessJWT: "access-token"}, server.Client())
+	if err != nil {
+		t.Fatalf("newBookmarkClient: %v", err)
+	}
+	stats, err := runBookmarks(context.Background(), cfg, st, client, BookmarkOptions{})
+	if err != nil {
+		t.Fatalf("runBookmarks: %v", err)
+	}
+	if stats.QuoteLinked != 2 || stats.QuoteSkipped != 0 {
+		t.Fatalf("stats = %+v, want two bounded quote links and no skips", stats)
+	}
+
+	parent, err := st.GetItem(context.Background(), "bsky:"+parentURI)
+	if err != nil {
+		t.Fatalf("GetItem parent: %v", err)
+	}
+	a, err := st.GetItem(context.Background(), "bsky:"+aURI)
+	if err != nil {
+		t.Fatalf("GetItem A: %v", err)
+	}
+	b, err := st.GetItem(context.Background(), "bsky:"+bURI)
+	if err != nil {
+		t.Fatalf("GetItem B: %v", err)
+	}
+	if a.SourceType != "bsky_quote" || b.SourceType != "bsky_quote" {
+		t.Fatalf("quote source types = %q, %q", a.SourceType, b.SourceType)
+	}
+	parentLinks, err := st.ListItemChildLinks(context.Background(), parent.ID, "quoted_post")
+	if err != nil {
+		t.Fatalf("ListItemChildLinks parent: %v", err)
+	}
+	aLinks, err := st.ListItemChildLinks(context.Background(), a.ID, "quoted_post")
+	if err != nil {
+		t.Fatalf("ListItemChildLinks A: %v", err)
+	}
+	bLinks, err := st.ListItemChildLinks(context.Background(), b.ID, "quoted_post")
+	if err != nil {
+		t.Fatalf("ListItemChildLinks B: %v", err)
+	}
+	if len(parentLinks) != 1 || parentLinks[0] != a.ID || len(aLinks) != 1 || aLinks[0] != b.ID || len(bLinks) != 0 {
+		t.Fatalf("bounded quote links = parent=%#v A=%#v B=%#v", parentLinks, aLinks, bLinks)
+	}
+}
+
+func TestRunBookmarksClearsStaleQuoteLinkForBlockedView(t *testing.T) {
+	cfg, st := testBookmarkStore(t)
+	request := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		request++
+		w.Header().Set("Content-Type", "application/json")
+		embed := `{"$type":"app.bsky.embed.record#viewRecord","uri":"at://did:plc:quoted/app.bsky.feed.post/3lq7quoted","author":{"did":"did:plc:quoted","handle":"quoted.example"},"value":{"text":"Quote preview","createdAt":"2026-08-06T17:00:00Z"}}`
+		if request > 1 {
+			embed = `{"$type":"app.bsky.embed.record#viewBlocked"}`
+		}
+		item := `{"uri":"at://did:plc:parent/app.bsky.feed.post/3lq7parent","author":{"did":"did:plc:parent","handle":"parent.example"},"record":{"text":"Parent text","createdAt":"2026-08-07T17:00:00Z"},"embed":` + embed + `}`
+		_ = json.NewEncoder(w).Encode(bookmarkPage{Bookmarks: []bookmarkView{{
+			Subject: bookmarkSubject{URI: "at://did:plc:parent/app.bsky.feed.post/3lq7parent"},
+			Item:    json.RawMessage(item),
+		}}})
+	}))
+	defer server.Close()
+	client, err := newBookmarkClient(sessionCredentials{PDSURL: server.URL, AccessJWT: "access-token"}, server.Client())
+	if err != nil {
+		t.Fatalf("newBookmarkClient: %v", err)
+	}
+	if _, err := runBookmarks(context.Background(), cfg, st, client, BookmarkOptions{}); err != nil {
+		t.Fatalf("first runBookmarks: %v", err)
+	}
+	parent, err := st.GetItem(context.Background(), "bsky:at://did:plc:parent/app.bsky.feed.post/3lq7parent")
+	if err != nil {
+		t.Fatalf("GetItem parent: %v", err)
+	}
+	links, err := st.ListItemChildLinks(context.Background(), parent.ID, "quoted_post")
+	if err != nil {
+		t.Fatalf("ListItemChildLinks first: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("first quote links = %#v", links)
+	}
+	childID := links[0]
+
+	second, err := runBookmarks(context.Background(), cfg, st, client, BookmarkOptions{})
+	if err != nil {
+		t.Fatalf("second runBookmarks: %v", err)
+	}
+	if second.QuoteSkippedBlocked != 1 || second.QuoteSkipped != 1 {
+		t.Fatalf("second stats = %+v", second)
+	}
+	links, err = st.ListItemChildLinks(context.Background(), parent.ID, "quoted_post")
+	if err != nil {
+		t.Fatalf("ListItemChildLinks second: %v", err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("stale quote link remains = %#v", links)
+	}
+	if _, err := st.GetItemByID(context.Background(), childID); err != nil {
+		t.Fatalf("historical quote child was deleted: %v", err)
 	}
 }
 
