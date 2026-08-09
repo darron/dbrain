@@ -13,6 +13,9 @@ import (
 
 type Options struct {
 	Force bool
+	// MediaNamespace controls the vault media namespace. Existing callers default
+	// to x; direct Bluesky imports use bsky.
+	MediaNamespace string
 	// AllowedAssetIDs limits this run to the listed media asset IDs. Empty keeps
 	// the existing item-wide behavior used by normal download workflows.
 	AllowedAssetIDs  []int64
@@ -20,6 +23,7 @@ type Options struct {
 	ProgressInterval time.Duration
 	ProgressBytes    int64
 	Logger           *slog.Logger
+	HTTPPolicy       *safehttp.Policy
 	httpPolicy       *safehttp.Policy
 }
 
@@ -74,19 +78,22 @@ func RunForItem(ctx context.Context, cfg config.Config, st *store.Store, itemID 
 	}
 
 	policy := safehttp.Policy{}
-	if opts.httpPolicy != nil {
+	if opts.HTTPPolicy != nil {
+		policy = *opts.HTTPPolicy
+	} else if opts.httpPolicy != nil {
 		policy = *opts.httpPolicy
 	}
 	policy.Timeout = opts.Timeout
 	policy.AllowedPrivateOrigins = nil
 	client := safehttp.NewClient(policy)
+	namespace := normalizedMediaNamespace(opts.MediaNamespace)
 	for _, ref := range refs {
 		if !shouldDownload(ref, cfg, opts.Force) {
 			continue
 		}
 
 		stats.Requested++
-		result, err := downloadRef(ctx, client, cfg, ref, progressOptions{
+		result, err := downloadRef(ctx, client, cfg, ref, namespace, progressOptions{
 			Logger:   opts.Logger,
 			Interval: opts.ProgressInterval,
 			Bytes:    opts.ProgressBytes,

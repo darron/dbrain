@@ -3,6 +3,7 @@ package bskyapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -145,6 +148,129 @@ func TestRunBookmarksFollowsContinuationAfterEmptyPage(t *testing.T) {
 	if stats.PagesFetched != 2 || stats.Seen != 0 || stats.StoppedReason != "end of bookmarks" || requests != 2 {
 		t.Fatalf("stats = %+v, requests = %d", stats, requests)
 	}
+}
+
+func TestRunBookmarksPersistsAndDownloadsTextlessImageBookmark(t *testing.T) {
+	cfg, st := testBookmarkStore(t)
+	imageHits := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/image.jpg" {
+			imageHits++
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("image-bytes"))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(bookmarkPage{Bookmarks: []bookmarkView{{
+			Subject: bookmarkSubject{URI: "at://did:plc:one/app.bsky.feed.post/3lq7image"},
+			Item: json.RawMessage(`{
+  "uri": "at://did:plc:one/app.bsky.feed.post/3lq7image",
+  "author": {"did": "did:plc:one", "handle": "alice.example"},
+  "record": {"text": "", "createdAt": "2026-08-07T17:00:00Z"},
+  "embed": {"$type": "app.bsky.embed.images#view", "images": [{"fullsize": "` + server.URL + `/image.jpg", "aspectRatio": {"width": 1200, "height": 800}}]}
+}`),
+		}}})
+	}))
+	defer server.Close()
+	client, err := newBookmarkClient(sessionCredentials{PDSURL: server.URL, AccessJWT: "access-token"}, server.Client())
+	if err != nil {
+		t.Fatalf("newBookmarkClient: %v", err)
+	}
+	policy := &safehttp.Policy{AllowPrivateNetwork: true}
+	first, err := runBookmarks(context.Background(), cfg, st, client, BookmarkOptions{MediaHTTPPolicy: policy})
+	if err != nil {
+		t.Fatalf("first runBookmarks: %v", err)
+	}
+	if first.Processed != 1 || first.Created != 1 || first.MediaDiscovered != 1 || first.MediaLinked != 1 || first.MediaDownloaded != 1 || first.MediaUnavailable != 0 {
+		t.Fatalf("first stats = %+v", first)
+	}
+	item, err := st.GetItem(context.Background(), "bsky:at://did:plc:one/app.bsky.feed.post/3lq7image")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 || refs[0].DownloadStatus != model.MediaDownloadStatusDownloaded || !strings.HasPrefix(refs[0].LocalPath, "media/bsky/photo/") {
+		t.Fatalf("downloaded refs = %#v", refs)
+	}
+	second, err := runBookmarks(context.Background(), cfg, st, client, BookmarkOptions{MediaHTTPPolicy: policy})
+	if err != nil {
+		t.Fatalf("second runBookmarks: %v", err)
+	}
+	if second.Unchanged != 1 || second.MediaDiscovered != 1 || second.MediaLinked != 0 || second.MediaDownloaded != 0 || imageHits != 1 {
+		t.Fatalf("second stats = %+v, image hits=%d", second, imageHits)
+	}
+}
+
+func TestRunBookmarksRetriesUnavailableVideoResolutionOnUnchangedItem(t *testing.T) {
+	cfg, st := testBookmarkStore(t)
+	videoHits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/video" {
+			videoHits++
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("mp4-bytes"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(bookmarkPage{Bookmarks: []bookmarkView{{
+			Subject: bookmarkSubject{URI: "at://did:plc:one/app.bsky.feed.post/3lq7video-retry"},
+			Item: json.RawMessage(`{
+  "uri": "at://did:plc:one/app.bsky.feed.post/3lq7video-retry",
+  "author": {"did": "did:plc:one", "handle": "alice.example"},
+  "record": {"text": "", "createdAt": "2026-08-07T17:00:00Z", "embed": {"$type": "app.bsky.embed.video", "video": {"ref": {"$link": "bafy-video"}}}},
+  "embed": {"$type": "app.bsky.embed.video#view", "cid": "bafy-video", "playlist": "https://video.example/playlist.m3u8"}
+}`),
+		}}})
+	}))
+	defer server.Close()
+	client, err := newBookmarkClient(sessionCredentials{PDSURL: server.URL, AccessJWT: "access-token"}, server.Client())
+	if err != nil {
+		t.Fatalf("newBookmarkClient: %v", err)
+	}
+	resolver := &retryVideoBlobResolver{url: server.URL + "/video", fail: true}
+	first, err := runBookmarksWithResolver(context.Background(), cfg, st, client, BookmarkOptions{}, resolver)
+	if err != nil {
+		t.Fatalf("first runBookmarks: %v", err)
+	}
+	if first.Created != 1 || first.MediaUnavailable != 1 || first.MediaLinked != 0 {
+		t.Fatalf("first stats = %+v", first)
+	}
+	item, err := st.GetItem(context.Background(), "bsky:at://did:plc:one/app.bsky.feed.post/3lq7video-retry")
+	if err != nil {
+		t.Fatalf("GetItem after first run: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs after first run: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("unavailable video created media refs: %#v", refs)
+	}
+
+	resolver.fail = false
+	second, err := runBookmarksWithResolver(context.Background(), cfg, st, client, BookmarkOptions{MediaHTTPPolicy: &safehttp.Policy{AllowPrivateNetwork: true}}, resolver)
+	if err != nil {
+		t.Fatalf("second runBookmarks: %v", err)
+	}
+	if second.Unchanged != 1 || second.MediaUnavailable != 0 || second.MediaLinked != 1 || second.MediaDownloaded != 1 || videoHits != 1 {
+		t.Fatalf("second stats = %+v, video hits=%d", second, videoHits)
+	}
+}
+
+type retryVideoBlobResolver struct {
+	url  string
+	fail bool
+}
+
+func (r *retryVideoBlobResolver) ResolveVideoBlob(context.Context, string, string) (string, error) {
+	if r.fail || r.url == "" {
+		return "", errors.New("temporary PDS resolution failure")
+	}
+	return r.url, nil
 }
 
 func TestRunBookmarksRejectsRepeatedCursor(t *testing.T) {

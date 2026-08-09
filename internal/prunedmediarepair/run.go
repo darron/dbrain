@@ -103,7 +103,12 @@ func runWithDownloader(ctx context.Context, cfg config.Config, st *store.Store, 
 			continue
 		}
 
-		mediaStats, err := download(ctx, cfg, st, itemID, mediadownload.Options{Force: true, AllowedAssetIDs: assetIDs, Timeout: opts.Timeout, Logger: opts.Logger})
+		item, err := st.GetItemByID(ctx, itemID)
+		if err != nil {
+			return stats, fmt.Errorf("load pruned media item %d: %w", itemID, err)
+		}
+		namespace := mediadownload.MediaNamespaceForSourceType(item.SourceType)
+		mediaStats, err := download(ctx, cfg, st, itemID, mediadownload.Options{Force: true, AllowedAssetIDs: assetIDs, MediaNamespace: namespace, Timeout: opts.Timeout, Logger: opts.Logger})
 		stats.ItemsVisited++
 		if mediaStats.Downloaded > 0 {
 			stats.ItemsRestored++

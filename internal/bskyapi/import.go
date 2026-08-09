@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mediadownload"
 	"github.com/darron/dbrain/internal/model"
 	"github.com/darron/dbrain/internal/projection"
+	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/vault"
 )
@@ -21,6 +23,9 @@ type BookmarkOptions struct {
 	PageSize int
 	MaxPages int
 	Timeout  time.Duration
+	// MediaHTTPPolicy is primarily useful to callers that need to inject a
+	// constrained test policy. Normal imports use the downloader's safe policy.
+	MediaHTTPPolicy *safehttp.Policy
 }
 
 type BookmarkStats struct {
@@ -36,6 +41,13 @@ type BookmarkStats struct {
 	Updated            int    `json:"updated"`
 	Unchanged          int    `json:"unchanged"`
 	Rendered           int    `json:"rendered"`
+	MediaDiscovered    int    `json:"media_discovered"`
+	MediaLinked        int    `json:"media_linked"`
+	MediaUnavailable   int    `json:"media_unavailable"`
+	MediaDownloaded    int    `json:"media_downloaded"`
+	MediaGone          int    `json:"media_gone"`
+	MediaErrors        int    `json:"media_errors"`
+	MediaBlocked       int    `json:"media_blocked"`
 	StoppedReason      string `json:"stopped_reason"`
 }
 
@@ -55,10 +67,15 @@ func RunBookmarks(ctx context.Context, cfg config.Config, st *store.Store, opts 
 	if err != nil {
 		return BookmarkStats{}, err
 	}
+	client.pdsHTTPClient = safehttp.NewClient(safehttp.Policy{Timeout: opts.Timeout})
 	return runBookmarks(ctx, cfg, st, client, opts)
 }
 
 func runBookmarks(ctx context.Context, cfg config.Config, st *store.Store, client *bookmarkClient, opts BookmarkOptions) (BookmarkStats, error) {
+	return runBookmarksWithResolver(ctx, cfg, st, client, opts, nil)
+}
+
+func runBookmarksWithResolver(ctx context.Context, cfg config.Config, st *store.Store, client *bookmarkClient, opts BookmarkOptions, videoResolver videoBlobResolver) (BookmarkStats, error) {
 	if opts.PageSize <= 0 || opts.PageSize > 100 {
 		opts.PageSize = 100
 	}
@@ -67,6 +84,13 @@ func runBookmarks(ctx context.Context, cfg config.Config, st *store.Store, clien
 	seenCursors := map[string]struct{}{}
 	now := time.Now().UTC()
 	renderer := projection.NewRenderer(cfg, st)
+	if videoResolver == nil {
+		videoHTTPClient := client.pdsHTTPClient
+		if videoHTTPClient == nil {
+			videoHTTPClient = client.httpClient
+		}
+		videoResolver = newPDSResolver(videoHTTPClient)
+	}
 
 	for {
 		if opts.MaxPages > 0 && stats.PagesFetched >= opts.MaxPages {
@@ -90,7 +114,7 @@ func runBookmarks(ctx context.Context, cfg config.Config, st *store.Store, clien
 				break
 			}
 			stats.Seen++
-			item, err := bookmarkViewToItem(view, now)
+			projection, err := bookmarkViewToProjection(ctx, view, now, videoResolver)
 			if err != nil {
 				stats.Skipped++
 				switch {
@@ -105,6 +129,7 @@ func runBookmarks(ctx context.Context, cfg config.Config, st *store.Store, clien
 				}
 				continue
 			}
+			item := projection.Item
 
 			result, err := st.UpsertItem(ctx, item)
 			if err != nil {
@@ -120,7 +145,33 @@ func runBookmarks(ctx context.Context, cfg config.Config, st *store.Store, clien
 				stats.Unchanged++
 			}
 
-			shouldRender := result.Status != model.UpsertUnchanged
+			stats.MediaDiscovered += len(projection.MediaCandidates)
+			if projection.MediaUnavailable {
+				stats.MediaUnavailable++
+			}
+			mediaChanged := false
+			if projection.MediaKnown {
+				mediaChanged, err = st.SaveItemMediaCandidates(ctx, result.ItemID, projection.MediaCandidates)
+				if err != nil {
+					return stats, fmt.Errorf("save Bluesky media %s: %w", item.SourceKey, err)
+				}
+				if mediaChanged {
+					stats.MediaLinked++
+				}
+			}
+			downloadStats, err := mediadownload.RunForItem(ctx, cfg, st, result.ItemID, mediadownload.Options{
+				MediaNamespace: mediadownload.MediaNamespaceForSourceType(item.SourceType),
+				HTTPPolicy:     opts.MediaHTTPPolicy,
+			})
+			if err != nil {
+				return stats, fmt.Errorf("download Bluesky media %s: %w", item.SourceKey, err)
+			}
+			stats.MediaDownloaded += downloadStats.Downloaded
+			stats.MediaGone += downloadStats.Gone
+			stats.MediaErrors += downloadStats.Errors
+			stats.MediaBlocked += downloadStats.Blocked
+
+			shouldRender := result.Status != model.UpsertUnchanged || mediaChanged || downloadStats.Changed > 0
 			if !shouldRender {
 				if _, err := vault.StatNote(cfg, item.NotePath); err != nil {
 					shouldRender = true

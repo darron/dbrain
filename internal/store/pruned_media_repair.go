@@ -24,7 +24,7 @@ func (s *Store) ListPrunedMediaRepairCandidates(ctx context.Context, includeOCR,
 
 	if includeOCR {
 		status := itemOCRStatusExpr()
-		where := xItemSourceTypeWhere + `
+		where := mediaEnrichmentItemSourceTypeWhere + `
 			AND external_id != ''
 			AND ` + prunedArchivedMediaExistsWhere("photo") + `
 			AND NOT ` + xPhotoOCRRunnableMediaExistsWhere + `
@@ -40,7 +40,7 @@ func (s *Store) ListPrunedMediaRepairCandidates(ctx context.Context, includeOCR,
 		status := itemXMediaTranscriptStatusExpr()
 		text := itemXMediaTranscriptTextExpr()
 		completedAt := itemXMediaTranscriptCompletedAtExpr()
-		where := xItemSourceTypeWhere + `
+		where := mediaEnrichmentItemSourceTypeWhere + `
 			AND external_id != ''
 			AND ` + prunedArchivedMediaExistsWhere("video", "animated_gif") + `
 			AND NOT ` + xMediaTranscriptionRunnableMediaExistsWhere + `

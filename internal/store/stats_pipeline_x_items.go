@@ -13,7 +13,7 @@ func (s *Store) pipelineXMediaTranscriptionRow(ctx context.Context) (PipelineSta
 	status := itemXMediaTranscriptStatusExpr()
 	text := itemXMediaTranscriptTextExpr()
 	completedAt := itemXMediaTranscriptCompletedAtExpr()
-	candidateWhere := xItemSourceTypeWhere + ` AND external_id != '' AND ` + xMediaTranscriptionAnyMediaExistsWhere
+	candidateWhere := mediaEnrichmentItemSourceTypeWhere + ` AND external_id != '' AND ` + xMediaTranscriptionAnyMediaExistsWhere
 
 	total, err := s.countWhere(ctx, "items", candidateWhere)
 	if err != nil || total == 0 {
@@ -62,7 +62,7 @@ func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow,
 	transcriptText := itemXMediaTranscriptTextExpr()
 	summaryStatus := itemSummaryStatusExpr()
 	summaryText := itemSummaryTextExpr()
-	candidateWhere := xItemSourceTypeWhere + ` AND ` + transcriptText + ` != '' AND ` + transcriptStatus + ` = '` + model.XMediaTranscriptStatusOK + `'`
+	candidateWhere := mediaEnrichmentItemSourceTypeWhere + ` AND ` + transcriptText + ` != '' AND ` + transcriptStatus + ` = '` + model.XMediaTranscriptStatusOK + `'`
 
 	total, err := s.countWhere(ctx, "items", candidateWhere)
 	if err != nil || total == 0 {
@@ -100,7 +100,7 @@ func (s *Store) pipelineXMediaSummaryRow(ctx context.Context) (PipelineStageRow,
 func (s *Store) pipelineXPhotoOCRRow(ctx context.Context) (PipelineStageRow, bool, error) {
 	status := itemOCRStatusExpr()
 	text := itemOCRTextExpr()
-	candidateWhere := xItemSourceTypeWhere + ` AND external_id != '' AND ` + xPhotoOCRAnyMediaExistsWhere
+	candidateWhere := mediaEnrichmentItemSourceTypeWhere + ` AND external_id != '' AND ` + xPhotoOCRAnyMediaExistsWhere
 
 	total, err := s.countWhere(ctx, "items", candidateWhere)
 	if err != nil || total == 0 {

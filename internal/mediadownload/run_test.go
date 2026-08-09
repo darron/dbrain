@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +22,75 @@ import (
 	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 )
+
+func TestDownloadRefClosesOriginalResponseBody(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	body := &trackingReadCloser{Reader: strings.NewReader("jpeg-bytes")}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"content-type": []string{"image/jpeg"}},
+			Body:          body,
+			ContentLength: int64(len("jpeg-bytes")),
+		}, nil
+	})}
+
+	result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{
+		RemoteURL: "https://media.example/image.jpg",
+		MediaType: "photo",
+	}, "x", progressOptions{})
+	if err != nil {
+		t.Fatalf("downloadRef: %v", err)
+	}
+	if result.Status != model.MediaDownloadStatusDownloaded {
+		t.Fatalf("result = %#v", result)
+	}
+	if !body.closed {
+		t.Fatal("downloadRef did not close the original response body")
+	}
+}
+
+func TestMediaNamespaceForSourceType(t *testing.T) {
+	for _, test := range []struct {
+		sourceType string
+		want       string
+	}{
+		{sourceType: "x_bookmark", want: "x"},
+		{sourceType: "x_quote", want: "x"},
+		{sourceType: "bsky_bookmark", want: "bsky"},
+		{sourceType: "bsky_quote", want: "bsky"},
+	} {
+		t.Run(test.sourceType, func(t *testing.T) {
+			if got := MediaNamespaceForSourceType(test.sourceType); got != test.want {
+				t.Fatalf("MediaNamespaceForSourceType(%q) = %q, want %q", test.sourceType, got, test.want)
+			}
+		})
+	}
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	closed bool
+}
+
+func (b *trackingReadCloser) Close() error {
+	b.closed = true
+	return nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestRunForItemBlocksPrivateMediaWithoutWritingFile(t *testing.T) {
 	hits := 0
@@ -210,6 +280,146 @@ func TestRunForItemDownloadsMediaIntoVault(t *testing.T) {
 	fullPath := filepath.Join(cfg.VaultDir, filepath.FromSlash(refs[0].LocalPath))
 	if _, err := os.Stat(fullPath); err != nil {
 		t.Fatalf("expected downloaded file at %s: %v", fullPath, err)
+	}
+}
+
+func TestRunForItemRejectsHLSPlaylistAsVideoAsset(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "application/vnd.apple.mpegurl")
+		_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n"))
+	}))
+	defer server.Close()
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st := openTestStore(t, cfg.DBPath)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 8, 3, 4, 5, 0, time.UTC)
+	itemID := insertTestItem(t, st, "bsky:hls-playlist", now)
+	if _, err := st.SaveXHydration(ctx, itemID, model.XHydration{
+		FullText: "video", Status: "ok_graphql", FetchedAt: now,
+		APIJSON: `{"snapshot":{"media_objects":[{"type":"video","url":"` + server.URL + `/playlist.m3u8"}]}}`,
+	}); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+
+	stats, err := RunForItem(ctx, cfg, st, itemID, Options{httpPolicy: privateNetworkTestPolicy()})
+	if err != nil {
+		t.Fatalf("RunForItem: %v", err)
+	}
+	if stats.Errors != 1 || stats.Downloaded != 0 {
+		t.Fatalf("unexpected playlist stats: %+v", stats)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, itemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 || refs[0].DownloadStatus != model.MediaDownloadStatusError || refs[0].LocalPath != "" {
+		t.Fatalf("playlist ref = %#v", refs)
+	}
+	assertNoMediaFiles(t, cfg.MediaDir)
+}
+
+func TestRunForItemUsesBlueskyMediaNamespace(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "image/jpeg")
+		_, _ = w.Write([]byte("bsky-image"))
+	}))
+	defer server.Close()
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st := openTestStore(t, cfg.DBPath)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 8, 3, 5, 5, 0, time.UTC)
+	item, err := st.UpsertItem(ctx, model.Item{
+		SourceKey: "bsky:namespace", SourceType: "bsky_bookmark", ExternalID: "bsky:namespace",
+		CanonicalURL: "https://bsky.app/profile/alice.example/post/namespace", Title: "image",
+		ContentHash: "bsky-namespace", LinksJSON: "[]", NotePath: "items/bsky/2026/namespace.md", RawJSON: "{}",
+		ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	itemID := item.ItemID
+	if _, err := st.SaveItemMediaCandidates(ctx, itemID, []model.MediaCandidate{{RemoteURL: server.URL + "/image.jpg", MediaType: "photo"}}); err != nil {
+		t.Fatalf("SaveItemMediaCandidates: %v", err)
+	}
+
+	stats, err := RunForItem(ctx, cfg, st, itemID, Options{MediaNamespace: "bsky", httpPolicy: privateNetworkTestPolicy()})
+	if err != nil {
+		t.Fatalf("RunForItem: %v", err)
+	}
+	if stats.Downloaded != 1 {
+		t.Fatalf("unexpected namespace stats: %+v", stats)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, itemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 || !strings.HasPrefix(refs[0].LocalPath, "media/bsky/photo/") {
+		t.Fatalf("unexpected Bluesky local path: %#v", refs)
+	}
+}
+
+func TestRunForItemStoresHeaderlessBlueskyVideoAsMP4(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Minimal MP4 signature: ftyp immediately follows the box size.
+		_, _ = w.Write([]byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm', 'i', 's', 'o', '2', 0})
+	}))
+	defer server.Close()
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st := openTestStore(t, cfg.DBPath)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 8, 3, 6, 5, 0, time.UTC)
+	itemID := insertTestItem(t, st, "bsky:headerless-video", now)
+	if _, err := st.SaveItemMediaCandidates(ctx, itemID, []model.MediaCandidate{{RemoteURL: server.URL + "/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aone&cid=bafy-video", MediaType: "video"}}); err != nil {
+		t.Fatalf("SaveItemMediaCandidates: %v", err)
+	}
+
+	stats, err := RunForItem(ctx, cfg, st, itemID, Options{MediaNamespace: "bsky", HTTPPolicy: privateNetworkTestPolicy()})
+	if err != nil {
+		t.Fatalf("RunForItem: %v", err)
+	}
+	if stats.Downloaded != 1 {
+		t.Fatalf("unexpected video stats: %+v", stats)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, itemID)
+	if err != nil {
+		t.Fatalf("ListItemMediaRefs: %v", err)
+	}
+	if len(refs) != 1 || !strings.HasSuffix(refs[0].LocalPath, ".mp4") || !strings.HasPrefix(refs[0].LocalPath, "media/bsky/video/") {
+		t.Fatalf("unexpected headerless video ref: %#v", refs)
+	}
+	asset, err := st.GetMediaAsset(ctx, refs[0].MediaAssetID)
+	if err != nil {
+		t.Fatalf("GetMediaAsset: %v", err)
+	}
+	if asset.ByteSize == 0 || asset.ContentHash == "" {
+		t.Fatalf("headerless video asset lacks bytes/hash: %#v", asset)
 	}
 }
 

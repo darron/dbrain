@@ -336,6 +336,27 @@ func TestListItemsForLinkDiscoveryIncludesAppleNotes(t *testing.T) {
 	}
 }
 
+func TestListItemsForLinkDiscoveryIncludesBlueskyBookmarks(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	item := testItem("bsky:link-discovery", "bsky_bookmark", "https://bsky.app/profile/alice.example/post/one", now)
+	item.LinksJSON = `["https://example.com/from-bluesky"]`
+	if _, err := st.UpsertItem(ctx, item); err != nil {
+		t.Fatalf("upsert Bluesky item: %v", err)
+	}
+
+	items, err := st.ListItemsForLinkDiscovery(ctx, 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForLinkDiscovery: %v", err)
+	}
+	if len(items) != 1 || items[0].SourceKey != item.SourceKey {
+		t.Fatalf("expected Bluesky link discovery candidate, got %+v", items)
+	}
+}
+
 func TestResetSourceEnrichmentByDomainClearsCurrentState(t *testing.T) {
 	t.Parallel()
 

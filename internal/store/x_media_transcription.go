@@ -31,7 +31,7 @@ func (s *Store) ListItemsForXMediaTranscription(ctx context.Context, limit int, 
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
-		WHERE ` + xItemSourceTypeWhere + `
+		WHERE ` + mediaEnrichmentItemSourceTypeWhere + `
 			AND external_id != ''
 			AND ` + where + `
 		ORDER BY last_seen_at DESC, id DESC

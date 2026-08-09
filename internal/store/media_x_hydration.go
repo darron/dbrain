@@ -19,7 +19,17 @@ func (s *Store) syncXHydrationMediaTx(ctx context.Context, tx *sql.Tx, itemID in
 
 	switch {
 	case hasSnapshot:
-		return s.replaceItemMediaLinksTx(ctx, tx, itemID, snapshot.MediaObjects, now)
+		candidates := make([]model.MediaCandidate, 0, len(snapshot.MediaObjects))
+		for _, media := range snapshot.MediaObjects {
+			candidates = append(candidates, model.MediaCandidate{
+				RemoteURL:   media.URL,
+				ExpandedURL: media.ExpandedURL,
+				MediaType:   media.Type,
+				Width:       media.Width,
+				Height:      media.Height,
+			})
+		}
+		return s.replaceItemMediaLinksTx(ctx, tx, itemID, candidates, now)
 	case hydration.Status == "not_found":
 		current, err := s.listItemMediaRefsTx(ctx, tx, itemID)
 		if err != nil {
@@ -28,13 +38,19 @@ func (s *Store) syncXHydrationMediaTx(ctx context.Context, tx *sql.Tx, itemID in
 		if len(current) == 0 {
 			return false, nil
 		}
-		return true, s.clearItemMediaLinksTx(ctx, tx, itemID)
+		if err := s.clearItemMediaLinksTx(ctx, tx, itemID); err != nil {
+			return false, err
+		}
+		if err := s.invalidateItemMediaDerivedTx(ctx, tx, itemID, now.UTC().Format(time.RFC3339)); err != nil {
+			return false, err
+		}
+		return true, nil
 	default:
 		return false, nil
 	}
 }
 
-func (s *Store) replaceItemMediaLinksTx(ctx context.Context, tx *sql.Tx, itemID int64, media []xHydrationMedia, now time.Time) (bool, error) {
+func (s *Store) replaceItemMediaLinksTx(ctx context.Context, tx *sql.Tx, itemID int64, media []model.MediaCandidate, now time.Time) (bool, error) {
 	current, err := s.listItemMediaRefsTx(ctx, tx, itemID)
 	if err != nil {
 		return false, err
@@ -46,9 +62,9 @@ func (s *Store) replaceItemMediaLinksTx(ctx context.Context, tx *sql.Tx, itemID 
 	assetChanged := false
 
 	for _, candidate := range desired {
-		assetID, changed, err := s.upsertMediaAssetTx(ctx, tx, xHydrationMedia{
-			Type:        candidate.MediaType,
-			URL:         candidate.RemoteURL,
+		assetID, changed, err := s.upsertMediaAssetTx(ctx, tx, model.MediaCandidate{
+			MediaType:   candidate.MediaType,
+			RemoteURL:   candidate.RemoteURL,
 			ExpandedURL: candidate.ExpandedURL,
 			Width:       candidate.Width,
 			Height:      candidate.Height,
@@ -90,6 +106,9 @@ func (s *Store) replaceItemMediaLinksTx(ctx context.Context, tx *sql.Tx, itemID 
 			return false, fmt.Errorf("insert item media link item=%d asset=%d: %w", link.ItemID, link.MediaAssetID, err)
 		}
 	}
+	if err := s.invalidateItemMediaDerivedTx(ctx, tx, itemID, nowText); err != nil {
+		return false, err
+	}
 
 	return true, nil
 }
@@ -101,11 +120,11 @@ func (s *Store) clearItemMediaLinksTx(ctx context.Context, tx *sql.Tx, itemID in
 	return nil
 }
 
-func (s *Store) upsertMediaAssetTx(ctx context.Context, tx *sql.Tx, media xHydrationMedia, nowText string) (int64, bool, error) {
+func (s *Store) upsertMediaAssetTx(ctx context.Context, tx *sql.Tx, media model.MediaCandidate, nowText string) (int64, bool, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, media_type, width, height, download_status, discovered_at
 		FROM media_assets
-		WHERE remote_url = ?`, media.URL)
+		WHERE remote_url = ?`, media.RemoteURL)
 
 	var (
 		assetID       int64
@@ -122,27 +141,27 @@ func (s *Store) upsertMediaAssetTx(ctx context.Context, tx *sql.Tx, media xHydra
 				remote_url, media_type, mime_type, width, height, byte_size, content_hash,
 				download_status, download_error, local_path, discovered_at, downloaded_at, updated_at
 			) VALUES (?, ?, '', ?, ?, 0, '', '`+model.MediaDownloadStatusPending+`', '', '', ?, '', ?)`,
-			media.URL,
-			media.Type,
+			media.RemoteURL,
+			media.MediaType,
 			media.Width,
 			media.Height,
 			nowText,
 			nowText,
 		)
 		if execErr != nil {
-			return 0, false, fmt.Errorf("insert media asset %q: %w", media.URL, execErr)
+			return 0, false, fmt.Errorf("insert media asset %q: %w", media.RemoteURL, execErr)
 		}
 		insertedID, execErr := result.LastInsertId()
 		if execErr != nil {
-			return 0, false, fmt.Errorf("fetch inserted media asset id %q: %w", media.URL, execErr)
+			return 0, false, fmt.Errorf("fetch inserted media asset id %q: %w", media.RemoteURL, execErr)
 		}
 		return insertedID, true, nil
 	case err != nil:
-		return 0, false, fmt.Errorf("load media asset %q: %w", media.URL, err)
+		return 0, false, fmt.Errorf("load media asset %q: %w", media.RemoteURL, err)
 	default:
 	}
 
-	nextType := firstNonEmpty(media.Type, currentType)
+	nextType := firstNonEmpty(media.MediaType, currentType)
 	nextWidth := maxInt(media.Width, currentWidth)
 	nextHeight := maxInt(media.Height, currentHeight)
 	nextStatus := currentStatus
@@ -185,4 +204,26 @@ func (s *Store) upsertMediaAssetTx(ctx context.Context, tx *sql.Tx, media xHydra
 	_ = currentStatus
 	_ = currentSeenAt
 	return assetID, changed, nil
+}
+
+// SaveItemMediaCandidates replaces the media references for an item through
+// the same transaction path used by X hydration. A valid empty candidate list
+// clears stale links; callers with an invalid or incomplete decoder result
+// should not call this method.
+func (s *Store) SaveItemMediaCandidates(ctx context.Context, itemID int64, candidates []model.MediaCandidate) (bool, error) {
+	return withBusyRetry(ctx, func() (bool, error) {
+		return withAuthoritativeWriteTx(ctx, s, "save-item-media", func(ctx context.Context, tx authoritativeWriteTx) (bool, error) {
+			now := time.Now().UTC()
+			changed, err := s.replaceItemMediaLinksTx(ctx, tx, itemID, candidates, now)
+			if err != nil {
+				return false, err
+			}
+			if changed {
+				if _, err := tx.ExecContext(ctx, `UPDATE items SET updated_at = ? WHERE id = ?`, now.Format(time.RFC3339), itemID); err != nil {
+					return false, fmt.Errorf("touch item after media sync %d: %w", itemID, err)
+				}
+			}
+			return changed, nil
+		})
+	})
 }

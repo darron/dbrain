@@ -19,6 +19,17 @@ const (
 	MediaArchiveStatusError    = "error"
 )
 
+// MediaCandidate is a source-neutral reference discovered while importing an
+// item. The remote URL identifies the downloadable asset; ExpandedURL keeps
+// the human-facing provenance shown with the item media link.
+type MediaCandidate struct {
+	RemoteURL   string `json:"remote_url"`
+	ExpandedURL string `json:"expanded_url"`
+	MediaType   string `json:"media_type"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+}
+
 type MediaAsset struct {
 	ID              int64     `json:"id"`
 	RemoteURL       string    `json:"remote_url"`

@@ -19,7 +19,7 @@ func (s *Store) ListItemsForXMediaSummary(ctx context.Context, limit int, force 
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
-		WHERE ` + xItemSourceTypeWhere + `
+		WHERE ` + mediaEnrichmentItemSourceTypeWhere + `
 			AND ` + transcriptText + ` != ''
 			AND ` + transcriptStatus + ` = '` + model.XMediaTranscriptStatusOK + `'`
 	if !force {
@@ -68,7 +68,7 @@ func (s *Store) ListItemsForXPhotoOCR(ctx context.Context, limit int, force bool
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
-		WHERE ` + xItemSourceTypeWhere + `
+		WHERE ` + mediaEnrichmentItemSourceTypeWhere + `
 			AND external_id != ''
 			AND ` + where + `
 		ORDER BY last_seen_at DESC, id DESC
@@ -107,7 +107,7 @@ func (s *Store) ListItemsForXPhotoOCRAudit(ctx context.Context, limit int, inclu
 	query := `
 		SELECT ` + itemSelectColumns + `
 		FROM items
-		WHERE ` + xItemSourceTypeWhere + `
+		WHERE ` + mediaEnrichmentItemSourceTypeWhere + `
 			AND external_id != ''
 			AND EXISTS (
 				SELECT 1

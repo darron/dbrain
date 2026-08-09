@@ -66,6 +66,13 @@ func newImportBlueskyBookmarksCommand(root *rootOptions) *cobra.Command {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updated: %d\n", stats.Updated)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Unchanged: %d\n", stats.Unchanged)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Rendered notes: %d\n", stats.Rendered)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media discovered: %d\n", stats.MediaDiscovered)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media linked: %d\n", stats.MediaLinked)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media unavailable: %d\n", stats.MediaUnavailable)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media downloaded: %d\n", stats.MediaDownloaded)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media gone: %d\n", stats.MediaGone)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media errors: %d\n", stats.MediaErrors)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Media blocked: %d\n", stats.MediaBlocked)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Stopped: %s\n", stats.StoppedReason)
 			return nil
 		},

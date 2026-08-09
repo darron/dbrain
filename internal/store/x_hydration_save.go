@@ -82,11 +82,6 @@ func (s *Store) SaveXHydration(ctx context.Context, itemID int64, hydration mode
 			if err != nil {
 				return false, err
 			}
-			if mediaChanged {
-				if _, err := s.invalidateItemOCRTx(ctx, tx, itemID, nowText); err != nil {
-					return false, err
-				}
-			}
 			if mediaChanged && !hydrationChanged {
 				if _, err := tx.ExecContext(ctx, `
 				UPDATE items

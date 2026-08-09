@@ -67,6 +67,41 @@ func TestListItemsForXMediaTranscriptionPreservesForceRetryAndPrunedSemantics(t 
 	}
 }
 
+func TestMediaEnrichmentQueriesIncludeBlueskyBookmarks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openTestStore(t)
+	now := time.Now().UTC()
+	photo := testItem("bsky:ocr", "bsky_bookmark", "https://bsky.app/profile/alice/post/ocr", now)
+	video := testItem("bsky:transcription", "bsky_bookmark", "https://bsky.app/profile/alice/post/transcription", now)
+	photoResult, err := st.UpsertItem(ctx, photo)
+	if err != nil {
+		t.Fatalf("upsert photo item: %v", err)
+	}
+	videoResult, err := st.UpsertItem(ctx, video)
+	if err != nil {
+		t.Fatalf("upsert video item: %v", err)
+	}
+	insertDownloadedAssetLink(t, st, photoResult.ItemID, "https://cdn.example/ocr.jpg", "photo", "media/bsky/photo/aa/ocr.jpg", now)
+	insertDownloadedAssetLink(t, st, videoResult.ItemID, "https://cdn.example/transcription.mp4", "video", "media/bsky/video/bb/transcription.mp4", now)
+
+	ocr, err := st.ListItemsForXPhotoOCR(ctx, 100, true)
+	if err != nil {
+		t.Fatalf("ListItemsForXPhotoOCR: %v", err)
+	}
+	if got := sortedItemSourceKeys(ocr); !slices.Contains(got, photo.SourceKey) {
+		t.Fatalf("Bluesky photo missing from OCR candidates: %v", got)
+	}
+	transcription, err := st.ListItemsForXMediaTranscription(ctx, 100, true)
+	if err != nil {
+		t.Fatalf("ListItemsForXMediaTranscription: %v", err)
+	}
+	if got := sortedItemSourceKeys(transcription); !slices.Contains(got, video.SourceKey) {
+		t.Fatalf("Bluesky video missing from transcription candidates: %v", got)
+	}
+}
+
 func TestXMediaTranscriptionCandidateQueryLooksUpRunnableMediaByItemFirst(t *testing.T) {
 	t.Parallel()
 
