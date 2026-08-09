@@ -9,6 +9,8 @@ import (
 	"github.com/darron/dbrain/internal/model"
 )
 
+var ErrItemNotFound = errors.New("item not found")
+
 func (s *Store) GetItem(ctx context.Context, lookup string) (model.Item, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
@@ -23,7 +25,7 @@ func (s *Store) GetItem(ctx context.Context, lookup string) (model.Item, error) 
 	var item model.Item
 	if err := scanItem(row, &item); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return model.Item{}, fmt.Errorf("item not found: %s", lookup)
+			return model.Item{}, fmt.Errorf("%w: %s", ErrItemNotFound, lookup)
 		}
 		return model.Item{}, fmt.Errorf("load item %s: %w", lookup, err)
 	}
@@ -45,7 +47,7 @@ func (s *Store) GetItemByID(ctx context.Context, id int64) (model.Item, error) {
 	var item model.Item
 	if err := scanItem(row, &item); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return model.Item{}, fmt.Errorf("item not found: %d", id)
+			return model.Item{}, fmt.Errorf("%w: %d", ErrItemNotFound, id)
 		}
 		return model.Item{}, fmt.Errorf("load item %d: %w", id, err)
 	}

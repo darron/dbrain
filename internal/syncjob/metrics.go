@@ -242,6 +242,8 @@ func emitSyncImportStageMetric(run metrics.RunContext, opts stageOptions, stage 
 			// "error" field name; full stage metrics retain media_errors.
 			counts["media_failures"] = s.MediaErrors
 			counts["media_blocked"] = s.MediaBlocked
+			counts["quote_linked"] = s.QuoteLinked
+			counts["quote_skipped"] = s.QuoteSkipped
 			emit("bluesky_bookmarks", value.Duration, counts, s.MediaErrors > 0)
 		} else if opts.BlueskyBookmarks.Enabled {
 			emit("bluesky_bookmarks", 0, importCounts(0, 0, 0, 0, 0, 0, 0), true)

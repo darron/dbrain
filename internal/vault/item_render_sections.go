@@ -105,7 +105,12 @@ func writeItemEvidenceSections(b *strings.Builder, item model.Item, snapshot *xp
 		b.WriteString("\n")
 	}
 	if isXItem(item) && snapshot != nil && snapshot.QuotedPost != nil {
-		writeQuotedPostSection(b, snapshot.QuotedPost)
+		writeQuotedPostSection(b, xQuotedPostPresentation(snapshot.QuotedPost))
+	}
+	if !isXItem(item) {
+		if quote, ok := blueskyQuotePresentation(item); ok {
+			writeQuotedPostSection(b, quote)
+		}
 	}
 
 	if text := strings.TrimSpace(item.Text); text != "" && !sameNormalizedText(text, item.XPostText) {

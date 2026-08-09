@@ -614,7 +614,7 @@ func logScheduledSyncStats(logOut io.Writer, stats syncjob.Stats) error {
 		}
 	}
 	if stats.BlueskyBookmarks != nil {
-		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: bluesky_bookmarks created=%d updated=%d unchanged=%d skipped=%d media_discovered=%d media_linked=%d media_unavailable=%d media_downloaded=%d media_gone=%d media_errors=%d media_blocked=%d\n", stats.BlueskyBookmarks.Stats.Created, stats.BlueskyBookmarks.Stats.Updated, stats.BlueskyBookmarks.Stats.Unchanged, stats.BlueskyBookmarks.Stats.Skipped, stats.BlueskyBookmarks.Stats.MediaDiscovered, stats.BlueskyBookmarks.Stats.MediaLinked, stats.BlueskyBookmarks.Stats.MediaUnavailable, stats.BlueskyBookmarks.Stats.MediaDownloaded, stats.BlueskyBookmarks.Stats.MediaGone, stats.BlueskyBookmarks.Stats.MediaErrors, stats.BlueskyBookmarks.Stats.MediaBlocked); err != nil {
+		if _, err := fmt.Fprintf(logOut, "scheduler sync all stage: bluesky_bookmarks created=%d updated=%d unchanged=%d skipped=%d media_discovered=%d media_linked=%d media_unavailable=%d media_downloaded=%d media_gone=%d media_errors=%d media_blocked=%d quote_linked=%d quote_skipped=%d\n", stats.BlueskyBookmarks.Stats.Created, stats.BlueskyBookmarks.Stats.Updated, stats.BlueskyBookmarks.Stats.Unchanged, stats.BlueskyBookmarks.Stats.Skipped, stats.BlueskyBookmarks.Stats.MediaDiscovered, stats.BlueskyBookmarks.Stats.MediaLinked, stats.BlueskyBookmarks.Stats.MediaUnavailable, stats.BlueskyBookmarks.Stats.MediaDownloaded, stats.BlueskyBookmarks.Stats.MediaGone, stats.BlueskyBookmarks.Stats.MediaErrors, stats.BlueskyBookmarks.Stats.MediaBlocked, stats.BlueskyBookmarks.Stats.QuoteLinked, stats.BlueskyBookmarks.Stats.QuoteSkipped); err != nil {
 			return err
 		}
 	}

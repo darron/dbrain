@@ -86,10 +86,26 @@ func bookmarkViewToProjection(ctx context.Context, view bookmarkView, now time.T
 		return bookmarkProjection{}, fmt.Errorf("decode Bluesky post record %s for media: %w", view.Subject.URI, err)
 	}
 	media := decodeBookmarkMedia(ctx, post.Author.DID, item.CanonicalURL, record.Embed, post.Embed, resolver)
-	if strings.TrimSpace(record.Text) == "" && !media.supported {
+	quoteRaw := post.Embed
+	if isEmptyJSON(quoteRaw) {
+		quoteRaw = record.Embed
+	}
+	quote := decodeBskyQuote(quoteRaw)
+	if strings.TrimSpace(record.Text) == "" && !media.supported && quote.View == nil && !quoteSkipSupportsTextless(quote.Skip) {
 		return bookmarkProjection{}, fmt.Errorf("%w: bookmark has no text or supported embed", errUnsupportedBookmark)
 	}
-	return bookmarkProjection{Item: item, MediaCandidates: media.candidates, MediaKnown: media.known, MediaUnavailable: media.unavailable}, nil
+	return bookmarkProjection{
+		Item:             item,
+		MediaCandidates:  media.candidates,
+		MediaKnown:       media.known,
+		MediaUnavailable: media.unavailable,
+		Quote:            quote.View,
+		QuoteSkip:        quote.Skip,
+	}, nil
+}
+
+func quoteSkipSupportsTextless(skip bskyQuoteSkip) bool {
+	return skip == bskyQuoteSkipBlocked || skip == bskyQuoteSkipNotFound || skip == bskyQuoteSkipDetached
 }
 
 func bookmarkViewToItemBase(view bookmarkView, now time.Time) (model.Item, error) {

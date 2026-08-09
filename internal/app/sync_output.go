@@ -242,7 +242,7 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 	}
 	if stats.BlueskyBookmarks != nil {
 		s := stats.BlueskyBookmarks.Stats
-		rows = append(rows, []string{"Bluesky Bookmarks", formatSyncDuration(stats.BlueskyBookmarks.Duration), fmt.Sprintf("created=%d updated=%d", s.Created, s.Updated), fmt.Sprintf("unchanged=%d skipped=%d blocked=%d not_found=%d pages=%d stopped=%s media_discovered=%d media_linked=%d media_unavailable=%d media_downloaded=%d media_gone=%d media_errors=%d media_blocked=%d", s.Unchanged, s.Skipped, s.SkippedBlocked, s.SkippedNotFound, s.PagesFetched, s.StoppedReason, s.MediaDiscovered, s.MediaLinked, s.MediaUnavailable, s.MediaDownloaded, s.MediaGone, s.MediaErrors, s.MediaBlocked), strconv.Itoa(s.MediaErrors)})
+		rows = append(rows, []string{"Bluesky Bookmarks", formatSyncDuration(stats.BlueskyBookmarks.Duration), fmt.Sprintf("created=%d updated=%d", s.Created, s.Updated), fmt.Sprintf("unchanged=%d skipped=%d blocked=%d not_found=%d pages=%d stopped=%s media_discovered=%d media_linked=%d media_unavailable=%d media_downloaded=%d media_gone=%d media_errors=%d media_blocked=%d quote_linked=%d quote_skipped=%d", s.Unchanged, s.Skipped, s.SkippedBlocked, s.SkippedNotFound, s.PagesFetched, s.StoppedReason, s.MediaDiscovered, s.MediaLinked, s.MediaUnavailable, s.MediaDownloaded, s.MediaGone, s.MediaErrors, s.MediaBlocked, s.QuoteLinked, s.QuoteSkipped), strconv.Itoa(s.MediaErrors)})
 	}
 	if stats.XBookmarks != nil {
 		s := stats.XBookmarks.Stats
