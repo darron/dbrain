@@ -155,7 +155,7 @@ func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
 		case http.MethodPost:
 			transportServer.handleHTTPPost(logged, r, maxBodyBytes)
 		case http.MethodGet:
-			logged.Header().Set("Allow", "POST, GET")
+			logged.Header().Set("Allow", "POST, OPTIONS")
 			logged.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			logged.WriteHeader(http.StatusMethodNotAllowed)
 			_, _ = fmt.Fprintln(logged, "dbrain MCP endpoint is reachable.")
@@ -164,13 +164,16 @@ func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
 			_, _ = fmt.Fprintln(logged, "Use JSON-RPC over HTTP POST with Content-Type: application/json.")
 			_, _ = fmt.Fprintf(logged, "\nExample:\n")
 			_, _ = fmt.Fprintf(logged, `curl -s %s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`+"\n", requestEndpointURL(r))
+		case http.MethodDelete:
+			logged.Header().Set("Allow", "POST, OPTIONS")
+			logged.WriteHeader(http.StatusMethodNotAllowed)
 		case http.MethodOptions:
-			logged.Header().Set("Allow", "POST, GET, OPTIONS")
-			logged.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-			logged.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+			logged.Header().Set("Allow", "POST, OPTIONS")
+			logged.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			logged.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Protocol-Version, Mcp-Method, Mcp-Name")
 			logged.WriteHeader(http.StatusNoContent)
 		default:
-			logged.Header().Set("Allow", "POST, GET, OPTIONS")
+			logged.Header().Set("Allow", "POST, OPTIONS")
 			http.Error(logged, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
@@ -198,7 +201,31 @@ func (s *Server) handleHTTPPost(w http.ResponseWriter, r *http.Request, maxBodyB
 		return
 	}
 
-	result, ok := s.processPayload(r.Context(), body)
+	modern := modernPayloadMarked(body) || modernHeadersMarked(r.Header)
+	if modern {
+		if contentType != "application/json" {
+			http.Error(w, "Content-Type must be application/json for modern MCP requests", http.StatusUnsupportedMediaType)
+			return
+		}
+		result, ok, status := s.processModernHTTPPayload(r.Context(), body, r.Header)
+		if !ok {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if status != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+		}
+		if status == http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			logMCPServer("http_write_failed", "error", err.Error())
+		}
+		return
+	}
+
+	result, ok := s.processLegacyPayload(r.Context(), body)
 	if !ok {
 		w.WriteHeader(http.StatusAccepted)
 		return

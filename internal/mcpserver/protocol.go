@@ -13,6 +13,13 @@ import (
 const maxBatchRequests = 16
 
 func (s *Server) processPayload(ctx context.Context, payload []byte) (interface{}, bool) {
+	if modernPayloadMarked(payload) {
+		return s.processModernPayload(ctx, payload)
+	}
+	return s.processLegacyPayload(ctx, payload)
+}
+
+func (s *Server) processLegacyPayload(ctx context.Context, payload []byte) (interface{}, bool) {
 	trimmed := bytes.TrimSpace(payload)
 	if len(trimmed) == 0 {
 		return rpcError(nil, -32700, "parse error"), true
@@ -104,8 +111,9 @@ type response struct {
 }
 
 type responseError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
 }
 
 func (s *Server) handle(ctx context.Context, payload []byte) (response, bool) {
