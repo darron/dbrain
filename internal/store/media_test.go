@@ -312,6 +312,311 @@ func TestSaveItemMediaCandidatesReplacesGenericMediaAndInvalidatesDerivedState(t
 	}
 }
 
+func TestSaveItemMediaCandidatesInvalidatesAllDerivedMediaStateForSocialSources(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		sourceKey  string
+		sourceType string
+	}{
+		{name: "Bluesky", sourceKey: "bsky:media-invalidation", sourceType: "bsky_bookmark"},
+		{name: "Mastodon", sourceKey: "mastodon:media-invalidation", sourceType: "mastodon_bookmark"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openTestStore(t)
+			ctx := t.Context()
+			now := time.Date(2026, 8, 9, 14, 0, 0, 0, time.UTC)
+			item, err := st.UpsertItem(ctx, model.Item{
+				SourceKey: tc.sourceKey, SourceType: tc.sourceType, ExternalID: tc.sourceKey,
+				CanonicalURL: "https://social.example/" + tc.name, Title: tc.name,
+				ContentHash: tc.sourceKey + "-hash", LinksJSON: "[]", NotePath: "items/social/media-invalidation.md", RawJSON: "{}",
+				ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+			})
+			if err != nil {
+				t.Fatalf("UpsertItem: %v", err)
+			}
+			oldMedia := []model.MediaCandidate{
+				{RemoteURL: "https://media.example/old-photo.jpg", MediaType: "photo", ExpandedURL: "https://social.example/photo/1", Width: 640, Height: 480},
+				{RemoteURL: "https://media.example/old-video.mp4", MediaType: "video", ExpandedURL: "https://social.example/video/1", Width: 1280, Height: 720},
+			}
+			if _, err := st.SaveItemMediaCandidates(ctx, item.ItemID, oldMedia); err != nil {
+				t.Fatalf("seed media: %v", err)
+			}
+			seedEveryMediaDerivedField(t, ctx, st, item.ItemID, now)
+
+			// Simulate compatibility-column drift: canonical enrichments and the
+			// current FTS projection still contain derived data, while the legacy
+			// summary/OCR mirrors are empty. Replacement must clear both stores.
+			if _, err := st.db.ExecContext(ctx, `
+				UPDATE items SET
+					summary_text = '', summary_json = '', summary_status = '', summary_error = '', summary_model = '',
+					summary_prompt_version = '', summary_tool = '', summary_tool_version = '', summary_input_hash = '', summarized_at = '',
+					ocr_text = '', ocr_json = '', ocr_status = '', ocr_error = '', ocr_model = '',
+					ocr_tool = '', ocr_tool_version = '', ocr_input_hash = '', ocr_at = ''
+				WHERE id = ?`, item.ItemID); err != nil {
+				t.Fatalf("clear compatibility mirrors: %v", err)
+			}
+
+			newMedia := []model.MediaCandidate{
+				{RemoteURL: "https://media.example/new-video.mp4", MediaType: "video", ExpandedURL: "https://social.example/video/2", Width: 1920, Height: 1080},
+				{RemoteURL: "https://media.example/new-photo.jpg", MediaType: "photo", ExpandedURL: "https://social.example/photo/2", Width: 1200, Height: 800},
+			}
+			changed, err := st.SaveItemMediaCandidates(ctx, item.ItemID, newMedia)
+			if err != nil {
+				t.Fatalf("replace ordered media: %v", err)
+			}
+			if !changed {
+				t.Fatal("changed ordered media reported unchanged")
+			}
+			assertEveryMediaDerivedFieldCleared(t, ctx, st, item.ItemID)
+
+			seedEveryMediaDerivedField(t, ctx, st, item.ItemID, now.Add(time.Minute))
+			unchanged, err := st.SaveItemMediaCandidates(ctx, item.ItemID, newMedia)
+			if err != nil {
+				t.Fatalf("save unchanged ordered media: %v", err)
+			}
+			if unchanged {
+				t.Fatal("unchanged ordered media invalidated derived state")
+			}
+			for _, token := range []string{"summarytoken", "ocrtoken", "transcripttoken"} {
+				results, err := st.Search(ctx, token, 10)
+				if err != nil {
+					t.Fatalf("Search(%q): %v", token, err)
+				}
+				if len(results) != 1 || results[0].SourceKey != tc.sourceKey {
+					t.Fatalf("unchanged media lost %q projection: %+v", token, results)
+				}
+			}
+		})
+	}
+}
+
+func seedEveryMediaDerivedField(t *testing.T, ctx context.Context, st *Store, itemID int64, at time.Time) {
+	t.Helper()
+	if _, err := st.SaveItemSummary(ctx, itemID, model.SummaryResult{
+		Text: "summarytoken", RawJSON: `{"summary":"summarytoken"}`, Status: model.ItemSummaryStatusOK,
+		Error: "legacy-summary-error", Model: "summary-model", PromptVersion: "summary-prompt",
+		Tool: "summary-tool", ToolVersion: "summary-tool-version", FetchedAt: at,
+	}, "summary-input-hash"); err != nil {
+		t.Fatalf("SaveItemSummary: %v", err)
+	}
+	if _, err := st.SaveItemOCR(ctx, itemID, model.OCRResult{
+		Text: "ocrtoken", RawJSON: `{"ocr":"ocrtoken"}`, Status: model.ItemOCRStatusOK,
+		Error: "legacy-ocr-error", Model: "ocr-model", Tool: "ocr-tool", ToolVersion: "ocr-tool-version", FetchedAt: at,
+	}, "ocr-input-hash"); err != nil {
+		t.Fatalf("SaveItemOCR: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE items SET article_title = ?, article_text = ? WHERE id = ?`, model.XMediaTranscriptArticleTitle, "transcripttoken", itemID); err != nil {
+		t.Fatalf("seed transcript article: %v", err)
+	}
+	if err := st.SaveXMediaTranscription(ctx, itemID, XMediaTranscriptionState{
+		Status: model.XMediaTranscriptStatusOK, Error: "legacy-transcript-error", RawJSON: `{"transcript":"transcripttoken"}`,
+		Model: "transcript-model", Tool: "transcript-tool", ToolVersion: "transcript-tool-version",
+		InputHash: "transcript-input-hash", CompletedAt: at,
+	}); err != nil {
+		t.Fatalf("SaveXMediaTranscription: %v", err)
+	}
+	if _, err := st.RebuildFTS(ctx); err != nil {
+		t.Fatalf("RebuildFTS: %v", err)
+	}
+}
+
+func assertEveryMediaDerivedFieldCleared(t *testing.T, ctx context.Context, st *Store, itemID int64) {
+	t.Helper()
+	var legacyRows int
+	if err := st.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM items WHERE id = ? AND (
+			trim(summary_text) != '' OR trim(summary_json) != '' OR trim(summary_status) != '' OR trim(summary_error) != '' OR
+			trim(summary_model) != '' OR trim(summary_prompt_version) != '' OR trim(summary_tool) != '' OR
+			trim(summary_tool_version) != '' OR trim(summary_input_hash) != '' OR trim(summarized_at) != '' OR
+			trim(ocr_text) != '' OR trim(ocr_json) != '' OR trim(ocr_status) != '' OR trim(ocr_error) != '' OR
+			trim(ocr_model) != '' OR trim(ocr_tool) != '' OR trim(ocr_tool_version) != '' OR trim(ocr_input_hash) != '' OR trim(ocr_at) != '' OR
+			trim(x_media_transcript_status) != '' OR trim(x_media_transcript_error) != '' OR trim(x_media_transcript_at) != '' OR
+			article_title = ? OR article_text = 'transcripttoken'
+		)`, itemID, model.XMediaTranscriptArticleTitle).Scan(&legacyRows); err != nil {
+		t.Fatalf("inspect legacy derived fields: %v", err)
+	}
+	if legacyRows != 0 {
+		t.Fatal("legacy media-derived fields were not all cleared")
+	}
+	var enrichmentRows int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM item_enrichments WHERE item_id = ? AND role IN (?, ?, ?)`,
+		itemID, model.ItemEnrichmentRoleSummary, model.ItemEnrichmentRoleOCR, model.ItemEnrichmentRoleXMediaTranscript).Scan(&enrichmentRows); err != nil {
+		t.Fatalf("inspect canonical enrichments: %v", err)
+	}
+	if enrichmentRows != 0 {
+		t.Fatalf("canonical media-derived enrichments remaining = %d", enrichmentRows)
+	}
+	for _, token := range []string{"summarytoken", "ocrtoken", "transcripttoken"} {
+		var matches int
+		if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM items_fts WHERE rowid = ? AND items_fts MATCH ?`, itemID, token).Scan(&matches); err != nil {
+			t.Fatalf("inspect FTS token %q: %v", token, err)
+		}
+		if matches != 0 {
+			t.Fatalf("stale FTS token %q remained after media replacement", token)
+		}
+	}
+}
+
+func TestListMediaAssetsForArchiveUsesSourceNeutralOwnerEligibilityAndKeepsAudioEligible(t *testing.T) {
+	st := openTestStore(t)
+	ctx := t.Context()
+	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC)
+	supported := []string{
+		"x_bookmark", "x_quote",
+		"bsky_bookmark", "bsky_quote",
+		"mastodon_bookmark", "mastodon_quote", "mastodon_reblog",
+	}
+	wantURLs := make([]string, 0, len(supported))
+	for _, sourceType := range supported {
+		wantURLs = append(wantURLs, seedArchiveAudioCandidate(t, ctx, st, sourceType, now))
+	}
+	nonSocialURL := seedArchiveAudioCandidate(t, ctx, st, "github_star", now)
+	wantURLs = append(wantURLs, nonSocialURL)
+
+	assets, err := st.ListMediaAssetsForArchive(ctx, 100, false)
+	if err != nil {
+		t.Fatalf("ListMediaAssetsForArchive: %v", err)
+	}
+	gotURLs := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		gotURLs = append(gotURLs, asset.RemoteURL)
+		if asset.MediaType != "audio" {
+			t.Fatalf("archive candidate changed audio semantics: %+v", asset)
+		}
+	}
+	if !slices.Equal(gotURLs, wantURLs) {
+		t.Fatalf("archive lifecycle URLs = %v, want every linked owner %v", gotURLs, wantURLs)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE media_assets SET archive_status = ?`, model.MediaArchiveStatusArchived); err != nil {
+		t.Fatalf("mark archive candidates archived: %v", err)
+	}
+	pruneAssets, err := st.ListMediaAssetsForPrune(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListMediaAssetsForPrune: %v", err)
+	}
+	gotURLs = gotURLs[:0]
+	for _, asset := range pruneAssets {
+		gotURLs = append(gotURLs, asset.RemoteURL)
+	}
+	wantPruneURLs := slices.Clone(wantURLs)
+	slices.Sort(wantPruneURLs)
+	slices.Sort(gotURLs)
+	if !slices.Equal(gotURLs, wantPruneURLs) {
+		t.Fatalf("prune lifecycle URLs = %v, want every linked owner %v", gotURLs, wantPruneURLs)
+	}
+}
+
+func TestListMediaAssetsForArchiveUsesCanonicalSocialEnrichmentStatus(t *testing.T) {
+	st := openTestStore(t)
+	ctx := t.Context()
+	now := time.Date(2026, 8, 9, 15, 30, 0, 0, time.UTC)
+
+	photoReady := seedArchiveEnrichmentCandidate(t, ctx, st, "bsky_bookmark", "photo", model.ItemOCRStatusOK, now)
+	photoBlocked := seedArchiveEnrichmentCandidate(t, ctx, st, "bsky_quote", "photo", model.ItemOCRStatusError, now)
+	videoReady := seedArchiveEnrichmentCandidate(t, ctx, st, "mastodon_bookmark", "video", model.XMediaTranscriptStatusOK, now)
+	videoBlocked := seedArchiveEnrichmentCandidate(t, ctx, st, "mastodon_quote", "video", model.XMediaTranscriptStatusError, now)
+
+	assets, err := st.ListMediaAssetsForArchive(ctx, 100, false)
+	if err != nil {
+		t.Fatalf("ListMediaAssetsForArchive: %v", err)
+	}
+	gotURLs := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		gotURLs = append(gotURLs, asset.RemoteURL)
+	}
+	wantURLs := []string{photoReady, videoReady}
+	slices.Sort(gotURLs)
+	slices.Sort(wantURLs)
+	if !slices.Equal(gotURLs, wantURLs) {
+		t.Fatalf("canonical archive URLs = %v, want successful canonical enrichments %v (blocked %q and %q excluded)", gotURLs, wantURLs, photoBlocked, videoBlocked)
+	}
+}
+
+func seedArchiveAudioCandidate(t *testing.T, ctx context.Context, st *Store, sourceType string, now time.Time) string {
+	t.Helper()
+	sourceKey := sourceType + ":archive-audio"
+	item, err := st.UpsertItem(ctx, model.Item{
+		SourceKey: sourceKey, SourceType: sourceType, ExternalID: sourceKey,
+		CanonicalURL: "https://social.example/" + sourceType, Title: sourceType,
+		ContentHash: sourceKey + "-hash", LinksJSON: "[]", NotePath: "items/social/" + sourceType + ".md", RawJSON: "{}",
+		ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem %s: %v", sourceType, err)
+	}
+	remoteURL := "https://media.example/" + sourceType + ".ogg"
+	if _, err := st.SaveItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{{RemoteURL: remoteURL, MediaType: "audio"}}); err != nil {
+		t.Fatalf("SaveItemMediaCandidates %s: %v", sourceType, err)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, item.ItemID)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("ListItemMediaRefs %s: refs=%+v err=%v", sourceType, refs, err)
+	}
+	if _, err := st.SaveMediaDownload(ctx, refs[0].MediaAssetID, model.MediaDownloadResult{
+		MIMEType: "audio/ogg", ByteSize: 100, ContentHash: sourceKey + "-bytes",
+		LocalPath: "media/social/audio/" + sourceType + ".ogg", Status: model.MediaDownloadStatusDownloaded, DownloadedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMediaDownload %s: %v", sourceType, err)
+	}
+	return remoteURL
+}
+
+func seedArchiveEnrichmentCandidate(t *testing.T, ctx context.Context, st *Store, sourceType, mediaType, status string, now time.Time) string {
+	t.Helper()
+	sourceKey := sourceType + ":archive-canonical-" + mediaType + "-" + status
+	item, err := st.UpsertItem(ctx, model.Item{
+		SourceKey: sourceKey, SourceType: sourceType, ExternalID: sourceKey,
+		CanonicalURL: "https://social.example/" + sourceKey, Title: sourceKey,
+		ContentHash: sourceKey + "-hash", LinksJSON: "[]", NotePath: "items/social/" + sourceKey + ".md", RawJSON: "{}",
+		ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem %s: %v", sourceKey, err)
+	}
+	remoteURL := "https://media.example/" + sourceType + "-" + mediaType + "-" + status
+	if _, err := st.SaveItemMediaCandidates(ctx, item.ItemID, []model.MediaCandidate{{RemoteURL: remoteURL, MediaType: mediaType}}); err != nil {
+		t.Fatalf("SaveItemMediaCandidates %s: %v", sourceKey, err)
+	}
+	refs, err := st.ListItemMediaRefs(ctx, item.ItemID)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("ListItemMediaRefs %s: refs=%+v err=%v", sourceKey, refs, err)
+	}
+	mimeType := "image/jpeg"
+	if mediaType != "photo" {
+		mimeType = "video/mp4"
+	}
+	if _, err := st.SaveMediaDownload(ctx, refs[0].MediaAssetID, model.MediaDownloadResult{
+		MIMEType: mimeType, ByteSize: 100, ContentHash: sourceKey + "-bytes",
+		LocalPath: "media/archive/" + sourceType + "-" + mediaType + "-" + status, Status: model.MediaDownloadStatusDownloaded, DownloadedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMediaDownload %s: %v", sourceKey, err)
+	}
+
+	switch mediaType {
+	case "photo":
+		if _, err := st.SaveItemOCR(ctx, item.ItemID, model.OCRResult{
+			Text: "canonical photo text", Status: status, Model: "test/ocr", Tool: "test", ToolVersion: "v1", FetchedAt: now,
+		}, sourceKey+"-ocr"); err != nil {
+			t.Fatalf("SaveItemOCR %s: %v", sourceKey, err)
+		}
+		if _, err := st.db.ExecContext(ctx, `UPDATE items SET ocr_status = '' WHERE id = ?`, item.ItemID); err != nil {
+			t.Fatalf("clear OCR compatibility status %s: %v", sourceKey, err)
+		}
+	case "video":
+		if err := st.SaveXMediaTranscription(ctx, item.ItemID, XMediaTranscriptionState{
+			Status: status, RawJSON: `{"transcript":"canonical video text"}`, Model: "test/transcript", Tool: "test", ToolVersion: "v1", InputHash: sourceKey + "-transcript", CompletedAt: now,
+		}); err != nil {
+			t.Fatalf("SaveXMediaTranscription %s: %v", sourceKey, err)
+		}
+		if _, err := st.db.ExecContext(ctx, `UPDATE items SET x_media_transcript_status = '', article_title = '', article_text = '' WHERE id = ?`, item.ItemID); err != nil {
+			t.Fatalf("clear transcript compatibility status %s: %v", sourceKey, err)
+		}
+	default:
+		t.Fatalf("unsupported test media type %q", mediaType)
+	}
+	return remoteURL
+}
+
 func TestSaveXHydrationPersistsSnapshotLinks(t *testing.T) {
 	t.Parallel()
 

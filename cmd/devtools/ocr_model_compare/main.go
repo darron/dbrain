@@ -40,7 +40,7 @@ func run(ctx context.Context, args []string) error {
 
 	fs := flag.NewFlagSet("ocr_model_compare", flag.ContinueOnError)
 	fs.StringVar(&root, "root", "", "dbrain root override; defaults to the normal installed config/data locations")
-	fs.IntVar(&limit, "limit", 20, "Maximum downloaded X photo images to sample")
+	fs.IntVar(&limit, "limit", 20, "Maximum downloaded social media photo images to sample")
 	fs.IntVar(&concurrency, "concurrency", 1, "Number of images to compare concurrently")
 	fs.DurationVar(&timeout, "timeout", 2*time.Minute, "Per-model, per-image timeout")
 	fs.StringVar(&baselineModel, "baseline-model", "", "Baseline OCR model; defaults to the currently configured OCR model")

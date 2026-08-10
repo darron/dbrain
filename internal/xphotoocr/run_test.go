@@ -84,6 +84,46 @@ func TestRunHostedOCRWritesItemOCRAndNote(t *testing.T) {
 	}
 }
 
+func TestRunPersistsSocialPhotoOCRForBlueskyAndMastodonWithoutReprocessingUnchangedInput(t *testing.T) {
+	for _, sourceType := range []string{"bsky_bookmark", "mastodon_bookmark"} {
+		t.Run(sourceType, func(t *testing.T) {
+			cfg, st, item := seedDownloadedPhotoItemForSourceType(t, sourceType+":photo", "2049000000000000"+sourceType[:1], sourceType)
+
+			stats, err := Run(context.Background(), cfg, st, Options{
+				Limit: 10, Model: "tesseract", TesseractBinary: installFakeTesseract(t, "Social media OCR text.\n"), Timeout: 5 * time.Second,
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if stats.ItemsUpdated != 1 || stats.PhotosOCRed != 1 {
+				t.Fatalf("unexpected OCR stats: %+v", stats)
+			}
+
+			refreshed, err := st.GetItem(context.Background(), item.SourceKey)
+			if err != nil {
+				t.Fatalf("GetItem: %v", err)
+			}
+			enrichment, err := st.GetItemEnrichment(context.Background(), item.ID, model.ItemEnrichmentRoleOCR)
+			if err != nil {
+				t.Fatalf("GetItemEnrichment: %v", err)
+			}
+			if refreshed.OCRStatus != model.ItemOCRStatusOK || !strings.Contains(refreshed.OCRText, "Social media OCR text") || enrichment.InputHash == "" {
+				t.Fatalf("OCR was not durably persisted: item=%+v enrichment=%+v", refreshed, enrichment)
+			}
+
+			stats, err = Run(context.Background(), cfg, st, Options{
+				Limit: 10, Model: "tesseract", TesseractBinary: installFakeTesseract(t, "must not run\n"), Timeout: 5 * time.Second,
+			})
+			if err != nil {
+				t.Fatalf("second Run: %v", err)
+			}
+			if stats.ItemsQueued != 0 {
+				t.Fatalf("unchanged OCR input was selected again: %+v", stats)
+			}
+		})
+	}
+}
+
 func TestRunHostedOCRUsesConfigWithoutLocalBackendConfig(t *testing.T) {
 	cfg, st, _ := seedDownloadedPhotoItem(t, "x:test-photo-hosted-no-local-backend", "2049000000000000999")
 
@@ -282,6 +322,10 @@ func TestRunCancellationDoesNotCountInterruptedOCRAsFailures(t *testing.T) {
 }
 
 func seedDownloadedPhotoItem(t *testing.T, sourceKey, externalID string) (config.Config, *store.Store, model.Item) {
+	return seedDownloadedPhotoItemForSourceType(t, sourceKey, externalID, "x_bookmark")
+}
+
+func seedDownloadedPhotoItemForSourceType(t *testing.T, sourceKey, externalID, sourceType string) (config.Config, *store.Store, model.Item) {
 	t.Helper()
 
 	root := t.TempDir()
@@ -302,7 +346,7 @@ func seedDownloadedPhotoItem(t *testing.T, sourceKey, externalID string) (config
 	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
 	itemResult, err := st.UpsertItem(context.Background(), model.Item{
 		SourceKey:    sourceKey,
-		SourceType:   "x_bookmark",
+		SourceType:   sourceType,
 		ExternalID:   externalID,
 		CanonicalURL: "https://x.com/example/status/" + externalID,
 		Title:        "Photo post",

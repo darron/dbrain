@@ -137,7 +137,7 @@ func (s *Store) invalidateItemOCRTx(ctx context.Context, tx *sql.Tx, itemID int6
 		return false, fmt.Errorf("load item ocr %d: %w", itemID, err)
 	}
 	if current == (itemOCRFields{}) {
-		return false, nil
+		return s.deleteItemEnrichmentIfExistsTx(ctx, tx, itemID, model.ItemEnrichmentRoleOCR)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE items

@@ -143,7 +143,7 @@ func (s *Store) invalidateItemSummaryTx(ctx context.Context, tx *sql.Tx, itemID 
 		return false, fmt.Errorf("load item summary %d: %w", itemID, err)
 	}
 	if current == (itemSummaryFields{}) {
-		return false, nil
+		return s.deleteItemEnrichmentIfExistsTx(ctx, tx, itemID, model.ItemEnrichmentRoleSummary)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE items

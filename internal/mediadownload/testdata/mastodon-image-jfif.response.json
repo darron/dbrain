@@ -1,0 +1,11 @@
+{
+  "status": 200,
+  "content_type": "image/jpeg",
+  "body_file": "mastodon-image-jfif.jpg",
+  "byte_size": 62843,
+  "sha256": "d2a5f8641ddc89a3247f7516e4e104b4493f37be15d5cb134b6ae1e454ff0ca5",
+  "prefix_hex": "ffd8ffe000104a464946000101000048",
+  "format": "jpeg",
+  "width": 680,
+  "height": 530
+}

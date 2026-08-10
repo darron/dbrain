@@ -58,7 +58,7 @@ func writePipelineStats(dst interface{ Write([]byte) (int, error) }, stats store
 		if _, err := fmt.Fprintf(dst, "\nOCR\n"); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(dst, "Downloaded X photo items that still need OCR or vision extraction.\n"); err != nil {
+		if _, err := fmt.Fprintf(dst, "Downloaded social media photo items that still need OCR or vision extraction.\n"); err != nil {
 			return err
 		}
 		if err := writePipelineTable(dst, stats.OCR); err != nil {

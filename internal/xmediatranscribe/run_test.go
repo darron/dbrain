@@ -150,6 +150,46 @@ func TestRunTranscribesDownloadedXVideoAndWritesItemNote(t *testing.T) {
 	}
 }
 
+func TestRunPersistsSocialMediaTranscriptsForBlueskyAndMastodonWithoutReprocessingUnchangedInput(t *testing.T) {
+	for _, sourceType := range []string{"bsky_bookmark", "mastodon_bookmark"} {
+		t.Run(sourceType, func(t *testing.T) {
+			cfg, st, item := seedDownloadedSocialVideoItem(t, sourceType)
+
+			stats, err := Run(context.Background(), cfg, st, Options{
+				Limit: 10, FFprobeBinary: installFakeFFprobe(t, "0\n"), MacWhisperBinary: installFakeMacWhisper(t, "Social media transcript that is deliberately longer than forty characters.\n"),
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if stats.ItemsUpdated != 1 || stats.MediaTranscribed != 1 {
+				t.Fatalf("unexpected transcription stats: %+v", stats)
+			}
+
+			refreshed, err := st.GetItem(context.Background(), item.SourceKey)
+			if err != nil {
+				t.Fatalf("GetItem: %v", err)
+			}
+			enrichment, err := st.GetItemEnrichment(context.Background(), item.ID, model.ItemEnrichmentRoleXMediaTranscript)
+			if err != nil {
+				t.Fatalf("GetItemEnrichment: %v", err)
+			}
+			if refreshed.XMediaTranscriptStatus != model.XMediaTranscriptStatusOK || !strings.Contains(refreshed.ArticleText, "Social media transcript") || enrichment.InputHash == "" {
+				t.Fatalf("transcript was not durably persisted: item=%+v enrichment=%+v", refreshed, enrichment)
+			}
+
+			stats, err = Run(context.Background(), cfg, st, Options{
+				Limit: 10, FFprobeBinary: installFakeFFprobe(t, "0\n"), MacWhisperBinary: installFakeMacWhisper(t, "must not run\n"),
+			})
+			if err != nil {
+				t.Fatalf("second Run: %v", err)
+			}
+			if stats.ItemsQueued != 0 {
+				t.Fatalf("unchanged transcript input was selected again: %+v", stats)
+			}
+		})
+	}
+}
+
 func TestRunSummarizesTranscriptAndPreservesSummaryAcrossLaterBlankItemUpsert(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
@@ -911,6 +951,58 @@ func installFakeFFprobe(t *testing.T, stdout string) string {
 		t.Fatalf("write fake ffprobe: %v", err)
 	}
 	return path
+}
+
+func seedDownloadedSocialVideoItem(t *testing.T, sourceType string) (config.Config, *store.Store, model.Item) {
+	t.Helper()
+
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	now := time.Date(2026, 8, 9, 21, 0, 0, 0, time.UTC)
+	key := sourceType + ":video"
+	result, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey: key, SourceType: sourceType, ExternalID: key, CanonicalURL: "https://social.example/" + key,
+		Title: "Social video post", ContentHash: "seed-hash", LinksJSON: "[]", NotePath: "items/social/" + sourceType + ".md", RawJSON: `{}`,
+		ImportedAt: now, UpdatedAt: now, LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if _, err := st.SaveXHydration(context.Background(), result.ItemID, model.XHydration{FullText: "social video", Language: "en", Status: "ok_graphql", FetchedAt: now, APIJSON: `{"snapshot":{"media_objects":[{"type":"video","url":"https://cdn.example/social.mp4","expanded_url":"https://social.example/video"}]}}`}); err != nil {
+		t.Fatalf("SaveXHydration: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(context.Background(), result.ItemID)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("ListItemMediaRefs: refs=%+v err=%v", refs, err)
+	}
+	localRel := "media/social/video/" + sourceType + ".mp4"
+	localAbs := filepath.Join(cfg.VaultDir, filepath.FromSlash(localRel))
+	if err := os.MkdirAll(filepath.Dir(localAbs), 0o755); err != nil {
+		t.Fatalf("MkdirAll media dir: %v", err)
+	}
+	if err := os.WriteFile(localAbs, []byte("fake mp4"), 0o644); err != nil {
+		t.Fatalf("WriteFile media: %v", err)
+	}
+	if _, err := st.SaveMediaDownload(context.Background(), refs[0].MediaAssetID, model.MediaDownloadResult{MIMEType: "video/mp4", ByteSize: 8, ContentHash: "sha256:" + sourceType, LocalPath: localRel, Status: model.MediaDownloadStatusDownloaded, DownloadedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("SaveMediaDownload: %v", err)
+	}
+	item, err := st.GetItem(context.Background(), key)
+	if err != nil {
+		t.Fatalf("GetItem seeded item: %v", err)
+	}
+	return cfg, st, item
 }
 
 func installFakeMacWhisper(t *testing.T, stdout string) string {

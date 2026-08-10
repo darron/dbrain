@@ -1,11 +1,8 @@
 package mastodonapi
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"image"
-	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -555,9 +552,9 @@ func TestRunBookmarksRetriesHistoricalMediaAfterBackfillCompletes(t *testing.T) 
 	}
 	defer func() { _ = st.Close() }()
 
-	var imageBytes bytes.Buffer
-	if err := jpeg.Encode(&imageBytes, image.NewRGBA(image.Rect(0, 0, 1, 1)), &jpeg.Options{Quality: 90}); err != nil {
-		t.Fatalf("encode test image: %v", err)
+	imageBytes, err := os.ReadFile("../mediadownload/testdata/mastodon-image-jfif.jpg")
+	if err != nil {
+		t.Fatalf("read test image: %v", err)
 	}
 	mediaAttempts := 0
 	mediaServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -568,7 +565,7 @@ func TestRunBookmarksRetriesHistoricalMediaAfterBackfillCompletes(t *testing.T) 
 			return
 		}
 		w.Header().Set("Content-Type", "image/jpeg")
-		_, _ = w.Write(imageBytes.Bytes())
+		_, _ = w.Write(imageBytes)
 	}))
 	defer mediaServer.Close()
 
@@ -624,6 +621,240 @@ func TestRunBookmarksRetriesHistoricalMediaAfterBackfillCompletes(t *testing.T) 
 	refs, err = st.ListItemMediaRefs(context.Background(), item.ID)
 	if err != nil || refs[0].DownloadStatus != model.MediaDownloadStatusDownloaded || refs[0].LocalPath == "" {
 		t.Fatalf("historical media after retry = %#v, err=%v", refs, err)
+	}
+}
+
+func TestRunBookmarksForceRecoversTerminalBlockedMastodonMedia(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	imageBytes, err := os.ReadFile("../mediadownload/testdata/mastodon-image-jfif.jpg")
+	if err != nil {
+		t.Fatalf("read test image: %v", err)
+	}
+	mediaAttempts := 0
+	mediaServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mediaAttempts++
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("media request leaked authorization header %q", got)
+		}
+		if got := r.Header.Get("Cookie"); got != "" {
+			t.Fatalf("media request leaked cookie header %q", got)
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(imageBytes)
+	}))
+	defer mediaServer.Close()
+
+	now := time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
+	item, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    "mastodon:https://hachyderm.io:443:account:42:uri:blocked-media",
+		SourceType:   "mastodon_bookmark",
+		ExternalID:   "blocked-media",
+		CanonicalURL: "https://hachyderm.io/@alice/blocked-media",
+		Title:        "blocked media",
+		ContentHash:  "blocked-media-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/mastodon/2026/blocked-media.md",
+		RawJSON:      "{}",
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if _, err := st.SaveItemMediaCandidates(context.Background(), item.ItemID, []model.MediaCandidate{{
+		RemoteURL: mediaServer.URL + "/image.jpg",
+		MediaType: "photo",
+	}}); err != nil {
+		t.Fatalf("SaveItemMediaCandidates: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(context.Background(), item.ItemID)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("ListItemMediaRefs = %#v, err=%v", refs, err)
+	}
+	if _, err := st.SaveMediaDownload(context.Background(), refs[0].MediaAssetID, model.MediaDownloadResult{
+		Status: model.MediaDownloadStatusBlocked,
+		Error:  "media response content is not a complete recognized image format",
+	}); err != nil {
+		t.Fatalf("seed blocked media: %v", err)
+	}
+
+	client, err := NewClient("https://hachyderm.io", "api-bearer-token", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/api/v1/accounts/verify_credentials":
+			return jsonResponse(http.StatusOK, `{"id":"42","username":"alice","acct":"alice@hachyderm.io"}`), nil
+		case "/api/v1/bookmarks":
+			return jsonResponse(http.StatusOK, `[]`), nil
+		default:
+			t.Fatalf("unexpected API path %s", request.URL.Path)
+			return nil, nil
+		}
+	})})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	mediaTransport := mediaServer.Client().Transport.(*http.Transport)
+	mediaPolicy := &safehttp.Policy{AllowPrivateNetwork: true, TLSClientConfig: mediaTransport.TLSClientConfig}
+
+	ordinary, err := RunBookmarksWithClient(context.Background(), cfg, st, client, BookmarkOptions{
+		AccountKey:      "hachyderm",
+		MediaHTTPPolicy: mediaPolicy,
+		Now:             func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("ordinary import: %v", err)
+	}
+	if mediaAttempts != 0 || ordinary.MediaDownloaded != 0 {
+		t.Fatalf("ordinary import retried blocked media: attempts=%d stats=%+v", mediaAttempts, ordinary)
+	}
+	ocrBeforeForce, err := st.ListItemsForXPhotoOCR(context.Background(), 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXPhotoOCR before force recovery: %v", err)
+	}
+	if len(ocrBeforeForce) != 0 {
+		t.Fatalf("terminal blocked Mastodon photo was unexpectedly OCR-eligible before recovery: %+v", ocrBeforeForce)
+	}
+
+	forced, err := RunBookmarksWithClient(context.Background(), cfg, st, client, BookmarkOptions{
+		AccountKey:      "hachyderm",
+		Force:           true,
+		MediaHTTPPolicy: mediaPolicy,
+		Now:             func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("forced import: %v", err)
+	}
+	if mediaAttempts != 1 || forced.MediaDownloaded != 1 {
+		t.Fatalf("forced import did not recover blocked media: attempts=%d stats=%+v", mediaAttempts, forced)
+	}
+	refs, err = st.ListItemMediaRefs(context.Background(), item.ItemID)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("ListItemMediaRefs after force = %#v, err=%v", refs, err)
+	}
+	if refs[0].DownloadStatus != model.MediaDownloadStatusDownloaded ||
+		refs[0].DownloadErrors != 0 ||
+		!strings.HasPrefix(refs[0].LocalPath, "media/mastodon/photo/") {
+		t.Fatalf("recovered media ref = %#v", refs[0])
+	}
+	ocrCandidates, err := st.ListItemsForXPhotoOCR(context.Background(), 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXPhotoOCR after force recovery: %v", err)
+	}
+	if len(ocrCandidates) != 1 || ocrCandidates[0].SourceKey != "mastodon:https://hachyderm.io:443:account:42:uri:blocked-media" {
+		t.Fatalf("force-recovered Mastodon photo did not reach OCR selector: %+v", ocrCandidates)
+	}
+}
+
+func TestRunBookmarksForceRetriesBlockedMediaDuringStatusProcessing(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	imageBytes, err := os.ReadFile("../mediadownload/testdata/mastodon-image-rgba.png")
+	if err != nil {
+		t.Fatalf("read test image: %v", err)
+	}
+	mediaAttempts := 0
+	mediaServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mediaAttempts++
+		if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
+			t.Fatalf("media request carried API credentials: authorization=%q cookie=%q", r.Header.Get("Authorization"), r.Header.Get("Cookie"))
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(imageBytes)
+	}))
+	defer mediaServer.Close()
+
+	const statusURI = "https://hachyderm.io/users/alice/statuses/blocked-status"
+	now := time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
+	item, err := st.UpsertItem(context.Background(), model.Item{
+		SourceKey:    mastodonSourceKey("https://hachyderm.io:443", "42", statusURI),
+		SourceType:   "mastodon_bookmark",
+		ExternalID:   "blocked-status",
+		CanonicalURL: "https://hachyderm.io/@alice/blocked-status",
+		Title:        "blocked status",
+		ContentHash:  "blocked-status-hash",
+		LinksJSON:    "[]",
+		NotePath:     "items/mastodon/2026/blocked-status.md",
+		RawJSON:      "{}",
+		ImportedAt:   now,
+		UpdatedAt:    now,
+		LastSeenAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if _, err := st.SaveItemMediaCandidates(context.Background(), item.ItemID, []model.MediaCandidate{{
+		RemoteURL: mediaServer.URL + "/image.png",
+		MediaType: "photo",
+	}}); err != nil {
+		t.Fatalf("SaveItemMediaCandidates: %v", err)
+	}
+	refs, err := st.ListItemMediaRefs(context.Background(), item.ItemID)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("ListItemMediaRefs = %#v, err=%v", refs, err)
+	}
+	if _, err := st.SaveMediaDownload(context.Background(), refs[0].MediaAssetID, model.MediaDownloadResult{
+		Status: model.MediaDownloadStatusBlocked,
+		Error:  "media response content is not a complete recognized image format",
+	}); err != nil {
+		t.Fatalf("seed blocked media: %v", err)
+	}
+
+	page := `[{"id":"blocked-status","uri":"` + statusURI + `","url":"https://hachyderm.io/@alice/blocked-status","content":"blocked status","created_at":"2026-08-08T12:00:00Z","account":{"id":"42","username":"alice"},"media_attachments":[{"id":"m1","type":"image","url":"` + mediaServer.URL + `/image.png","remote_url":"` + mediaServer.URL + `/image.png"}]},{"id":"limit-stop","uri":"https://hachyderm.io/users/alice/statuses/limit-stop","url":"https://hachyderm.io/@alice/limit-stop","content":"limit stop","created_at":"2026-08-08T11:00:00Z","account":{"id":"42","username":"alice"}}]`
+	client, err := NewClient("https://hachyderm.io", "api-bearer-token", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/api/v1/accounts/verify_credentials":
+			return jsonResponse(http.StatusOK, `{"id":"42","username":"alice","acct":"alice@hachyderm.io"}`), nil
+		case "/api/v1/bookmarks":
+			return jsonResponse(http.StatusOK, page), nil
+		default:
+			t.Fatalf("unexpected API path %s", request.URL.Path)
+			return nil, nil
+		}
+	})})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	mediaTransport := mediaServer.Client().Transport.(*http.Transport)
+	stats, err := RunBookmarksWithClient(context.Background(), cfg, st, client, BookmarkOptions{
+		AccountKey: "hachyderm",
+		Limit:      1,
+		Force:      true,
+		MediaHTTPPolicy: &safehttp.Policy{
+			AllowPrivateNetwork: true,
+			TLSClientConfig:     mediaTransport.TLSClientConfig,
+		},
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("forced import: %v", err)
+	}
+	if stats.StoppedReason != "limit reached" || stats.MediaDownloaded != 1 || mediaAttempts != 1 {
+		t.Fatalf("blocked status media was not force-retried before sweep: attempts=%d stats=%+v", mediaAttempts, stats)
 	}
 }
 

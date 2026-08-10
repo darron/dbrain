@@ -270,10 +270,20 @@ func (s *Store) mergeCompatibilityItemEnrichmentTx(ctx context.Context, tx *sql.
 }
 
 func (s *Store) deleteItemEnrichmentTx(ctx context.Context, tx *sql.Tx, itemID int64, role string) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM item_enrichments WHERE item_id = ? AND role = ?`, itemID, strings.TrimSpace(role)); err != nil {
-		return fmt.Errorf("delete item enrichment %d/%s: %w", itemID, strings.TrimSpace(role), err)
+	_, err := s.deleteItemEnrichmentIfExistsTx(ctx, tx, itemID, role)
+	return err
+}
+
+func (s *Store) deleteItemEnrichmentIfExistsTx(ctx context.Context, tx *sql.Tx, itemID int64, role string) (bool, error) {
+	result, err := tx.ExecContext(ctx, `DELETE FROM item_enrichments WHERE item_id = ? AND role = ?`, itemID, strings.TrimSpace(role))
+	if err != nil {
+		return false, fmt.Errorf("delete item enrichment %d/%s: %w", itemID, strings.TrimSpace(role), err)
 	}
-	return nil
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("inspect deleted item enrichment %d/%s: %w", itemID, strings.TrimSpace(role), err)
+	}
+	return rows > 0, nil
 }
 
 func (s *Store) syncItemEnrichmentMirrorTx(ctx context.Context, tx *sql.Tx, itemID int64, item model.Item) error {

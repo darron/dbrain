@@ -1,6 +1,9 @@
 package syncjob
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestDefaultSyncStagePlanOrder(t *testing.T) {
 	plan := defaultSyncStagePlan()
@@ -110,5 +113,56 @@ func TestDefaultSyncStagePlanEnabledPredicates(t *testing.T) {
 		if !byID[check.id].Enabled(opts) {
 			t.Fatalf("%s should be enabled by its stage option", check.id)
 		}
+	}
+}
+
+func TestDefaultSyncStagePlanMediaEnrichmentDependsOnEverySocialMediaImporter(t *testing.T) {
+	plan := defaultSyncStagePlan()
+	byID := make(map[syncStageID]syncStage, len(plan))
+	for _, stage := range plan {
+		byID[stage.ID] = stage
+	}
+
+	wantImporters := []syncStageID{
+		syncStageBlueskyBookmarks,
+		syncStageMastodonBookmarks,
+		syncStageXFrontier,
+	}
+	for _, stageID := range []syncStageID{syncStageXMedia, syncStageXPhotoOCR} {
+		stage := byID[stageID]
+		for _, importerID := range wantImporters {
+			if !slices.Contains(stage.After, importerID) {
+				t.Errorf("stage %q dependencies = %v, want media-producing importer %q", stageID, stage.After, importerID)
+			}
+		}
+	}
+
+	opts := stageOptions{}
+	opts.BlueskyBookmarks.Enabled = true
+	opts.MastodonBookmarks.Enabled = true
+	opts.XMedia.Enabled = true
+	opts.XPhotoOCR.Enabled = true
+	opts.Categorize.Enabled = true
+	opts.Archive.Enabled = true
+	if byID[syncStageXFrontier].Enabled(opts) {
+		t.Fatal("social-only media enrichment unexpectedly enabled the X frontier")
+	}
+
+	var enabled []syncStageID
+	for _, stage := range plan {
+		if stage.Enabled(opts) {
+			enabled = append(enabled, stage.ID)
+		}
+	}
+	wantEnabled := []syncStageID{
+		syncStageBlueskyBookmarks,
+		syncStageMastodonBookmarks,
+		syncStageXMedia,
+		syncStageXPhotoOCR,
+		syncStageCategorize,
+		syncStageMediaArchive,
+	}
+	if !slices.Equal(enabled, wantEnabled) {
+		t.Fatalf("social-only enabled stage order = %v, want %v", enabled, wantEnabled)
 	}
 }

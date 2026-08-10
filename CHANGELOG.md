@@ -31,6 +31,19 @@ development date for the change set.
   expanded raw/error credential variants, and non-RFC timestamps are rejected
   or redacted; API-error, rate-limit, and retry counters are preserved in
   direct and sync summaries.
+- **Explicit blocked-media recovery**: Production media validation now
+  registers JPEG and PNG decoders alongside GIF and WebP, and explicit
+  Mastodon import or sync `--force` runs retry terminal blocked media through
+  the same exact-origin, credential-free download policy. Ordinary imports
+  continue to leave terminal media blocked.
+- **Shared media lifecycle**: Social-only syncs now order shared transcription
+  and OCR after Bluesky and Mastodon imports; changed ordered media clears all
+  canonical, compatibility, and search projections; archive/prune remains
+  source-neutral for every linked media owner while social owners still gate
+  OCR/transcription completeness. Explicit pruned-media repair uses the shared
+  social source predicate and reconstructs the exact Mastodon media origin
+  without forwarding API credentials; shared assets prefer a selected Mastodon
+  owner before reconstructing that policy.
 
 ### Reusable Bluesky bookmark import (2026-08-08)
 

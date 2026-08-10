@@ -67,38 +67,85 @@ func TestListItemsForXMediaTranscriptionPreservesForceRetryAndPrunedSemantics(t 
 	}
 }
 
-func TestMediaEnrichmentQueriesIncludeBlueskyBookmarks(t *testing.T) {
+func TestMediaEnrichmentSelectorsCoverSocialSourceTypeAndAssetStateMatrix(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	st := openTestStore(t)
 	now := time.Now().UTC()
-	photo := testItem("bsky:ocr", "bsky_bookmark", "https://bsky.app/profile/alice/post/ocr", now)
-	video := testItem("bsky:transcription", "bsky_bookmark", "https://bsky.app/profile/alice/post/transcription", now)
-	photoResult, err := st.UpsertItem(ctx, photo)
-	if err != nil {
-		t.Fatalf("upsert photo item: %v", err)
+
+	sourceTypes := []string{
+		"x_bookmark", "x_quote", "bsky_bookmark", "bsky_quote",
+		"mastodon_bookmark", "mastodon_quote", "mastodon_reblog",
 	}
-	videoResult, err := st.UpsertItem(ctx, video)
-	if err != nil {
-		t.Fatalf("upsert video item: %v", err)
+	states := []struct {
+		name, mediaType, downloadStatus, localPath string
+		pruned                                     bool
+		wantOCR, wantTranscript, wantAudit         bool
+	}{
+		{name: "downloaded-photo", mediaType: "photo", downloadStatus: "downloaded", localPath: "media/social/photo.jpg", wantOCR: true, wantAudit: true},
+		{name: "downloaded-video", mediaType: "video", downloadStatus: "downloaded", localPath: "media/social/video.mp4", wantTranscript: true},
+		{name: "downloaded-animated-gif", mediaType: "animated_gif", downloadStatus: "downloaded", localPath: "media/social/animated.gif", wantTranscript: true},
+		{name: "unlinked", mediaType: "photo"},
+		{name: "pending", mediaType: "photo", downloadStatus: "pending", localPath: "media/social/pending.jpg"},
+		{name: "gone", mediaType: "video", downloadStatus: "gone", localPath: "media/social/gone.mp4"},
+		{name: "blocked", mediaType: "animated_gif", downloadStatus: "blocked", localPath: "media/social/blocked.gif"},
+		{name: "pruned", mediaType: "photo", downloadStatus: "downloaded", localPath: "media/social/pruned.jpg", pruned: true},
+		{name: "no-local-file", mediaType: "video", downloadStatus: "downloaded"},
 	}
-	insertDownloadedAssetLink(t, st, photoResult.ItemID, "https://cdn.example/ocr.jpg", "photo", "media/bsky/photo/aa/ocr.jpg", now)
-	insertDownloadedAssetLink(t, st, videoResult.ItemID, "https://cdn.example/transcription.mp4", "video", "media/bsky/video/bb/transcription.mp4", now)
+
+	wantOCR := []string{}
+	wantTranscript := []string{}
+	wantAudit := []string{}
+	for _, sourceType := range sourceTypes {
+		for _, state := range states {
+			key := sourceType + ":" + state.name
+			result, err := st.UpsertItem(ctx, testItem(key, sourceType, "https://social.example/"+key, now))
+			if err != nil {
+				t.Fatalf("upsert %s: %v", key, err)
+			}
+			if state.name != "unlinked" {
+				remoteURL := "https://cdn.example/" + key
+				insertDownloadedAssetLink(t, st, result.ItemID, remoteURL, state.mediaType, state.localPath, now)
+				if _, err := st.db.ExecContext(ctx, `UPDATE media_assets SET download_status = ?, local_pruned_at = ? WHERE remote_url = ?`, state.downloadStatus, map[bool]string{true: now.Format(time.RFC3339), false: ""}[state.pruned], remoteURL); err != nil {
+					t.Fatalf("set %s asset state: %v", key, err)
+				}
+			}
+			if state.wantOCR {
+				wantOCR = append(wantOCR, key)
+			}
+			if state.wantTranscript {
+				wantTranscript = append(wantTranscript, key)
+			}
+			if state.wantAudit {
+				wantAudit = append(wantAudit, key)
+			}
+		}
+	}
+	slices.Sort(wantOCR)
+	slices.Sort(wantTranscript)
+	slices.Sort(wantAudit)
 
 	ocr, err := st.ListItemsForXPhotoOCR(ctx, 100, true)
 	if err != nil {
 		t.Fatalf("ListItemsForXPhotoOCR: %v", err)
 	}
-	if got := sortedItemSourceKeys(ocr); !slices.Contains(got, photo.SourceKey) {
-		t.Fatalf("Bluesky photo missing from OCR candidates: %v", got)
+	if got := sortedItemSourceKeys(ocr); !slices.Equal(got, wantOCR) {
+		t.Fatalf("OCR source/type/state matrix mismatch: got=%v want=%v", got, wantOCR)
 	}
 	transcription, err := st.ListItemsForXMediaTranscription(ctx, 100, true)
 	if err != nil {
 		t.Fatalf("ListItemsForXMediaTranscription: %v", err)
 	}
-	if got := sortedItemSourceKeys(transcription); !slices.Contains(got, video.SourceKey) {
-		t.Fatalf("Bluesky video missing from transcription candidates: %v", got)
+	if got := sortedItemSourceKeys(transcription); !slices.Equal(got, wantTranscript) {
+		t.Fatalf("transcription source/type/state matrix mismatch: got=%v want=%v", got, wantTranscript)
+	}
+	audit, err := st.ListItemsForXPhotoOCRAudit(ctx, 100, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXPhotoOCRAudit: %v", err)
+	}
+	if got := sortedItemSourceKeys(audit); !slices.Equal(got, wantAudit) {
+		t.Fatalf("OCR audit source/type/state matrix mismatch: got=%v want=%v", got, wantAudit)
 	}
 }
 

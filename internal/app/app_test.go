@@ -4576,7 +4576,7 @@ func TestWriteSyncStatsIncludesXMediaStage(t *testing.T) {
 	}
 
 	output := dst.String()
-	for _, value := range []string{"Sync Summary", "X Media", "processed=10 transcribed=6", "summarized=0 skipped=4", "3"} {
+	for _, value := range []string{"Sync Summary", "Social Media Transcription", "processed=10", "transcribed=6", "summarized=0", "skipped=4", "3"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
 		}
@@ -4768,7 +4768,7 @@ func TestFormatSyncDurationUsesTwoDecimalSeconds(t *testing.T) {
 }
 
 func TestWriteSyncStatsRightAlignsDurationColumn(t *testing.T) {
-	t.Parallel()
+	t.Setenv("COLUMNS", "80")
 
 	var dst bytes.Buffer
 	stats := syncjob.Stats{
@@ -4837,6 +4837,19 @@ func TestSyncProgressUIFormatsStageLines(t *testing.T) {
 	}
 	if strings.Contains(output, "==>") {
 		t.Fatalf("expected raw stage marker to be formatted, got %q", output)
+	}
+}
+
+func TestSyncProgressUIUsesSocialMediaWordingForSharedMediaEnrichment(t *testing.T) {
+	t.Parallel()
+
+	for stage, want := range map[string]string{
+		"transcribe x-media": "Transcribing social media",
+		"ocr x-photos":       "Running OCR on social media",
+	} {
+		if got := syncStageLabel(stage); !strings.Contains(got, want) {
+			t.Fatalf("syncStageLabel(%q) = %q, want wording containing %q", stage, got, want)
+		}
 	}
 }
 

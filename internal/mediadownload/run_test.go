@@ -3,11 +3,9 @@ package mediadownload
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"image"
-	"image/color"
-	"image/jpeg"
 	"io"
 	"log/slog"
 	"net"
@@ -26,6 +24,91 @@ import (
 	"github.com/darron/dbrain/internal/safehttp"
 	"github.com/darron/dbrain/internal/store"
 )
+
+func TestDownloadRefAcceptsProductionMastodonImageResponses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		fixturePath string
+		contentType string
+		byteSize    int64
+		digest      string
+		extension   string
+	}{
+		{
+			name:        "rgba png",
+			fixturePath: "testdata/mastodon-image-rgba.png",
+			contentType: "image/png",
+			byteSize:    1111389,
+			digest:      "fdcb51f8e12df2a92f00f406a3830a989843b7b23ab2823f3a2625ca38ad25a2",
+			extension:   ".png",
+		},
+		{
+			name:        "jfif jpeg",
+			fixturePath: "testdata/mastodon-image-jfif.jpg",
+			contentType: "image/jpeg",
+			byteSize:    62843,
+			digest:      "d2a5f8641ddc89a3247f7516e4e104b4493f37be15d5cb134b6ae1e454ff0ca5",
+			extension:   ".jpg",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			body, err := os.ReadFile(test.fixturePath)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			if got := fmt.Sprintf("%x", sha256.Sum256(body)); got != test.digest {
+				t.Fatalf("fixture sha256 = %s, want %s", got, test.digest)
+			}
+			cfg, err := config.Load(t.TempDir())
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				t.Fatalf("EnsureDirs: %v", err)
+			}
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					Header:        http.Header{"Content-Type": []string{test.contentType}},
+					Body:          io.NopCloser(bytes.NewReader(body)),
+					ContentLength: int64(len(body)),
+				}, nil
+			})}
+
+			result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{
+				RemoteURL: "https://media.example/fixture" + test.extension,
+				MediaType: "photo",
+			}, "mastodon", progressOptions{})
+			if err != nil {
+				t.Fatalf("downloadRef: %v", err)
+			}
+			if result.Status != model.MediaDownloadStatusDownloaded ||
+				result.MIMEType != test.contentType ||
+				result.ByteSize != test.byteSize ||
+				result.ContentHash != "sha256:"+test.digest {
+				t.Fatalf("result = %#v", result)
+			}
+			wantPath := filepath.ToSlash(filepath.Join("media", "mastodon", "photo", test.digest[:2], test.digest+test.extension))
+			if result.LocalPath != wantPath {
+				t.Fatalf("local path = %q, want %q", result.LocalPath, wantPath)
+			}
+			persisted, err := os.ReadFile(filepath.Join(cfg.VaultDir, filepath.FromSlash(result.LocalPath)))
+			if err != nil {
+				t.Fatalf("read persisted media: %v", err)
+			}
+			if !bytes.Equal(persisted, body) {
+				t.Fatal("persisted media bytes differ from complete response fixture")
+			}
+		})
+	}
+}
 
 func TestDownloadRefClosesOriginalResponseBody(t *testing.T) {
 	t.Parallel()
@@ -88,6 +171,32 @@ func TestDownloadRefRejectsChunkedBodyOverConfiguredLimit(t *testing.T) {
 	assertNoMediaFiles(t, cfg.MediaDir)
 }
 
+func TestDownloadRefRejectsDeclaredBodyOverConfiguredLimit(t *testing.T) {
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"content-type": []string{"image/jpeg"}},
+			Body:          io.NopCloser(strings.NewReader("not read")),
+			ContentLength: 5,
+		}, nil
+	})}
+	result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{RemoteURL: "https://media.example/image.jpg", MediaType: "photo"}, "mastodon", progressOptions{MaxBytes: 4})
+	if err != nil {
+		t.Fatalf("downloadRef: %v", err)
+	}
+	if result.Status != model.MediaDownloadStatusBlocked || !strings.Contains(result.Error, "exceeds 4") {
+		t.Fatalf("result = %#v", result)
+	}
+	assertNoMediaFiles(t, cfg.MediaDir)
+}
+
 func TestDownloadRefTreatsRequestTimeoutAsRetryable(t *testing.T) {
 	cfg, err := config.Load(t.TempDir())
 	if err != nil {
@@ -105,6 +214,95 @@ func TestDownloadRefTreatsRequestTimeoutAsRetryable(t *testing.T) {
 	}
 	if result.Status != model.MediaDownloadStatusError {
 		t.Fatalf("result = %#v, want retryable error status", result)
+	}
+}
+
+func TestDownloadRefPreservesRetryableTransportAndHTTPFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		transport error
+	}{
+		{name: "transport timeout", transport: context.DeadlineExceeded},
+		{name: "rate limited", status: http.StatusTooManyRequests},
+		{name: "internal server error", status: http.StatusInternalServerError},
+		{name: "bad gateway", status: http.StatusBadGateway},
+		{name: "service unavailable", status: http.StatusServiceUnavailable},
+		{name: "gateway timeout", status: http.StatusGatewayTimeout},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := config.Load(t.TempDir())
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				t.Fatalf("EnsureDirs: %v", err)
+			}
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				if test.transport != nil {
+					return nil, test.transport
+				}
+				return &http.Response{StatusCode: test.status, Body: io.NopCloser(strings.NewReader("temporary failure"))}, nil
+			})}
+			result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{RemoteURL: "https://media.example/image.jpg", MediaType: "photo"}, "mastodon", progressOptions{})
+			if err != nil {
+				t.Fatalf("downloadRef: %v", err)
+			}
+			if result.Status != model.MediaDownloadStatusError {
+				t.Fatalf("result = %#v, want retryable error", result)
+			}
+			assertNoMediaFiles(t, cfg.MediaDir)
+		})
+	}
+}
+
+func TestDownloadRefRejectsInvalidImageResponsesWithoutPromotion(t *testing.T) {
+	pngBytes, err := os.ReadFile("testdata/mastodon-image-rgba.png")
+	if err != nil {
+		t.Fatalf("read PNG fixture: %v", err)
+	}
+	jpegBytes, err := os.ReadFile("testdata/mastodon-image-jfif.jpg")
+	if err != nil {
+		t.Fatalf("read JPEG fixture: %v", err)
+	}
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+	}{
+		{name: "empty", contentType: "image/png", body: nil},
+		{name: "truncated png", contentType: "image/png", body: pngBytes[:64]},
+		{name: "truncated jpeg", contentType: "image/jpeg", body: jpegBytes[:len(jpegBytes)/2]},
+		{name: "MIME disagreement", contentType: "image/jpeg", body: pngBytes},
+		{name: "unsafe SVG", contentType: "image/svg+xml", body: []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := config.Load(t.TempDir())
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				t.Fatalf("EnsureDirs: %v", err)
+			}
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					Header:        http.Header{"Content-Type": []string{test.contentType}},
+					Body:          io.NopCloser(bytes.NewReader(test.body)),
+					ContentLength: int64(len(test.body)),
+				}, nil
+			})}
+			result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{RemoteURL: "https://media.example/image", MediaType: "photo"}, "mastodon", progressOptions{})
+			if err != nil {
+				t.Fatalf("downloadRef: %v", err)
+			}
+			if result.Status != model.MediaDownloadStatusBlocked || result.LocalPath != "" {
+				t.Fatalf("result = %#v, want terminal blocked without promotion", result)
+			}
+			assertNoMediaFiles(t, cfg.MediaDir)
+		})
 	}
 }
 
@@ -1066,13 +1264,11 @@ func insertTestItem(t *testing.T, st *store.Store, sourceKey string, now time.Ti
 }
 
 func fakeJPEGBytes() []byte {
-	imageData := image.NewRGBA(image.Rect(0, 0, 1, 1))
-	imageData.SetRGBA(0, 0, color.RGBA{R: 0x33, G: 0x66, B: 0x99, A: 0xff})
-	var encoded bytes.Buffer
-	if err := jpeg.Encode(&encoded, imageData, nil); err != nil {
+	data, err := os.ReadFile("testdata/mastodon-image-jfif.jpg")
+	if err != nil {
 		panic(err)
 	}
-	return encoded.Bytes()
+	return data
 }
 
 func largeGenuineMP4VideoBytes() []byte {

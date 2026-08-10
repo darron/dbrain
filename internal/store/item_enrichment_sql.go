@@ -6,6 +6,13 @@ func itemEnrichmentFieldExpr(role string, field string, fallback string) string 
 	return `(COALESCE((SELECT ` + field + ` FROM item_enrichments e WHERE e.item_id = items.id AND e.role = '` + role + `'), ` + fallback + `))`
 }
 
+func itemEnrichmentFieldExprFor(alias string, role string, field string, fallbackField string) string {
+	if alias == "" {
+		alias = "items"
+	}
+	return `(COALESCE((SELECT ` + field + ` FROM item_enrichments e WHERE e.item_id = ` + alias + `.id AND e.role = '` + role + `'), ` + alias + `.` + fallbackField + `))`
+}
+
 func itemSummaryStatusExpr() string {
 	return itemEnrichmentFieldExpr(model.ItemEnrichmentRoleSummary, "status", "summary_status")
 }
@@ -18,12 +25,20 @@ func itemOCRStatusExpr() string {
 	return itemEnrichmentFieldExpr(model.ItemEnrichmentRoleOCR, "status", "ocr_status")
 }
 
+func itemOCRStatusExprFor(alias string) string {
+	return itemEnrichmentFieldExprFor(alias, model.ItemEnrichmentRoleOCR, "status", "ocr_status")
+}
+
 func itemOCRTextExpr() string {
 	return itemEnrichmentFieldExpr(model.ItemEnrichmentRoleOCR, "text", "ocr_text")
 }
 
 func itemXMediaTranscriptStatusExpr() string {
 	return itemEnrichmentFieldExpr(model.ItemEnrichmentRoleXMediaTranscript, "status", "x_media_transcript_status")
+}
+
+func itemXMediaTranscriptStatusExprFor(alias string) string {
+	return itemEnrichmentFieldExprFor(alias, model.ItemEnrichmentRoleXMediaTranscript, "status", "x_media_transcript_status")
 }
 
 func itemXMediaTranscriptTextExpr() string {

@@ -1,0 +1,11 @@
+{
+  "status": 200,
+  "content_type": "image/png",
+  "body_file": "mastodon-image-rgba.png",
+  "byte_size": 1111389,
+  "sha256": "fdcb51f8e12df2a92f00f406a3830a989843b7b23ab2823f3a2625ca38ad25a2",
+  "prefix_hex": "89504e470d0a1a0a0000000d49484452",
+  "format": "png",
+  "width": 1092,
+  "height": 962
+}

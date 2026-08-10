@@ -58,8 +58,9 @@ func (s *Store) invalidateItemMediaTranscriptTx(ctx context.Context, tx *sql.Tx,
 			return false, fmt.Errorf("clear item media transcript %d: %w", itemID, err)
 		}
 	}
-	if err := s.deleteItemEnrichmentTx(ctx, tx, itemID, model.ItemEnrichmentRoleXMediaTranscript); err != nil {
+	deleted, err := s.deleteItemEnrichmentIfExistsTx(ctx, tx, itemID, model.ItemEnrichmentRoleXMediaTranscript)
+	if err != nil {
 		return false, err
 	}
-	return changed, nil
+	return changed || deleted, nil
 }

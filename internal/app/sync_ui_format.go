@@ -17,9 +17,9 @@ func syncStageLabel(stage string) string {
 	case "extract links":
 		return "Extracting links and enriching sources"
 	case "transcribe x-media":
-		return "Transcribing X and Bluesky media"
+		return "Transcribing social media"
 	case "ocr x-photos":
-		return "Running OCR on X and Bluesky photos"
+		return "Running OCR on social media"
 	case "import github stars":
 		return "Importing GitHub stars"
 	case "import youtube":

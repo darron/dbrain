@@ -40,7 +40,7 @@ func executeXMediaStage(ctx context.Context, cfg config.Config, st *store.Store,
 	if err != nil {
 		return stage, fmt.Errorf("transcribe x-media: %w", err)
 	}
-	progressf(common.Progress, "X media transcription complete (X + Bluesky): items_processed=%d items_updated=%d items_skipped=%d media_transcribed=%d items_summarized=%d errors=%d summary_errors=%d (%s)\n", xMediaStats.ItemsProcessed, xMediaStats.ItemsUpdated, xMediaStats.ItemsSkipped, xMediaStats.MediaTranscribed, xMediaStats.ItemsSummarized, xMediaStats.Errors, xMediaStats.SummaryErrors, stage.Duration)
+	progressf(common.Progress, "Social media transcription complete (X, Bluesky, and Mastodon): items_processed=%d items_updated=%d items_skipped=%d media_transcribed=%d items_summarized=%d errors=%d summary_errors=%d (%s)\n", xMediaStats.ItemsProcessed, xMediaStats.ItemsUpdated, xMediaStats.ItemsSkipped, xMediaStats.MediaTranscribed, xMediaStats.ItemsSummarized, xMediaStats.Errors, xMediaStats.SummaryErrors, stage.Duration)
 	return stage, nil
 }
 
@@ -62,7 +62,7 @@ func executeXPhotoOCRStage(ctx context.Context, cfg config.Config, st *store.Sto
 	if err != nil {
 		return stage, fmt.Errorf("ocr x-photos: %w", err)
 	}
-	progressf(common.Progress, "X photo OCR complete (X + Bluesky): items_processed=%d items_updated=%d items_skipped=%d photos_ocred=%d errors=%d (%s)\n", ocrStats.ItemsProcessed, ocrStats.ItemsUpdated, ocrStats.ItemsSkipped, ocrStats.PhotosOCRed, ocrStats.Errors, stage.Duration)
+	progressf(common.Progress, "Social media photo OCR complete (X, Bluesky, and Mastodon): items_processed=%d items_updated=%d items_skipped=%d photos_ocred=%d errors=%d (%s)\n", ocrStats.ItemsProcessed, ocrStats.ItemsUpdated, ocrStats.ItemsSkipped, ocrStats.PhotosOCRed, ocrStats.Errors, stage.Duration)
 	return stage, nil
 }
 

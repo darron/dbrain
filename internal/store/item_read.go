@@ -62,6 +62,46 @@ func (s *Store) GetItemByID(ctx context.Context, id int64) (model.Item, error) {
 	return item, nil
 }
 
+// ListMediaAssetOwnerItems returns every item linked to an asset in a stable
+// source-aware order. The result intentionally does not load each item's
+// media/enrichment mirror; callers that need those details can load the
+// specific owner after choosing it.
+func (s *Store) ListMediaAssetOwnerItems(ctx context.Context, assetID int64) ([]model.Item, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+itemSelectColumns+`
+		FROM items
+		WHERE id IN (
+			SELECT item_id
+			FROM item_media_links
+			WHERE media_asset_id = ?
+		)
+		ORDER BY
+			CASE source_type
+				WHEN 'mastodon_bookmark' THEN 0
+				WHEN 'mastodon_quote' THEN 0
+				WHEN 'mastodon_reblog' THEN 0
+				ELSE 1
+			END,
+			id ASC`, assetID)
+	if err != nil {
+		return nil, fmt.Errorf("list media asset %d owner items: %w", assetID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	owners := make([]model.Item, 0)
+	for rows.Next() {
+		var item model.Item
+		if err := scanItem(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan media asset %d owner item: %w", assetID, err)
+		}
+		owners = append(owners, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate media asset %d owner items: %w", assetID, err)
+	}
+	return owners, nil
+}
+
 func (s *Store) SaveItemUserTags(ctx context.Context, itemID int64, tags string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

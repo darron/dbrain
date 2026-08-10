@@ -7,6 +7,7 @@ import (
 	"github.com/darron/dbrain/internal/githubimport"
 	"github.com/darron/dbrain/internal/itemcategorize"
 	"github.com/darron/dbrain/internal/linkextract"
+	"github.com/darron/dbrain/internal/mastodonapi"
 	"github.com/darron/dbrain/internal/mediaarchive"
 	"github.com/darron/dbrain/internal/okf"
 	"github.com/darron/dbrain/internal/safaritabs"
@@ -21,6 +22,7 @@ import (
 var (
 	runXBookmarkImport       = xapi.RunBookmarks
 	runBlueskyBookmarkImport = bskyapi.RunBookmarks
+	runMastodonImport        = mastodonapi.RunBookmarksWithClient
 	runXHydrate              = xapi.Run
 	runXMediaStage           = xmediatranscribe.Run
 	runXPhotoOCRStage        = xphotoocr.Run

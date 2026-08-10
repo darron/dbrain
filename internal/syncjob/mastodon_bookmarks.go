@@ -51,7 +51,7 @@ func executeMastodonBookmarksStage(ctx context.Context, cfg config.Config, st *s
 			stageErr = errors.Join(stageErr, fmt.Errorf("create Mastodon client for %q: %w", account.Key, clientErr))
 			continue
 		}
-		bookmarkStats, importErr := mastodonapi.RunBookmarksWithClient(ctx, cfg, st, client, mastodonapi.BookmarkOptions{
+		bookmarkStats, importErr := runMastodonImport(ctx, cfg, st, client, mastodonapi.BookmarkOptions{
 			AccountKey: account.Key,
 			Limit:      stageOpts.Limit,
 			Timeout:    stageOpts.Timeout,
