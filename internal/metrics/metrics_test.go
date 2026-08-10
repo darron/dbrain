@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,9 @@ func TestResolveConfigDisabledByDefault(t *testing.T) {
 	if cfg.Path != "" {
 		t.Fatalf("Path = %q, want empty when disabled", cfg.Path)
 	}
+	if cfg.RotateMaxBytes != DefaultRotateMaxBytes || cfg.RotateKeepFiles != DefaultRotateKeepFiles {
+		t.Fatalf("rotation defaults = (%d, %d), want (%d, %d)", cfg.RotateMaxBytes, cfg.RotateKeepFiles, DefaultRotateMaxBytes, DefaultRotateKeepFiles)
+	}
 }
 
 func TestResolveConfigEnabledDefaultAndRelativePath(t *testing.T) {
@@ -55,6 +59,58 @@ func TestResolveConfigEnabledDefaultAndRelativePath(t *testing.T) {
 	wantPath := filepath.Join(logDir, "local-model-metrics.jsonl")
 	if cfg.Path != wantPath {
 		t.Fatalf("Path = %q, want %q", cfg.Path, wantPath)
+	}
+}
+
+func TestResolveConfigRotationOverridesAndExplicitDisable(t *testing.T) {
+	root := t.TempDir()
+	logDir := filepath.Join(root, "logs")
+	writeMetricsConfig(t, root, `metrics:
+  enabled: true
+  rotate_max_bytes: 4096
+  rotate_keep_files: 7
+`)
+
+	cfg, err := ResolveConfig(root, logDir)
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+	if cfg.RotateMaxBytes != 4096 || cfg.RotateKeepFiles != 7 {
+		t.Fatalf("rotation config = (%d, %d), want (4096, 7)", cfg.RotateMaxBytes, cfg.RotateKeepFiles)
+	}
+
+	t.Setenv("DBRAIN_METRICS_ROTATE_MAX_BYTES", "0")
+	t.Setenv("DBRAIN_METRICS_ROTATE_KEEP_FILES", "0")
+	cfg, err = ResolveConfig(root, logDir)
+	if err != nil {
+		t.Fatalf("ResolveConfig with env override: %v", err)
+	}
+	if cfg.RotateMaxBytes != 0 || cfg.RotateKeepFiles != 0 {
+		t.Fatalf("explicit rotation disable = (%d, %d), want (0, 0)", cfg.RotateMaxBytes, cfg.RotateKeepFiles)
+	}
+}
+
+func TestResolveConfigRejectsInvalidRotationValues(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "negative bytes", body: "metrics:\n  rotate_max_bytes: -1\n", want: "metrics.rotate_max_bytes"},
+		{name: "overflow bytes", body: "metrics:\n  rotate_max_bytes: \"9223372036854775808\"\n", want: "metrics.rotate_max_bytes"},
+		{name: "negative backups", body: "metrics:\n  rotate_keep_files: -1\n", want: "metrics.rotate_keep_files"},
+		{name: "too many backups", body: "metrics:\n  rotate_keep_files: 129\n", want: "metrics.rotate_keep_files"},
+		{name: "overflow backups", body: "metrics:\n  rotate_keep_files: \"9223372036854775808\"\n", want: "metrics.rotate_keep_files"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeMetricsConfig(t, root, test.body)
+			_, err := ResolveConfig(root, filepath.Join(root, "logs"))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ResolveConfig error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -170,6 +226,239 @@ func TestSinkConcurrentEmitsWriteValidJSONLines(t *testing.T) {
 	if len(events) != 25 {
 		t.Fatalf("events = %d, want 25", len(events))
 	}
+}
+
+func TestSinksSharingPathSerializeWithoutLostOrPartialLines(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "metrics.jsonl")
+	cfg := Config{Enabled: true, Path: path, Detail: DetailStage, RotateMaxBytes: 1 << 20, RotateKeepFiles: 2}
+	first, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("Open first: %v", err)
+	}
+	second, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("Open second: %v", err)
+	}
+	ctx1 := RunContext{RunID: "writer-one", Command: "test", Sink: first}
+	ctx2 := RunContext{RunID: "writer-two", Command: "test", Sink: second}
+
+	var wg sync.WaitGroup
+	for index := 0; index < 100; index++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			ctx := ctx1
+			if index%2 == 1 {
+				ctx = ctx2
+			}
+			if err := ctx.Emit(Event{"event": "test.metrics.line", "id": index}); err != nil {
+				t.Errorf("Emit %d: %v", index, err)
+			}
+		}(index)
+	}
+	wg.Wait()
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close first: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close second: %v", err)
+	}
+
+	events := readMetricEvents(t, path)
+	if len(events) != 100 {
+		t.Fatalf("events = %d, want 100", len(events))
+	}
+	seen := make(map[int]bool, len(events))
+	for _, event := range events {
+		id, ok := event["id"].(float64)
+		if !ok || id < 0 || id >= 100 || id != float64(int(id)) || seen[int(id)] {
+			t.Fatalf("duplicate, invalid, or partial event: %#v", event)
+		}
+		seen[int(id)] = true
+	}
+}
+
+func TestSinkRotatesBeforeAppendAndRetainsCanonicalBackups(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "metrics.jsonl")
+	const maxBytes = int64(260)
+	sink, err := Open(Config{Enabled: true, Path: path, Detail: DetailStage, RotateMaxBytes: maxBytes, RotateKeepFiles: 2})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ctx := RunContext{RunID: "rotation-test", Command: "test", Sink: sink}
+	for index := 0; index < 5; index++ {
+		if err := ctx.Emit(Event{"event": "test.metrics.line", "id": index, "payload": strings.Repeat("x", 24)}); err != nil {
+			t.Fatalf("Emit %d: %v", index, err)
+		}
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	for _, suffix := range []string{"", ".1", ".2"} {
+		info, err := os.Stat(path + suffix)
+		if err != nil {
+			t.Fatalf("stat backup %q: %v", suffix, err)
+		}
+		if !info.Mode().IsRegular() || info.Size() > maxBytes {
+			t.Fatalf("backup %q info = %+v, want regular file at most %d bytes", suffix, info, maxBytes)
+		}
+	}
+	if _, err := os.Stat(path + ".3"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf(".3 stat error = %v, want absent", err)
+	}
+	if got := readMetricEvents(t, path); len(got) != 1 {
+		t.Fatalf("active events = %d, want one newest event", len(got))
+	}
+	if got := readMetricEvents(t, path+".1"); len(got) != 1 {
+		t.Fatalf(".1 events = %d, want one event", len(got))
+	}
+	if got := readMetricEvents(t, path+".2"); len(got) != 1 {
+		t.Fatalf(".2 events = %d, want one event", len(got))
+	}
+}
+
+func TestOpenRepairsOversizedActiveFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "metrics.jsonl")
+	original := []byte(strings.Repeat("oversized\n", 20))
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sink, err := Open(Config{Enabled: true, Path: path, Detail: DetailStage, RotateMaxBytes: 16, RotateKeepFiles: 1})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	active, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := os.ReadFile(path + ".1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 0 || string(backup) != string(original) {
+		t.Fatalf("repaired files: active=%d bytes backup=%d bytes", len(active), len(backup))
+	}
+}
+
+func TestSinkKeepsSingleOversizedEventIntact(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "metrics.jsonl")
+	sink, err := Open(Config{Enabled: true, Path: path, Detail: DetailStage, RotateMaxBytes: 64, RotateKeepFiles: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := RunContext{RunID: "oversized", Sink: sink}
+	if err := ctx.Emit(Event{"event": "test.metrics.line", "id": 1, "payload": strings.Repeat("z", 512)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Emit(Event{"event": "test.metrics.line", "id": 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backup := readMetricEvents(t, path+".1")
+	active := readMetricEvents(t, path)
+	if len(backup) != 1 || backup[0]["id"] != float64(1) || len(active) != 1 || active[0]["id"] != float64(2) {
+		t.Fatalf("oversized rotation = backup:%#v active:%#v", backup, active)
+	}
+	data, err := os.ReadFile(path + ".1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), strings.Repeat("z", 512)) {
+		t.Fatal("oversized event was truncated")
+	}
+}
+
+func TestRotationNeverFollowsSiblingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions are not portable on Windows")
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "metrics.jsonl")
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outside, []byte("sentinel\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	sink, err := Open(Config{Enabled: true, Path: path, Detail: DetailStage, RotateMaxBytes: 64, RotateKeepFiles: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := RunContext{RunID: "symlink", Sink: sink}
+	if err := ctx.Emit(Event{"event": "test.metrics.line", "id": 1, "payload": strings.Repeat("x", 100)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Emit(Event{"event": "test.metrics.line", "id": 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "sentinel\n" {
+		t.Fatalf("symlink target changed: %q, %v", got, err)
+	}
+	if info, err := os.Lstat(path + ".1"); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("rotation destination was not preserved as symlink: %v", err)
+	}
+}
+
+func TestRotationZeroValuesPreserveExplicitDisableSemantics(t *testing.T) {
+	t.Run("max zero disables rotation", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "metrics.jsonl")
+		sink, err := Open(Config{Enabled: true, Path: path, Detail: DetailStage, RotateMaxBytes: 0, RotateKeepFiles: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := RunContext{RunID: "zero-max", Sink: sink}
+		for index := 0; index < 3; index++ {
+			if err := ctx.Emit(Event{"event": "test.metrics.line", "id": index}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := sink.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(readMetricEvents(t, path)); got != 3 {
+			t.Fatalf("events = %d, want 3", got)
+		}
+		if _, err := os.Stat(path + ".1"); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("backup stat error = %v, want absent", err)
+		}
+	})
+
+	t.Run("keep zero removes backups", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "metrics.jsonl")
+		sink, err := Open(Config{Enabled: true, Path: path, Detail: DetailStage, RotateMaxBytes: 100, RotateKeepFiles: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := RunContext{RunID: "zero-keep", Sink: sink}
+		for index := 0; index < 3; index++ {
+			if err := ctx.Emit(Event{"event": "test.metrics.line", "id": index, "payload": strings.Repeat("x", 24)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := sink.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(path + ".1"); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("backup stat error = %v, want absent", err)
+		}
+		if got := len(readMetricEvents(t, path)); got != 1 {
+			t.Fatalf("active events = %d, want newest event", got)
+		}
+	})
 }
 
 func TestAuditRunCompletedEventUsesPrivacySafeAllowlist(t *testing.T) {

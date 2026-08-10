@@ -729,6 +729,8 @@ direct values or typed references: `env:NAME`,
 | `DBRAIN_METRICS_DETAIL` | `metrics.detail` | `stage` | Metrics detail level: `stage`, `item`, or `model_call`. |
 | `DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS` | `metrics.include_subject_keys` | `false` | Include raw dbrain item/source keys in metrics instead of only deterministic subject hashes. |
 | `DBRAIN_METRICS_STRICT` | `metrics.strict` | `false` | Return write failures as command errors after startup succeeds instead of disabling the sink. |
+| `DBRAIN_METRICS_ROTATE_MAX_BYTES` | `metrics.rotate_max_bytes` | `33554432` | Rotate before an append crosses this byte size; `0` disables rotation. |
+| `DBRAIN_METRICS_ROTATE_KEEP_FILES` | `metrics.rotate_keep_files` | `5` | Retain numeric backups `.1` through `.N`; `0` retains none, and the maximum is 128. |
 | `DBRAIN_OPENROUTER_BASE_URL` / `OPENROUTER_BASE_URL` | `openrouter.base_url` | `https://openrouter.ai/api/v1` | OpenRouter API endpoint. |
 | `DBRAIN_OPENROUTER_API_KEY` / `OPENROUTER_API_KEY` | `openrouter.api_key` | `` | OpenRouter API key for hosted LLM/OCR/categorization calls. |
 | `DBRAIN_OPENROUTER_REFERER` / `OPENROUTER_HTTP_REFERER` | `openrouter.referer` | `https://local.dbrain` | HTTP referer sent to OpenRouter for direct calls. |

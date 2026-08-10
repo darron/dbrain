@@ -72,8 +72,12 @@ raw evidence    derived summaries/OCR/transcripts/tags
 - `internal/version`: build/version metadata.
 - `internal/audit`: closed, content-free production-health schema, registry,
   classifiers, deterministic sampling, and capability-scoped check runner.
-- `internal/metrics`: append-only metrics emission plus bounded reverse-reading
-  for scheduler/import continuity evidence.
+- `internal/metrics`: append-only, size-rotated metrics emission plus bounded
+  reverse-reading for scheduler/import continuity evidence. The configured
+  active path remains `metrics.jsonl`; retained backups use the reserved
+  numeric suffixes `.1` through `.128`. Writers and readers share the
+  platform-aware rotation lock, and the reader snapshots the active file and
+  recognized backups under one shared lock.
 
 ### Storage And Projection
 
