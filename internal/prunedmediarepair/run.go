@@ -138,6 +138,18 @@ func runWithDownloaderAndMastodonPolicy(ctx context.Context, cfg config.Config, 
 			chosenByAsset[candidate.ref.MediaAssetID] = candidate
 		}
 	}
+	for assetID, candidate := range chosenByAsset {
+		if candidate.namespace == "mastodon" {
+			continue
+		}
+		mastodonOwner, ok, err := selectMastodonMediaAssetOwner(ctx, st, assetID)
+		if err != nil {
+			return stats, fmt.Errorf("select Mastodon owner for media asset %d: %w", assetID, err)
+		}
+		if ok {
+			chosenByAsset[assetID] = mastodonOwner
+		}
+	}
 
 	groupsByItem := make(map[int64]*selectedMediaItemGroup)
 	for _, candidate := range chosenByAsset {
@@ -226,6 +238,41 @@ func preferSelectedMediaCandidate(candidate, current selectedMediaCandidate) boo
 		return candidate.ref.Ordinal < current.ref.Ordinal
 	}
 	return candidate.ref.RemoteURL < current.ref.RemoteURL
+}
+
+func selectMastodonMediaAssetOwner(ctx context.Context, st *store.Store, assetID int64) (selectedMediaCandidate, bool, error) {
+	owners, err := st.ListMediaAssetOwnerItems(ctx, assetID)
+	if err != nil {
+		return selectedMediaCandidate{}, false, err
+	}
+	for _, owner := range owners {
+		if !isMastodonSourceType(owner.SourceType) {
+			continue
+		}
+		refs, err := st.ListItemMediaRefs(ctx, owner.ID)
+		if err != nil {
+			return selectedMediaCandidate{}, false, fmt.Errorf("list Mastodon owner %d media refs: %w", owner.ID, err)
+		}
+		for _, ref := range refs {
+			if ref.MediaAssetID != assetID {
+				continue
+			}
+			return selectedMediaCandidate{
+				itemID: owner.ID, item: owner, ref: ref,
+				namespace: mediadownload.MediaNamespaceForSourceType(owner.SourceType),
+			}, true, nil
+		}
+	}
+	return selectedMediaCandidate{}, false, nil
+}
+
+func isMastodonSourceType(sourceType string) bool {
+	switch sourceType {
+	case "mastodon_bookmark", "mastodon_quote", "mastodon_reblog":
+		return true
+	default:
+		return false
+	}
 }
 
 func addMediaDownloadStats(stats *Stats, mediaStats mediadownload.Stats) {

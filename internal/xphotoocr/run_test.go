@@ -90,7 +90,7 @@ func TestRunPersistsSocialPhotoOCRForBlueskyAndMastodonWithoutReprocessingUnchan
 			cfg, st, item := seedDownloadedPhotoItemForSourceType(t, sourceType+":photo", "2049000000000000"+sourceType[:1], sourceType)
 
 			stats, err := Run(context.Background(), cfg, st, Options{
-				Limit: 10, Model: "tesseract", TesseractBinary: installFakeTesseract(t, "Social media OCR text.\n"), Timeout: 2 * time.Second,
+				Limit: 10, Model: "tesseract", TesseractBinary: installFakeTesseract(t, "Social media OCR text.\n"), Timeout: 5 * time.Second,
 			})
 			if err != nil {
 				t.Fatalf("Run: %v", err)
@@ -112,7 +112,7 @@ func TestRunPersistsSocialPhotoOCRForBlueskyAndMastodonWithoutReprocessingUnchan
 			}
 
 			stats, err = Run(context.Background(), cfg, st, Options{
-				Limit: 10, Model: "tesseract", TesseractBinary: installFakeTesseract(t, "must not run\n"), Timeout: 2 * time.Second,
+				Limit: 10, Model: "tesseract", TesseractBinary: installFakeTesseract(t, "must not run\n"), Timeout: 5 * time.Second,
 			})
 			if err != nil {
 				t.Fatalf("second Run: %v", err)

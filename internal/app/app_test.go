@@ -4576,7 +4576,7 @@ func TestWriteSyncStatsIncludesXMediaStage(t *testing.T) {
 	}
 
 	output := dst.String()
-	for _, value := range []string{"Sync Summary", "X Media", "processed=10 transcribed=6", "summarized=0 skipped=4", "3"} {
+	for _, value := range []string{"Sync Summary", "Social Media Transcription", "processed=10", "transcribed=6", "summarized=0", "skipped=4", "3"} {
 		if !strings.Contains(output, value) {
 			t.Fatalf("expected sync stats output to contain %q, got %q", value, output)
 		}
@@ -4768,7 +4768,7 @@ func TestFormatSyncDurationUsesTwoDecimalSeconds(t *testing.T) {
 }
 
 func TestWriteSyncStatsRightAlignsDurationColumn(t *testing.T) {
-	t.Parallel()
+	t.Setenv("COLUMNS", "80")
 
 	var dst bytes.Buffer
 	stats := syncjob.Stats{

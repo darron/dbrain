@@ -669,7 +669,7 @@ func TestRunExecutesXMediaStageAfterXHydration(t *testing.T) {
 	if !bytes.Contains([]byte(output), []byte("==> transcribe x-media")) {
 		t.Fatalf("expected progress output to contain x media stage, got %q", output)
 	}
-	if !bytes.Contains([]byte(output), []byte("X media transcription complete")) {
+	if !bytes.Contains([]byte(output), []byte("Social media transcription complete (X, Bluesky, and Mastodon)")) {
 		t.Fatalf("expected completion output to contain x media summary, got %q", output)
 	}
 }
@@ -783,22 +783,31 @@ func TestRunSocialOnlyImportsReachSharedMediaWorkersWithXDisabled(t *testing.T) 
 	})
 
 	var calls []string
-	runBlueskyBookmarkImport = func(ctx context.Context, _ config.Config, gotStore *store.Store, _ bskyapi.BookmarkOptions) (bskyapi.BookmarkStats, error) {
+	ffprobe := installFakeSyncWorkerBinary(t, "ffprobe", "0\n")
+	macWhisper := installFakeSyncWorkerBinary(t, "mw", "Social media transcript that is deliberately longer than forty characters.\n")
+	tesseract := installFakeSyncWorkerBinary(t, "tesseract", "Social media OCR text.\n")
+	runBlueskyBookmarkImport = func(ctx context.Context, gotCfg config.Config, gotStore *store.Store, _ bskyapi.BookmarkOptions) (bskyapi.BookmarkStats, error) {
 		calls = append(calls, "bluesky-import")
-		seedSocialMediaWorkerFixture(t, ctx, gotStore, "bsky:fixture", "bsky_bookmark", "bsky")
+		seedSocialMediaWorkerFixture(t, ctx, gotCfg, gotStore, "bsky:fixture", "bsky_bookmark", "bsky")
 		return bskyapi.BookmarkStats{Created: 1, MediaDownloaded: 2}, nil
 	}
-	runMastodonImport = func(ctx context.Context, _ config.Config, gotStore *store.Store, _ *mastodonapi.Client, _ mastodonapi.BookmarkOptions) (mastodonapi.BookmarkStats, error) {
+	runMastodonImport = func(ctx context.Context, gotCfg config.Config, gotStore *store.Store, _ *mastodonapi.Client, opts mastodonapi.BookmarkOptions) (mastodonapi.BookmarkStats, error) {
 		calls = append(calls, "mastodon-import")
-		seedSocialMediaWorkerFixture(t, ctx, gotStore, "mastodon:fixture", "mastodon_bookmark", "mastodon")
+		if !opts.Force {
+			t.Fatal("expected sync all --force to reach Mastodon importer")
+		}
+		seedSocialMediaWorkerFixture(t, ctx, gotCfg, gotStore, "mastodon:fixture", "mastodon_bookmark", "mastodon")
 		return mastodonapi.BookmarkStats{AccountKey: "test", Created: 1, MediaDownloaded: 2}, nil
 	}
 	runXHydrate = func(context.Context, config.Config, *store.Store, xapi.Options) (xapi.Stats, error) {
 		t.Fatal("X hydration ran during social-only sync")
 		return xapi.Stats{}, nil
 	}
-	runXMediaStage = func(ctx context.Context, _ config.Config, gotStore *store.Store, _ xmediatranscribe.Options) (xmediatranscribe.Stats, error) {
+	runXMediaStage = func(ctx context.Context, gotCfg config.Config, gotStore *store.Store, opts xmediatranscribe.Options) (xmediatranscribe.Stats, error) {
 		calls = append(calls, "transcription")
+		if !opts.Force {
+			t.Fatal("expected sync all --force to reach transcription")
+		}
 		items, err := gotStore.ListItemsForXMediaTranscription(ctx, 10, false)
 		if err != nil {
 			t.Fatalf("ListItemsForXMediaTranscription: %v", err)
@@ -806,10 +815,16 @@ func TestRunSocialOnlyImportsReachSharedMediaWorkersWithXDisabled(t *testing.T) 
 		if got := itemSourceKeys(items); !slices.Equal(got, []string{"mastodon:fixture", "bsky:fixture"}) {
 			t.Fatalf("transcription worker fixtures = %v", got)
 		}
-		return xmediatranscribe.Stats{ItemsProcessed: 2, MediaTranscribed: 2}, nil
+		opts.FFprobeBinary = ffprobe
+		opts.MacWhisperBinary = macWhisper
+		opts.Timeout = 5 * time.Second
+		return xmediatranscribe.Run(ctx, gotCfg, gotStore, opts)
 	}
-	runXPhotoOCRStage = func(ctx context.Context, _ config.Config, gotStore *store.Store, _ xphotoocr.Options) (xphotoocr.Stats, error) {
+	runXPhotoOCRStage = func(ctx context.Context, gotCfg config.Config, gotStore *store.Store, opts xphotoocr.Options) (xphotoocr.Stats, error) {
 		calls = append(calls, "ocr")
+		if !opts.Force {
+			t.Fatal("expected sync all --force to reach OCR")
+		}
 		items, err := gotStore.ListItemsForXPhotoOCR(ctx, 10, false)
 		if err != nil {
 			t.Fatalf("ListItemsForXPhotoOCR: %v", err)
@@ -817,7 +832,10 @@ func TestRunSocialOnlyImportsReachSharedMediaWorkersWithXDisabled(t *testing.T) 
 		if got := itemSourceKeys(items); !slices.Equal(got, []string{"mastodon:fixture", "bsky:fixture"}) {
 			t.Fatalf("OCR worker fixtures = %v", got)
 		}
-		return xphotoocr.Stats{ItemsProcessed: 2, PhotosOCRed: 2}, nil
+		opts.Model = "tesseract"
+		opts.TesseractBinary = tesseract
+		opts.Timeout = 5 * time.Second
+		return xphotoocr.Run(ctx, gotCfg, gotStore, opts)
 	}
 
 	var progress bytes.Buffer
@@ -826,6 +844,7 @@ func TestRunSocialOnlyImportsReachSharedMediaWorkersWithXDisabled(t *testing.T) 
 		MastodonBookmarksEnabled: true,
 		XMediaEnabled:            true,
 		XPhotoOCREnabled:         true,
+		Force:                    true,
 		Progress:                 &progress,
 	})
 	if err != nil {
@@ -836,9 +855,21 @@ func TestRunSocialOnlyImportsReachSharedMediaWorkersWithXDisabled(t *testing.T) 
 	}
 	if stats.BlueskyBookmarks == nil || stats.BlueskyBookmarks.Stats.Created != 1 ||
 		stats.MastodonBookmarks == nil || stats.MastodonBookmarks.Stats.Created != 1 ||
-		stats.XMedia == nil || stats.XMedia.Stats.MediaTranscribed != 2 ||
-		stats.XPhotoOCR == nil || stats.XPhotoOCR.Stats.PhotosOCRed != 2 {
+		stats.XMedia == nil || stats.XMedia.Stats.ItemsUpdated != 2 || stats.XMedia.Stats.MediaTranscribed != 2 ||
+		stats.XPhotoOCR == nil || stats.XPhotoOCR.Stats.ItemsUpdated != 2 || stats.XPhotoOCR.Stats.PhotosOCRed != 2 {
 		t.Fatalf("typed social-only stats were not preserved: %+v", stats)
+	}
+	for _, sourceKey := range []string{"mastodon:fixture", "bsky:fixture"} {
+		item, err := st.GetItem(t.Context(), sourceKey)
+		if err != nil {
+			t.Fatalf("GetItem %s: %v", sourceKey, err)
+		}
+		if item.XMediaTranscriptStatus != model.XMediaTranscriptStatusOK || !strings.Contains(item.ArticleText, "Social media transcript") {
+			t.Fatalf("%s transcript was not persisted: status=%q article=%q", sourceKey, item.XMediaTranscriptStatus, item.ArticleText)
+		}
+		if item.OCRStatus != model.ItemOCRStatusOK || !strings.Contains(item.OCRText, "Social media OCR text") {
+			t.Fatalf("%s OCR was not persisted: status=%q text=%q", sourceKey, item.OCRStatus, item.OCRText)
+		}
 	}
 	for _, want := range []string{"==> import bluesky-bookmarks", "==> import mastodon-bookmarks", "==> transcribe x-media", "==> ocr x-photos"} {
 		if !strings.Contains(progress.String(), want) {
@@ -847,7 +878,7 @@ func TestRunSocialOnlyImportsReachSharedMediaWorkersWithXDisabled(t *testing.T) 
 	}
 }
 
-func seedSocialMediaWorkerFixture(t *testing.T, ctx context.Context, st *store.Store, sourceKey, sourceType, namespace string) {
+func seedSocialMediaWorkerFixture(t *testing.T, ctx context.Context, cfg config.Config, st *store.Store, sourceKey, sourceType, namespace string) {
 	t.Helper()
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	item, err := st.UpsertItem(ctx, model.Item{
@@ -874,14 +905,32 @@ func seedSocialMediaWorkerFixture(t *testing.T, ctx context.Context, st *store.S
 		if ref.MediaType == "video" {
 			ext = ".mp4"
 		}
+		localPath := "media/" + namespace + "/" + ref.MediaType + "/fixture" + ext
+		localAbs := filepath.Join(cfg.VaultDir, filepath.FromSlash(localPath))
+		if err := os.MkdirAll(filepath.Dir(localAbs), 0o755); err != nil {
+			t.Fatalf("MkdirAll %s/%s: %v", sourceKey, ref.MediaType, err)
+		}
+		if err := os.WriteFile(localAbs, []byte("synthetic "+ref.MediaType+" bytes"), 0o644); err != nil {
+			t.Fatalf("WriteFile %s/%s: %v", sourceKey, ref.MediaType, err)
+		}
 		if _, err := st.SaveMediaDownload(ctx, ref.MediaAssetID, model.MediaDownloadResult{
-			LocalPath:   "media/" + namespace + "/" + ref.MediaType + "/fixture" + ext,
+			LocalPath:   localPath,
 			ContentHash: sourceKey + "-" + ref.MediaType,
 			Status:      model.MediaDownloadStatusDownloaded, DownloadedAt: now,
 		}); err != nil {
 			t.Fatalf("SaveMediaDownload %s/%s: %v", sourceKey, ref.MediaType, err)
 		}
 	}
+}
+
+func installFakeSyncWorkerBinary(t *testing.T, name, stdout string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	script := "#!/bin/sh\nprintf '%s' '" + strings.ReplaceAll(stdout, "'", "'\"'\"'") + "'\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", name, err)
+	}
+	return path
 }
 
 func itemSourceKeys(items []model.Item) []string {

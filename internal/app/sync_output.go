@@ -64,18 +64,27 @@ func writeSyncStatsWithSemantic(
 	semanticErr error,
 	gc ...*syncSemanticGCResult,
 ) error {
-	if _, err := fmt.Fprintf(dst, "\nSync Summary\n"); err != nil {
-		return err
+	_, err := io.WriteString(dst, renderSyncStatsWithSemantic(outputWidth(dst), stats, semantic, semanticErr, gc...))
+	return err
+}
+
+func renderSyncStatsWithSemantic(
+	width int,
+	stats syncjob.Stats,
+	semantic semanticrefresh.Result,
+	semanticErr error,
+	gc ...*syncSemanticGCResult,
+) string {
+	if width < 80 {
+		width = 80
 	}
-	if _, err := fmt.Fprintf(dst, "Started:   %s\n", stats.StartedAt.Format(time.RFC3339)); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(dst, "Completed: %s\n", stats.CompletedAt.Format(time.RFC3339)); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(dst, "Duration:  %s\n\n", formatSyncDuration(stats.Duration)); err != nil {
-		return err
-	}
+	width = clampTerminalWidth(width)
+
+	var output strings.Builder
+	fmt.Fprintf(&output, "\nSync Summary\n")
+	fmt.Fprintf(&output, "Started:   %s\n", stats.StartedAt.Format(time.RFC3339))
+	fmt.Fprintf(&output, "Completed: %s\n", stats.CompletedAt.Format(time.RFC3339))
+	fmt.Fprintf(&output, "Duration:  %s\n\n", formatSyncDuration(stats.Duration))
 
 	rows := syncSummaryRows(stats)
 	rows = append(rows, semanticSyncSummaryRows(semantic, semanticErr)...)
@@ -85,6 +94,8 @@ func writeSyncStatsWithSemantic(
 		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("240"))).
 		Headers("Stage", "Duration", "Primary", "Secondary", "Errors").
 		Rows(rows...).
+		Width(width).
+		Wrap(true).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			base := lipgloss.NewStyle().Padding(0, 1)
 			if col == 1 {
@@ -101,11 +112,8 @@ func writeSyncStatsWithSemantic(
 			}
 			return base
 		})
-
-	if _, err := fmt.Fprintln(dst, t.String()); err != nil {
-		return err
-	}
-	return nil
+	fmt.Fprintln(&output, t.String())
+	return output.String()
 }
 
 func completeSyncStatsWithSemantic(stats syncjob.Stats, result semanticrefresh.Result) syncjob.Stats {
@@ -258,15 +266,15 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 	}
 	if stats.XMedia != nil {
 		s := stats.XMedia.Stats
-		rows = append(rows, []string{"X Media", formatSyncDuration(stats.XMedia.Duration), fmt.Sprintf("processed=%d transcribed=%d", s.ItemsProcessed, s.MediaTranscribed), fmt.Sprintf("summarized=%d skipped=%d", s.ItemsSummarized, s.ItemsSkipped), strconv.Itoa(s.Errors + s.SummaryErrors)})
+		rows = append(rows, []string{"Social Media Transcription", formatSyncDuration(stats.XMedia.Duration), fmt.Sprintf("queued=%d processed=%d media_candidates=%d media_with_audio=%d media_transcribed=%d", s.ItemsQueued, s.ItemsProcessed, s.MediaCandidates, s.MediaWithAudio, s.MediaTranscribed), fmt.Sprintf("updated=%d unchanged=%d summarized=%d summary_cands=%d skipped=%d", s.ItemsUpdated, s.ItemsUnchanged, s.ItemsSummarized, s.SummaryCandidates, s.ItemsSkipped), strconv.Itoa(s.Errors + s.SummaryErrors)})
 	}
 	if stats.XPhotoOCR != nil {
 		s := stats.XPhotoOCR.Stats
-		rows = append(rows, []string{"X Photo OCR", formatSyncDuration(stats.XPhotoOCR.Duration), fmt.Sprintf("processed=%d ocr=%d", s.ItemsProcessed, s.PhotosOCRed), fmt.Sprintf("updated=%d skipped=%d", s.ItemsUpdated, s.ItemsSkipped), strconv.Itoa(s.Errors)})
+		rows = append(rows, []string{"Social Media Photo OCR", formatSyncDuration(stats.XPhotoOCR.Duration), fmt.Sprintf("queued=%d processed=%d photo_candidates=%d photos_ocred=%d", s.ItemsQueued, s.ItemsProcessed, s.PhotoCandidates, s.PhotosOCRed), fmt.Sprintf("updated=%d unchanged=%d skipped=%d hosted_attempts=%d hosted_fallbacks=%d", s.ItemsUpdated, s.ItemsUnchanged, s.ItemsSkipped, s.HostedAttempts, s.HostedFallbacks), strconv.Itoa(s.Errors)})
 	}
 	if stats.Links != nil {
 		s := stats.Links.Stats
-		rows = append(rows, []string{"Links", formatSyncDuration(stats.Links.Duration), fmt.Sprintf("items_scanned=%d", s.ItemsScanned), fmt.Sprintf("queued=%d summarized=%d", s.SourcesQueued, s.SourcesSummarized), strconv.Itoa(s.Errors)})
+		rows = append(rows, []string{"Links", formatSyncDuration(stats.Links.Duration), fmt.Sprintf("items_scanned=%d links_found=%d", s.ItemsScanned, s.LinksFound), fmt.Sprintf("queued=%d extracted=%d summarized=%d rendered=%d unchanged=%d", s.SourcesQueued, s.SourcesExtracted, s.SourcesSummarized, s.SourcesRendered, s.SourcesUnchanged), strconv.Itoa(s.Errors)})
 	}
 	if stats.GitHub != nil {
 		s := stats.GitHub.Stats
@@ -282,17 +290,17 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 	}
 	if stats.Sources != nil {
 		s := stats.Sources.Stats
-		rows = append(rows, []string{"Sources", formatSyncDuration(stats.Sources.Duration), fmt.Sprintf("cycles=%d summarized=%d", s.WorkCycles, s.SourcesSummarized), fmt.Sprintf("stopped=%s", s.StoppedReason), strconv.Itoa(s.Errors)})
+		rows = append(rows, []string{"Sources", formatSyncDuration(stats.Sources.Duration), fmt.Sprintf("cycles=%d work_cycles=%d queued=%d extracted=%d", s.Cycles, s.WorkCycles, s.SourcesQueued, s.SourcesExtracted), fmt.Sprintf("summarized=%d rendered=%d unchanged=%d idle_polls=%d stopped=%s", s.SourcesSummarized, s.SourcesRendered, s.SourcesUnchanged, s.IdlePolls, s.StoppedReason), strconv.Itoa(s.Errors)})
 	}
 	if stats.Categorize != nil {
 		s := stats.Categorize.Stats
 		items := stats.Categorize.ItemStats
 		sources := stats.Categorize.SourceStats
-		rows = append(rows, []string{"Categorize", formatSyncDuration(stats.Categorize.Duration), fmt.Sprintf("items=%d/%d sources=%d/%d", items.Applied, items.Queued, sources.Applied, sources.Queued), fmt.Sprintf("succeeded=%d skipped=%d", s.Succeeded, s.Skipped), strconv.Itoa(s.Errors)})
+		rows = append(rows, []string{"Categorize", formatSyncDuration(stats.Categorize.Duration), fmt.Sprintf("items=%d/%d sources=%d/%d", items.Applied, items.Queued, sources.Applied, sources.Queued), fmt.Sprintf("succeeded=%d skipped=%d item_applied=%d source_applied=%d", s.Succeeded, s.Skipped, items.Applied, sources.Applied), strconv.Itoa(s.Errors)})
 	}
 	if stats.MediaArchive != nil {
 		s := stats.MediaArchive.Stats
-		rows = append(rows, []string{"Media Archive", formatSyncDuration(stats.MediaArchive.Duration), fmt.Sprintf("uploaded=%d archived=%d", s.Uploaded, s.Archived), fmt.Sprintf("pruned_files=%d unchanged=%d", s.LocalFilesPruned, s.Unchanged), strconv.Itoa(s.Errors)})
+		rows = append(rows, []string{"Media Archive", formatSyncDuration(stats.MediaArchive.Duration), fmt.Sprintf("candidates=%d uploaded=%d archived=%d", s.Candidates, s.Uploaded, s.Archived), fmt.Sprintf("unchanged=%d prune_skipped=%d pruned_files=%d pruned_rows=%d", s.Unchanged, s.PruneSkipped, s.LocalFilesPruned, s.LocalRowsPruned), strconv.Itoa(s.Errors)})
 	}
 	if stats.OKFExport != nil {
 		s := stats.OKFExport.Stats

@@ -720,6 +720,13 @@ func TestRunBookmarksForceRecoversTerminalBlockedMastodonMedia(t *testing.T) {
 	if mediaAttempts != 0 || ordinary.MediaDownloaded != 0 {
 		t.Fatalf("ordinary import retried blocked media: attempts=%d stats=%+v", mediaAttempts, ordinary)
 	}
+	ocrBeforeForce, err := st.ListItemsForXPhotoOCR(context.Background(), 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXPhotoOCR before force recovery: %v", err)
+	}
+	if len(ocrBeforeForce) != 0 {
+		t.Fatalf("terminal blocked Mastodon photo was unexpectedly OCR-eligible before recovery: %+v", ocrBeforeForce)
+	}
 
 	forced, err := RunBookmarksWithClient(context.Background(), cfg, st, client, BookmarkOptions{
 		AccountKey:      "hachyderm",
@@ -741,6 +748,13 @@ func TestRunBookmarksForceRecoversTerminalBlockedMastodonMedia(t *testing.T) {
 		refs[0].DownloadErrors != 0 ||
 		!strings.HasPrefix(refs[0].LocalPath, "media/mastodon/photo/") {
 		t.Fatalf("recovered media ref = %#v", refs[0])
+	}
+	ocrCandidates, err := st.ListItemsForXPhotoOCR(context.Background(), 10, false)
+	if err != nil {
+		t.Fatalf("ListItemsForXPhotoOCR after force recovery: %v", err)
+	}
+	if len(ocrCandidates) != 1 || ocrCandidates[0].SourceKey != "mastodon:https://hachyderm.io:443:account:42:uri:blocked-media" {
+		t.Fatalf("force-recovered Mastodon photo did not reach OCR selector: %+v", ocrCandidates)
 	}
 }
 

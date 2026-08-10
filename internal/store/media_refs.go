@@ -86,14 +86,44 @@ func (s *Store) ListMastodonMediaRefsForDownload(ctx context.Context, limit int,
 		JOIN item_media_links l ON l.item_id = i.id
 		JOIN media_assets a ON a.id = l.media_asset_id
 		WHERE i.source_type IN ('mastodon_bookmark', 'mastodon_quote', 'mastodon_reblog')
-			AND a.remote_url != ''`
+			AND a.remote_url != ''
+			AND NOT EXISTS (
+				SELECT 1
+				FROM item_media_links prior_link
+				JOIN items prior_item ON prior_item.id = prior_link.item_id
+				WHERE prior_link.media_asset_id = l.media_asset_id
+					AND prior_item.source_type IN ('mastodon_bookmark', 'mastodon_quote', 'mastodon_reblog')
+					AND (
+						prior_item.id < i.id
+						OR (prior_item.id = i.id AND prior_link.ordinal < l.ordinal)
+					)
+			)`
 	if !force {
 		query += `
 			AND ` + mediaDownloadRetryableWhere("a")
+	} else {
+		query += `
+			AND a.download_status IN ('', '` + model.MediaDownloadStatusPending + `', '` + model.MediaDownloadStatusError + `', '` + model.MediaDownloadStatusBlocked + `')`
 	}
-	query += `
-		ORDER BY a.discovered_at ASC, a.id ASC, i.id ASC, l.ordinal ASC
-		LIMIT ?`
+	if force {
+		query += `
+			ORDER BY
+				CASE WHEN a.last_download_attempt_at = '' THEN 0 ELSE 1 END,
+				a.last_download_attempt_at ASC,
+				CASE a.download_status
+					WHEN '` + model.MediaDownloadStatusPending + `' THEN 0
+					WHEN '' THEN 1
+					WHEN '` + model.MediaDownloadStatusError + `' THEN 2
+					WHEN '` + model.MediaDownloadStatusBlocked + `' THEN 3
+					ELSE 4
+				END,
+				a.discovered_at ASC, a.id ASC, i.id ASC, l.ordinal ASC
+			LIMIT ?`
+	} else {
+		query += `
+			ORDER BY a.discovered_at ASC, a.id ASC, i.id ASC, l.ordinal ASC
+			LIMIT ?`
+	}
 	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list Mastodon media refs for download: %w", err)
