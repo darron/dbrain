@@ -18,6 +18,16 @@ development date for the change set.
   active file plus canonical regular backups without following sibling
   symlinks or scanning arbitrary names.
 
+### MCP 2026-07-28 compatibility (2026-08-10)
+
+- **Stateless modern protocol path**: Added per-request protocol metadata,
+  `server/discover`, result envelopes/cache hints, and response server identity
+  while preserving the markerless legacy initialize and batch path.
+- **Transport validation**: Modern stdio and Streamable HTTP reject malformed
+  message shapes; HTTP validates mirrored version/method/name headers, Base64
+  sentinel names, notification `202` responses, JSON-RPC `404` method errors,
+  and `405` unsupported verbs without introducing sessions or SSE.
+
 ### Mastodon account authorization (2026-08-09)
 
 - **Instance-scoped read-only OAuth**: Added canonical per-account Mastodon
