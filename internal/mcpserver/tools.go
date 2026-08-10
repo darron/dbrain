@@ -6,6 +6,14 @@ import (
 	"fmt"
 )
 
+type unknownToolError struct {
+	name string
+}
+
+func (e unknownToolError) Error() string {
+	return fmt.Sprintf("unknown tool %q", e.name)
+}
+
 func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (map[string]interface{}, error) {
 	var params struct {
 		Name      string          `json:"name"`
@@ -18,7 +26,7 @@ func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (map[s
 	switch params.Name {
 	case "dbrain_audit":
 		if !s.capabilities.audit {
-			return nil, fmt.Errorf("unknown tool %q", params.Name)
+			return nil, unknownToolError{name: params.Name}
 		}
 		return s.callAudit(ctx, params.Arguments)
 	case "dbrain_search":
@@ -52,6 +60,6 @@ func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (map[s
 	case "dbrain_stats_backlog":
 		return s.toolStatsBacklog(ctx)
 	default:
-		return nil, fmt.Errorf("unknown tool %q", params.Name)
+		return nil, unknownToolError{name: params.Name}
 	}
 }

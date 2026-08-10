@@ -353,6 +353,34 @@ written to stderr so they do not corrupt the stdio protocol. A running server
 should emit one short debug line per request, including the MCP method, tool
 name when present, status, and duration.
 
+The server accepts both the markerless legacy request flow and the 2026-07-28
+stateless flow. Legacy clients may continue with `initialize` and bounded
+batches of up to 16 messages. Modern clients should begin with
+`server/discover`; every request is one newline-delimited JSON-RPC message and
+must carry protocol metadata in `params._meta`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "discover-1",
+  "method": "server/discover",
+  "params": {
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {},
+      "io.modelcontextprotocol/clientInfo": {"name": "example", "version": "1.0"}
+    }
+  }
+}
+```
+
+Modern responses include `resultType: "complete"` and response `_meta`
+server identity. Catalog and resource results also include conservative
+`ttlMs: 0` and `cacheScope: "private"` hints. Modern arrays, client-sent
+responses, null IDs, and non-object `params` are rejected; only the legacy
+markerless path accepts batches. Unsupported modern versions return `-32022`
+with the supported/requested versions.
+
 ### Streamable HTTP
 
 Use HTTP when `dbrain` should run continuously and remote agents should connect
@@ -365,8 +393,19 @@ dbrain serve mcp --transport http --addr 127.0.0.1:8743 --path /mcp
 ```
 
 The HTTP endpoint supports MCP Streamable HTTP POST requests and returns
-`application/json` responses. GET requests return `405 Method Not Allowed`
-because dbrain does not currently provide unsolicited SSE messages.
+`application/json` responses. Modern POST requests must include
+`Accept: application/json, text/event-stream`, `MCP-Protocol-Version`, and
+`Mcp-Method`; `tools/call`, `resources/read`, and `prompts/get` also require
+`Mcp-Name` matching the body. Non-ASCII or otherwise unsafe names use the
+`=?base64?...?=` sentinel encoding. Header values are checked against
+`params._meta`, `method`, and the relevant name/URI before dispatch.
+
+Modern POST bodies contain exactly one request or notification. Accepted
+notifications return `202 Accepted` with no body. Unknown JSON-RPC methods
+return `404 Not Found` with `-32601`; unsupported HTTP verbs, including GET
+and DELETE, return `405 Method Not Allowed`. The endpoint remains stateless:
+there is no `Mcp-Session-Id`, `Last-Event-ID` is ignored, and dbrain does not
+serve an SSE response stream.
 
 For Tailscale Serve, bind dbrain to localhost and expose it with Tailscale
 Serve:
@@ -419,7 +458,10 @@ Smoke test either HTTP-over-Tailscale or built-in `tsnet` with:
 curl -s https://dbrain.<tailnet>.ts.net/mcp \
   -H "Authorization: Bearer $DBRAIN_MCP_TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+  -H 'accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: tools/list' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
 ```
 
 Browser `GET /mcp` returns a short diagnostic and a copyable curl example. MCP
@@ -439,8 +481,9 @@ Security defaults:
   and dispatch it only when dbrain bearer auth is required and configured;
   private/tailnet reachability alone does not grant the capability.
 - Funnel refuses to start an MCP surface unless bearer auth is enabled.
-- JSON-RPC batches are limited to 16 requests; larger batches are rejected
-  before any member is dispatched on HTTP or stdio.
+- Markerless legacy JSON-RPC batches are limited to 16 requests; larger batches
+  are rejected before any member is dispatched. Modern requests are always one
+  message per POST or stdio line and never use batches.
 
 Create an MCP bearer token with:
 
