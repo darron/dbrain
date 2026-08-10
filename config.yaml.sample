@@ -87,6 +87,8 @@ metrics:
   detail: "stage" # DBRAIN_METRICS_DETAIL; stage, item, or model_call
   include_subject_keys: false # DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS; raw item/source keys are omitted by default
   strict: false # DBRAIN_METRICS_STRICT; fail the command on write errors after startup succeeds
+  rotate_max_bytes: 33554432 # DBRAIN_METRICS_ROTATE_MAX_BYTES; rotate before crossing this size; 0 disables rotation
+  rotate_keep_files: 5 # DBRAIN_METRICS_ROTATE_KEEP_FILES; retain metrics.jsonl.1 through .N; 0 keeps no backups, max 128
 
 notifications:
   enabled: false

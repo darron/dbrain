@@ -1,22 +1,31 @@
 package metrics
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/darron/dbrain/internal/runlock"
 	"github.com/darron/dbrain/internal/runtimeenv"
 )
 
-const SchemaVersion = "dbrain.metrics.v1"
+const (
+	SchemaVersion          = "dbrain.metrics.v1"
+	DefaultRotateMaxBytes  = int64(32 << 20)
+	DefaultRotateKeepFiles = 5
+	maxRotateKeepFiles     = 128
+)
 
 type Detail string
 
@@ -32,6 +41,8 @@ type Config struct {
 	Detail             Detail
 	IncludeSubjectKeys bool
 	Strict             bool
+	RotateMaxBytes     int64
+	RotateKeepFiles    int
 }
 
 type Event map[string]any
@@ -209,12 +220,22 @@ func ResolveConfig(rootDir string, logDir string) (Config, error) {
 	if err := validateDetail(detail); err != nil {
 		return Config{}, err
 	}
+	rotateMaxBytes, err := resolveRotateMaxBytes(rootDir)
+	if err != nil {
+		return Config{}, err
+	}
+	rotateKeepFiles, err := resolveRotateKeepFiles(rootDir)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		Enabled:            enabled,
 		Detail:             detail,
 		IncludeSubjectKeys: runtimeenv.FirstBool(rootDir, "DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS"),
 		Strict:             runtimeenv.FirstBool(rootDir, "DBRAIN_METRICS_STRICT"),
+		RotateMaxBytes:     rotateMaxBytes,
+		RotateKeepFiles:    rotateKeepFiles,
 	}
 	if !enabled {
 		return cfg, nil
@@ -228,6 +249,30 @@ func ResolveConfig(rootDir string, logDir string) (Config, error) {
 	}
 	cfg.Path = path
 	return cfg, nil
+}
+
+func resolveRotateMaxBytes(rootDir string) (int64, error) {
+	raw := strings.TrimSpace(runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_METRICS_ROTATE_MAX_BYTES"))
+	if raw == "" {
+		return DefaultRotateMaxBytes, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("invalid metrics.rotate_max_bytes %q; expected a non-negative integer", raw)
+	}
+	return value, nil
+}
+
+func resolveRotateKeepFiles(rootDir string) (int, error) {
+	raw := strings.TrimSpace(runtimeenv.FirstNonEmpty(rootDir, "DBRAIN_METRICS_ROTATE_KEEP_FILES"))
+	if raw == "" {
+		return DefaultRotateKeepFiles, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 || value > maxRotateKeepFiles {
+		return 0, fmt.Errorf("invalid metrics.rotate_keep_files %q; expected an integer from 0 through %d", raw, maxRotateKeepFiles)
+	}
+	return int(value), nil
 }
 
 func validateDetail(detail Detail) error {
@@ -252,18 +297,88 @@ func Open(cfg Config) (Sink, error) {
 	if strings.TrimSpace(cfg.Path) == "" {
 		return nil, fmt.Errorf("metrics.path is required when metrics are enabled")
 	}
+	if err := validateRotationConfig(cfg); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o755); err != nil {
 		return nil, fmt.Errorf("create metrics directory: %w", err)
 	}
-	file, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	lock, err := acquireMetricsLock(context.Background(), cfg.Path, runlock.Exclusive)
 	if err != nil {
-		return nil, fmt.Errorf("open metrics file: %w", err)
+		return nil, fmt.Errorf("acquire metrics rotation lock: %w", err)
+	}
+	if err := repairOversizedActive(cfg); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	if err := lock.Close(); err != nil {
+		return nil, fmt.Errorf("close metrics rotation lock: %w", err)
 	}
 	return &jsonlSink{
-		cfg: cfg,
-		w:   file,
-		c:   file,
+		cfg:  cfg,
+		path: cfg.Path,
 	}, nil
+}
+
+func validateRotationConfig(cfg Config) error {
+	if cfg.RotateMaxBytes < 0 {
+		return fmt.Errorf("invalid metrics.rotate_max_bytes %d; expected a non-negative integer", cfg.RotateMaxBytes)
+	}
+	if cfg.RotateKeepFiles < 0 || cfg.RotateKeepFiles > maxRotateKeepFiles {
+		return fmt.Errorf("invalid metrics.rotate_keep_files %d; expected an integer from 0 through %d", cfg.RotateKeepFiles, maxRotateKeepFiles)
+	}
+	return nil
+}
+
+func metricsLockPath(path string) string {
+	return filepath.Clean(path) + ".lock"
+}
+
+func acquireMetricsLock(ctx context.Context, path string, mode runlock.Mode) (*runlock.Lock, error) {
+	lock, err := runlock.AcquireContext(ctx, metricsLockPath(path), runlock.AcquireOptions{
+		Mode:     mode,
+		Metadata: "owner=metrics\n",
+	})
+	if err != nil {
+		return nil, err
+	}
+	metricsLockAcquired(mode)
+	return lock, nil
+}
+
+func repairOversizedActive(cfg Config) error {
+	if cfg.RotateMaxBytes <= 0 {
+		file, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return fmt.Errorf("open metrics file: %w", err)
+		}
+		return file.Close()
+	}
+	info, err := os.Stat(cfg.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		file, openErr := os.OpenFile(cfg.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if openErr != nil {
+			return fmt.Errorf("open metrics file: %w", openErr)
+		}
+		return file.Close()
+	}
+	if err != nil {
+		return fmt.Errorf("stat metrics file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("metrics path is not a regular file")
+	}
+	if info.Size() <= cfg.RotateMaxBytes {
+		return nil
+	}
+	if err := rotateActive(cfg.Path, cfg.RotateKeepFiles); err != nil {
+		return fmt.Errorf("repair oversized metrics file: %w", err)
+	}
+	file, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open metrics file after repair: %w", err)
+	}
+	return file.Close()
 }
 
 func NoopSink() Sink {
@@ -396,9 +511,11 @@ func (noopSink) Close() error             { return nil }
 type jsonlSink struct {
 	mu       sync.Mutex
 	cfg      Config
+	path     string
 	w        io.Writer
 	c        io.Closer
 	disabled bool
+	closed   bool
 	firstErr error
 }
 
@@ -434,6 +551,12 @@ func (s *jsonlSink) Emit(event Event) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		if s.firstErr != nil && s.cfg.Strict {
+			return s.firstErr
+		}
+		return s.recordFailureLocked(fmt.Errorf("metrics sink is closed"))
+	}
 	if s.disabled {
 		if s.cfg.Strict {
 			if s.firstErr != nil {
@@ -443,19 +566,35 @@ func (s *jsonlSink) Emit(event Event) error {
 		}
 		return nil
 	}
-	if _, err := s.w.Write(data); err != nil {
-		s.disabled = true
-		s.firstErr = err
-		if s.cfg.Strict {
-			return err
+	if s.w != nil {
+		if _, err := s.w.Write(data); err != nil {
+			return s.recordFailureLocked(err)
 		}
 		return nil
+	}
+	if err := s.emitRotated(data); err != nil {
+		return s.recordFailureLocked(err)
 	}
 	return nil
 }
 
 func (s *jsonlSink) Close() error {
-	if s == nil || s.c == nil {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		if s.cfg.Strict && s.firstErr != nil {
+			return s.firstErr
+		}
+		return nil
+	}
+	s.closed = true
+	if s.c == nil {
+		if s.cfg.Strict && s.firstErr != nil {
+			return s.firstErr
+		}
 		return nil
 	}
 	closeErr := s.c.Close()
@@ -463,4 +602,66 @@ func (s *jsonlSink) Close() error {
 		return s.firstErr
 	}
 	return closeErr
+}
+
+func (s *jsonlSink) recordFailureLocked(err error) error {
+	s.disabled = true
+	s.firstErr = err
+	if s.cfg.Strict {
+		return err
+	}
+	return nil
+}
+
+func (s *jsonlSink) emitRotated(data []byte) (err error) {
+	lock, err := acquireMetricsLock(context.Background(), s.path, runlock.Exclusive)
+	if err != nil {
+		return fmt.Errorf("acquire metrics rotation lock: %w", err)
+	}
+	defer func() {
+		if closeErr := lock.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close metrics rotation lock: %w", closeErr)
+		}
+	}()
+
+	file, err := os.OpenFile(s.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open metrics file: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("stat metrics file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return fmt.Errorf("metrics path is not a regular file")
+	}
+	rotate := s.cfg.RotateMaxBytes > 0 && info.Size() > s.cfg.RotateMaxBytes
+	if !rotate && s.cfg.RotateMaxBytes > 0 && info.Size() > 0 {
+		rotate = int64(len(data)) > s.cfg.RotateMaxBytes-info.Size()
+	}
+	if rotate {
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close metrics file before rotation: %w", err)
+		}
+		if err := rotateActive(s.path, s.cfg.RotateKeepFiles); err != nil {
+			return fmt.Errorf("rotate metrics file: %w", err)
+		}
+		file, err = os.OpenFile(s.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return fmt.Errorf("open metrics file after rotation: %w", err)
+		}
+	}
+	if written, writeErr := file.Write(data); writeErr != nil {
+		_ = file.Close()
+		return fmt.Errorf("write metrics file: %w", writeErr)
+	} else if written != len(data) {
+		_ = file.Close()
+		return fmt.Errorf("write metrics file: %w", io.ErrShortWrite)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close metrics file: %w", err)
+	}
+	return nil
 }

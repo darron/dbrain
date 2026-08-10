@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/darron/dbrain/internal/runlock"
 )
 
 const (
@@ -179,31 +183,28 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 		blockBytes = defaultReaderBlockBytes
 	}
 
-	// Open first with O_NONBLOCK, then validate the descriptor. This avoids a
-	// path-check/open race turning a swapped FIFO into a blocking audit read.
-	f, err := os.OpenFile(r.Path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	lock, err := acquireMetricsLock(ctx, r.Path, runlock.Shared)
 	if err != nil {
-		return window, fmt.Errorf("open resolved metrics file: %w", err)
+		return window, fmt.Errorf("acquire metrics read lock: %w", err)
 	}
-	defer func() { _ = f.Close() }()
-	openedInfo, err := f.Stat()
+	defer func() { _ = lock.Close() }()
+	paths, err := discoverMetricPaths(r.Path)
 	if err != nil {
-		return window, fmt.Errorf("stat resolved metrics file: %w", err)
+		return window, err
 	}
-	if !openedInfo.Mode().IsRegular() {
-		return window, fmt.Errorf("resolved metrics path is not a regular file")
-	}
-	startOffset := int64(0)
-	if openedInfo.Size() > maxBytes {
-		startOffset = openedInfo.Size() - maxBytes
+	if len(paths) == 0 {
+		return window, fmt.Errorf("open resolved metrics file: %w", os.ErrNotExist)
 	}
 
 	runs := map[string]*RunRecord{}
 	semantic := map[string]*semanticRefreshInternal{}
 	daily := map[string]map[string]*DailyArrival{}
 	foundBoundary := false
-	window.BytesRead, err = readLinesReverse(ctx, f, startOffset, openedInfo.Size(), blockBytes, func(line []byte, linePosition int64) bool {
+	byteBudgetHit := false
+	stopReading := false
+	visit := func(line []byte, linePosition int64) bool {
 		if err := ctx.Err(); err != nil {
+			stopReading = true
 			return false
 		}
 		line = bytes.TrimSpace(line)
@@ -212,6 +213,7 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 		}
 		if window.EventsRead >= maxEvents {
 			window.EventBudgetExhausted = true
+			stopReading = true
 			return false
 		}
 		window.EventsRead++
@@ -254,6 +256,7 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 		if at.Before(start) {
 			window.CoverageStart = at
 			foundBoundary = true
+			stopReading = true
 			return false
 		}
 		if window.CoverageStart.IsZero() || at.Before(window.CoverageStart) {
@@ -347,14 +350,44 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 			window.Markers = append(window.Markers, Marker{Event: name, At: at, ExplainsContinuity: explains})
 		}
 		return true
-	})
-	if err != nil {
-		return window, err
+	}
+	for pathIndex, path := range paths {
+		if stopReading {
+			break
+		}
+		if window.BytesRead >= maxBytes {
+			if !foundBoundary {
+				byteBudgetHit = pathIndex < len(paths)
+			}
+			break
+		}
+		file, info, openErr := openMetricReadFile(path)
+		if openErr != nil {
+			return window, openErr
+		}
+		remainingBytes := maxBytes - window.BytesRead
+		startOffset := int64(0)
+		if info.Size() > remainingBytes {
+			startOffset = info.Size() - remainingBytes
+			byteBudgetHit = true
+		}
+		readBytes, readErr := readLinesReverse(ctx, file, startOffset, info.Size(), blockBytes, visit)
+		window.BytesRead += readBytes
+		closeErr := file.Close()
+		if readErr != nil {
+			return window, readErr
+		}
+		if closeErr != nil {
+			return window, fmt.Errorf("close resolved metrics file: %w", closeErr)
+		}
+		if window.BytesRead >= maxBytes && !foundBoundary && pathIndex+1 < len(paths) {
+			byteBudgetHit = true
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return window, err
 	}
-	window.ByteBudgetExhausted = startOffset > 0 && !foundBoundary
+	window.ByteBudgetExhausted = byteBudgetHit && !foundBoundary
 	window.Semantic = latestSemanticActivity(semantic, runs, window.ByteBudgetExhausted || window.EventBudgetExhausted || window.ParseErrorCount > 0)
 
 	for _, run := range runs {
@@ -397,6 +430,56 @@ func (r *Reader) Read(ctx context.Context, start time.Time) (Window, error) {
 		window.Imports[source] = record
 	}
 	return window, nil
+}
+
+func discoverMetricPaths(path string) ([]string, error) {
+	path = filepath.Clean(path)
+	paths := make([]string, 0, maxRotateKeepFiles+1)
+	activeInfo, err := os.Lstat(path)
+	if err == nil {
+		if activeInfo.Mode().IsRegular() || activeInfo.Mode()&os.ModeSymlink != 0 {
+			paths = append(paths, path)
+		} else {
+			return nil, fmt.Errorf("resolved metrics path is not a regular file")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("stat resolved metrics file: %w", err)
+	}
+
+	for suffix := 1; suffix <= maxRotateKeepFiles; suffix++ {
+		candidate := rotatedMetricsPath(path, suffix)
+		info, statErr := os.Lstat(candidate)
+		if errors.Is(statErr, os.ErrNotExist) {
+			continue
+		}
+		if statErr != nil {
+			return nil, fmt.Errorf("stat rotated metrics file: %w", statErr)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		paths = append(paths, candidate)
+	}
+	return paths, nil
+}
+
+func openMetricReadFile(path string) (*os.File, os.FileInfo, error) {
+	// Open with O_NONBLOCK, then validate the descriptor. This avoids a
+	// path-check/open race turning a swapped FIFO into a blocking audit read.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open resolved metrics file: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, fmt.Errorf("stat resolved metrics file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, nil, fmt.Errorf("resolved metrics path is not a regular file")
+	}
+	return file, info, nil
 }
 
 func collectSemanticStage(record *semanticRefreshInternal, event map[string]any) {

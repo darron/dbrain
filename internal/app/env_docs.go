@@ -60,6 +60,8 @@ func configEnvSpecs() []envSpec {
 		{Key: "DBRAIN_METRICS_DETAIL", ConfigPath: "metrics.detail", Default: "stage", Description: "Metrics detail level: stage, item, or model_call."},
 		{Key: "DBRAIN_METRICS_INCLUDE_SUBJECT_KEYS", ConfigPath: "metrics.include_subject_keys", Default: "false", Description: "Include raw dbrain item/source keys in metrics instead of only deterministic subject hashes."},
 		{Key: "DBRAIN_METRICS_STRICT", ConfigPath: "metrics.strict", Default: "false", Description: "Return write failures as command errors after startup succeeds instead of disabling the sink."},
+		{Key: "DBRAIN_METRICS_ROTATE_MAX_BYTES", ConfigPath: "metrics.rotate_max_bytes", Default: "33554432", Description: "Rotate metrics.jsonl before an append crosses this byte size; zero disables rotation."},
+		{Key: "DBRAIN_METRICS_ROTATE_KEEP_FILES", ConfigPath: "metrics.rotate_keep_files", Default: "5", Description: "Retain this many numeric metrics backups (.1 through .N); zero retains none and the maximum is 128."},
 		{Key: "DBRAIN_AUDIT_REQUIRE_SQLITE_BACKUP", ConfigPath: "audit.require.sqlite_backup", Default: "false", Description: "Require remote SQLite backup configuration and freshness in production health audits."},
 		{Key: "DBRAIN_AUDIT_ENABLED", ConfigPath: "audit.enabled", Default: "false", Description: "Schedule read-only fast and standard production audits from serve remote."},
 		{Key: "DBRAIN_AUDIT_POST_SYNC_FAST", ConfigPath: "audit.post_sync_fast", Default: "true", Description: "Run one fast audit after each actual scheduled sync result and lock settlement."},

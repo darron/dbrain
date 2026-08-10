@@ -3,9 +3,11 @@ package metrics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"syscall"
@@ -500,6 +502,165 @@ func TestReaderUsesOnlyResolvedPathAndRequestedWindow(t *testing.T) {
 	}
 }
 
+func TestReaderReconstructsAcrossRotatedBackupsInChronologicalOrder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "metrics.jsonl")
+	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	writeMetricEvents(t, path, []map[string]any{
+		completedRunEvent("active-new", base.Add(4*time.Minute)),
+		completedRunEvent("active-latest", base.Add(5*time.Minute)),
+	})
+	writeMetricEvents(t, path+".1", []map[string]any{
+		completedRunEvent("backup-one-old", base.Add(2*time.Minute)),
+		completedRunEvent("backup-one-new", base.Add(3*time.Minute)),
+	})
+	writeMetricEvents(t, path+".2", []map[string]any{
+		completedRunEvent("backup-two", base.Add(time.Minute)),
+	})
+
+	window, err := NewReader(path).Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(window.Runs))
+	for _, run := range window.Runs {
+		got = append(got, run.ID)
+	}
+	want := []string{"backup-two", "backup-one-old", "backup-one-new", "active-new", "active-latest"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("run order = %#v, want %#v", got, want)
+	}
+}
+
+func TestReaderUsesBackupsWhenActiveIsMissingAndPreservesMissingFileError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "metrics.jsonl")
+	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	writeMetricEvents(t, path+".2", []map[string]any{completedRunEvent("backup-only", base)})
+	window, err := NewReader(path).Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("backup-only read: %v", err)
+	}
+	if len(window.Runs) != 1 || window.Runs[0].ID != "backup-only" {
+		t.Fatalf("backup-only runs = %#v", window.Runs)
+	}
+
+	missing := filepath.Join(t.TempDir(), "missing.jsonl")
+	_, err = NewReader(missing).Read(t.Context(), base.Add(-time.Hour))
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing read error = %v, want wrapped os.ErrNotExist", err)
+	}
+}
+
+func TestReaderAppliesByteAndEventBudgetsAcrossRotatedFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "metrics.jsonl")
+	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	writeMetricEvents(t, path, []map[string]any{completedRunEvent("active", base.Add(3*time.Minute))})
+	writeMetricEvents(t, path+".1", []map[string]any{
+		completedRunEvent("backup-new", base.Add(2*time.Minute)),
+		completedRunEvent("backup-old", base.Add(time.Minute)),
+	})
+	activeInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := NewReader(path)
+	reader.MaxEvents = 2
+	reader.MaxBytes = activeInfo.Size() + 1<<20
+	window, err := reader.Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.EventsRead != 2 || !window.EventBudgetExhausted {
+		t.Fatalf("event budget = events:%d exhausted:%v", window.EventsRead, window.EventBudgetExhausted)
+	}
+	if len(window.Runs) != 2 {
+		t.Fatalf("runs after global event budget = %#v", window.Runs)
+	}
+
+	reader = NewReader(path)
+	reader.MaxEvents = 100
+	reader.MaxBytes = activeInfo.Size()
+	window, err = reader.Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.BytesRead > activeInfo.Size() || !window.ByteBudgetExhausted {
+		t.Fatalf("byte budget = bytes:%d exhausted:%v active:%d", window.BytesRead, window.ByteBudgetExhausted, activeInfo.Size())
+	}
+}
+
+func TestReaderStopsAtTimeBoundaryAcrossRotatedFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "metrics.jsonl")
+	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	writeMetricEvents(t, path, []map[string]any{completedRunEvent("new", base.Add(2*time.Minute))})
+	writeMetricEvents(t, path+".1", []map[string]any{
+		completedRunEvent("boundary", base),
+		completedRunEvent("old", base.Add(-time.Minute)),
+	})
+	window, err := NewReader(path).Read(t.Context(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window.Runs) != 1 || window.Runs[0].ID != "new" || !window.CoverageStart.Equal(base.Add(-time.Minute)) {
+		t.Fatalf("boundary window = %#v", window)
+	}
+}
+
+func TestReaderSkipsNonCanonicalAndSymlinkBackups(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions are not portable on Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "metrics.jsonl")
+	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	writeMetricEvents(t, path+".1", []map[string]any{completedRunEvent("canonical", base)})
+	writeMetricEvents(t, path+".0002", []map[string]any{completedRunEvent("leading-zero", base)})
+	writeMetricEvents(t, path+".129", []map[string]any{completedRunEvent("above-ceiling", base)})
+	if err := os.Symlink(path+".1", path+".2"); err != nil {
+		t.Fatal(err)
+	}
+	window, err := NewReader(path).Read(t.Context(), base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window.Runs) != 1 || window.Runs[0].ID != "canonical" {
+		t.Fatalf("recognized backup runs = %#v", window.Runs)
+	}
+	for _, name := range []string{path + ".0002", path + ".129", path + ".2"} {
+		if _, err := os.Lstat(name); err != nil {
+			t.Fatalf("ignored sibling %q changed: %v", name, err)
+		}
+	}
+}
+
+func TestCanonicalRotatedSuffixAcceptsOnlyReservedShape(t *testing.T) {
+	path := filepath.Join("/tmp", "metrics.jsonl")
+	for _, test := range []struct {
+		name string
+		want int
+		ok   bool
+	}{
+		{name: "metrics.jsonl.1", want: 1, ok: true},
+		{name: "metrics.jsonl.128", want: 128, ok: true},
+		{name: "metrics.jsonl.0", ok: false},
+		{name: "metrics.jsonl.01", ok: false},
+		{name: "metrics.jsonl.129", ok: false},
+		{name: "metrics.jsonl.999999999999999999999999", ok: false},
+		{name: "metrics.jsonl.x", ok: false},
+		{name: "other.jsonl.1", ok: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := canonicalRotatedSuffix(path, filepath.Base(test.name))
+			if ok != test.ok || got != test.want {
+				t.Fatalf("canonicalRotatedSuffix(%q) = (%d, %v), want (%d, %v)", test.name, got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
+
 func writeMetricEvents(t *testing.T, path string, events []map[string]any) {
 	t.Helper()
 	var out strings.Builder
@@ -513,5 +674,17 @@ func writeMetricEvents(t *testing.T, path string, events []map[string]any) {
 	}
 	if err := os.WriteFile(path, []byte(out.String()), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func completedRunEvent(id string, at time.Time) map[string]any {
+	return map[string]any{
+		"schema":       SchemaVersion,
+		"event":        "sync.run.completed",
+		"run_id":       id,
+		"emitted_at":   at.Format(time.RFC3339Nano),
+		"started_at":   at.Add(-time.Second).Format(time.RFC3339Nano),
+		"completed_at": at.Format(time.RFC3339Nano),
+		"status":       "ok",
 	}
 }

@@ -661,10 +661,17 @@ metrics:
   enabled: true
   path: metrics.jsonl
   detail: model_call
+  rotate_max_bytes: 33554432
+  rotate_keep_files: 5
 ```
 
 `metrics.path` defaults to `<log_dir>/metrics.jsonl`, and relative paths are
-resolved under `log_dir`. Detail `stage` writes `sync.run.*` and
+resolved under `log_dir`. Rotation keeps the active path unchanged and uses
+canonical numeric siblings `metrics.jsonl.1` through `.128`; it rotates before
+an append crosses `metrics.rotate_max_bytes` (32 MiB by default), retains five
+backups by default, and treats `rotate_max_bytes: 0` or
+`rotate_keep_files: 0` as explicit disable/no-retention settings. Detail
+`stage` writes `sync.run.*` and
 `sync.stage.completed` events. Detail `item` also writes per-item/per-source
 categorization and source-summary completion events. Detail `model_call` adds
 `llm.call.completed` events for direct shared-client model calls. Metrics omit

@@ -5,6 +5,19 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Metrics JSONL rotation (2026-08-10)
+
+- **Bounded local metrics**: Added size-based rotation for the configured
+  `metrics.jsonl` path with a 32 MiB default, configurable retention of up to
+  128 numeric backups, explicit zero-value disable behavior, and reopen-time
+  repair of an already oversized active file. A single oversized event remains
+  intact.
+- **Safe concurrent reads/writes**: Writers and bounded readers share the
+  existing cross-platform run lock; active data files are opened and closed
+  per operation so rollover remains safe on Windows. Readers consume the
+  active file plus canonical regular backups without following sibling
+  symlinks or scanning arbitrary names.
+
 ### Mastodon account authorization (2026-08-09)
 
 - **Instance-scoped read-only OAuth**: Added canonical per-account Mastodon
