@@ -72,13 +72,26 @@ func modernObjectMarked(payload []byte) bool {
 	if err := json.Unmarshal(params, &fields); err != nil || fields == nil {
 		return false
 	}
-	_, ok = fields["_meta"]
+	metaRaw, ok := fields["_meta"]
+	if !ok || bytes.Equal(bytes.TrimSpace(metaRaw), []byte("null")) {
+		return false
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(metaRaw, &meta); err != nil || meta == nil {
+		return false
+	}
+	_, ok = meta[modernProtocolVersionKey]
 	return ok
 }
 
 func modernHeadersMarked(headers http.Header) bool {
-	for _, key := range []string{modernHeaderVersion, modernHeaderMethod, modernHeaderName} {
+	for _, key := range []string{modernHeaderMethod, modernHeaderName} {
 		if len(headers.Values(key)) != 0 {
+			return true
+		}
+	}
+	for _, value := range headers.Values(modernHeaderVersion) {
+		if value == modernProtocolVersion {
 			return true
 		}
 	}
@@ -97,9 +110,33 @@ func (s *Server) processModernPayload(ctx context.Context, payload []byte) (inte
 func (s *Server) handleModernPayload(ctx context.Context, payload []byte) (response, bool) {
 	req, invalid := decodeModernRequest(payload)
 	if invalid != nil {
+		if modernNotificationPayload(payload) {
+			return response{}, false
+		}
 		return *invalid, true
 	}
 	return s.handleModernRequest(ctx, req)
+}
+
+func modernNotificationPayload(payload []byte) bool {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 || trimmed[0] == '[' {
+		return false
+	}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &object); err != nil || object == nil {
+		return false
+	}
+	if _, hasID := object["id"]; hasID {
+		return false
+	}
+	jsonrpc, ok := rawString(object["jsonrpc"])
+	if !ok || jsonrpc != "2.0" {
+		return false
+	}
+	method, ok := rawString(object["method"])
+	return ok && strings.TrimSpace(method) != ""
 }
 
 func decodeModernRequest(payload []byte) (modernRequest, *response) {
@@ -256,7 +293,15 @@ func validModernID(raw json.RawMessage) bool {
 	return true
 }
 
-func (s *Server) handleModernRequest(ctx context.Context, req modernRequest) (response, bool) {
+func (s *Server) handleModernRequest(ctx context.Context, req modernRequest) (resp response, ok bool) {
+	if req.notification {
+		defer func() {
+			if ok {
+				resp = response{}
+				ok = false
+			}
+		}()
+	}
 	if req.version != modernProtocolVersion {
 		return modernError(req.ID, -32022, "unsupported protocol version", map[string]interface{}{
 			"supported": []string{modernProtocolVersion},
@@ -380,9 +425,15 @@ func modernResourceError(id json.RawMessage, params map[string]json.RawMessage, 
 func (s *Server) processModernHTTPPayload(ctx context.Context, payload []byte, headers http.Header) (interface{}, bool, int) {
 	req, invalid := decodeModernRequest(payload)
 	if invalid != nil {
+		if modernNotificationPayload(payload) {
+			return nil, false, http.StatusAccepted
+		}
 		return *invalid, true, http.StatusBadRequest
 	}
 	if invalid := validateModernHTTPHeaders(headers, req); invalid != nil {
+		if req.notification {
+			return nil, false, http.StatusAccepted
+		}
 		return *invalid, true, http.StatusBadRequest
 	}
 	result, ok := s.handleModernRequest(ctx, req)
