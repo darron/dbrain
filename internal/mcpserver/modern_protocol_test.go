@@ -124,6 +124,154 @@ func TestModernStdioValidationIsFailClosed(t *testing.T) {
 	}
 }
 
+func TestLegacyMetadataDoesNotSelectModernDispatch(t *testing.T) {
+	server := modernTestServer(t)
+	legacyRequests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "initialize",
+			body: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","_meta":{"progressToken":"init"}}}`,
+		},
+		{
+			name: "tools/list",
+			body: `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"progressToken":"list"}}}`,
+		},
+		{
+			name: "tools/call",
+			body: `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dbrain_stats_backlog","arguments":{},"_meta":{"progressToken":"call"}}}`,
+		},
+		{
+			name: "ping",
+			body: `{"jsonrpc":"2.0","id":4,"method":"ping","params":{"_meta":{"progressToken":"ping"}}}`,
+		},
+	}
+
+	for _, test := range legacyRequests {
+		t.Run(test.name, func(t *testing.T) {
+			result, ok := server.processPayload(t.Context(), []byte(test.body))
+			if !ok {
+				t.Fatal("legacy request did not return a response")
+			}
+			response, ok := result.(response)
+			if !ok {
+				t.Fatalf("legacy result type = %T, want response", result)
+			}
+			if response.Error != nil {
+				t.Fatalf("legacy request was modern-validated: %#v", response.Error)
+			}
+			if test.name == "initialize" {
+				initResult, ok := response.Result.(map[string]interface{})
+				if !ok || initResult["protocolVersion"] != protocolVersion {
+					t.Fatalf("legacy initialize result = %#v, want protocolVersion %q", response.Result, protocolVersion)
+				}
+			}
+			if test.name == "tools/call" {
+				if _, ok := response.Result.(map[string]interface{}); !ok {
+					t.Fatalf("legacy tools/call result = %#v, want executed tool result", response.Result)
+				}
+			}
+		})
+	}
+
+	notification := []byte(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1,"_meta":{"progressToken":"cancel"}}}`)
+	if result, ok := server.processPayload(t.Context(), notification); ok {
+		t.Fatalf("legacy notification emitted a response: %#v", result)
+	}
+
+	batch := []byte(`[{"jsonrpc":"2.0","id":5,"method":"ping","params":{"_meta":{"progressToken":"batch"}}},{"jsonrpc":"2.0","id":6,"method":"tools/list","params":{}}]`)
+	result, ok := server.processPayload(t.Context(), batch)
+	if !ok {
+		t.Fatal("legacy batch did not return responses")
+	}
+	responses, ok := result.([]response)
+	if !ok || len(responses) != 2 {
+		t.Fatalf("legacy batch result = %#v, want two responses", result)
+	}
+	for _, response := range responses {
+		if response.Error != nil {
+			t.Fatalf("legacy batch response = %#v", response.Error)
+		}
+	}
+}
+
+func TestModernNotificationsWithValidationErrorsDoNotRespond(t *testing.T) {
+	server := modernTestServer(t)
+	tests := []struct {
+		name    string
+		body    string
+		headers map[string]string
+	}{
+		{
+			name: "missing client capabilities",
+			body: `{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`,
+			headers: map[string]string{
+				"MCP-Protocol-Version": modernProtocolTestVersion,
+				"Mcp-Method":           "tools/list",
+			},
+		},
+		{
+			name: "unsupported version",
+			body: `{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2099-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}`,
+			headers: map[string]string{
+				"MCP-Protocol-Version": "2099-01-01",
+				"Mcp-Method":           "tools/list",
+			},
+		},
+	}
+	handler := server.HTTPHandler(HTTPOptions{Path: "/mcp"})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if result, ok := server.processPayload(t.Context(), []byte(test.body)); ok {
+				t.Fatalf("modern stdio notification emitted a response: %#v", result)
+			}
+
+			recorder := modernHTTPResponse(t, handler, test.body, test.headers)
+			if recorder.Code != http.StatusAccepted || recorder.Body.Len() != 0 {
+				t.Fatalf("modern notification = %d/%q, want 202 with no body", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	missingAccept := modernHTTPWithAccept(t, handler, tests[0].body, tests[0].headers, false)
+	if missingAccept.Code != http.StatusAccepted || missingAccept.Body.Len() != 0 {
+		t.Fatalf("modern notification with invalid headers = %d/%q, want 202 with no body", missingAccept.Code, missingAccept.Body.String())
+	}
+}
+
+func TestLegacyHTTPProtocolVersionHeadersDoNotSelectModern(t *testing.T) {
+	server := modernTestServer(t)
+	handler := server.HTTPHandler(HTTPOptions{Path: "/mcp"})
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+	for _, version := range []string{"2025-03-26", "2025-06-18"} {
+		t.Run(version, func(t *testing.T) {
+			recorder := modernHTTPResponse(t, handler, body, map[string]string{
+				"MCP-Protocol-Version": version,
+			})
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("legacy HTTP status = %d: %s", recorder.Code, recorder.Body.String())
+			}
+			var response map[string]interface{}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode legacy HTTP response: %v", err)
+			}
+			if response["error"] != nil {
+				t.Fatalf("legacy HTTP response = %#v", response)
+			}
+		})
+	}
+}
+
+func TestModernVersionHeaderAloneSelectsModern(t *testing.T) {
+	server := modernTestServer(t)
+	handler := server.HTTPHandler(HTTPOptions{Path: "/mcp"})
+	recorder := modernHTTPResponse(t, handler,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`,
+		map[string]string{"MCP-Protocol-Version": modernProtocolTestVersion})
+	assertModernHTTPError(t, recorder, http.StatusBadRequest, -32602)
+}
+
 func TestModernHTTPHeaderAndStatusMatrix(t *testing.T) {
 	server := modernTestServer(t)
 	handler := server.HTTPHandler(HTTPOptions{Path: "/mcp"})

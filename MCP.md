@@ -355,9 +355,12 @@ name when present, status, and duration.
 
 The server accepts both the markerless legacy request flow and the 2026-07-28
 stateless flow. Legacy clients may continue with `initialize` and bounded
-batches of up to 16 messages. Modern clients should begin with
-`server/discover`; every request is one newline-delimited JSON-RPC message and
-must carry protocol metadata in `params._meta`:
+batches of up to 16 messages. On stdio, a request is modern only when
+`params._meta` contains the `io.modelcontextprotocol/protocolVersion` metadata
+key; otherwise it remains on the legacy path. This makes legacy `_meta`
+metadata such as `progressToken` safe. Modern clients should begin with
+`server/discover`; every modern request is one newline-delimited JSON-RPC
+message and must carry protocol metadata in `params._meta`:
 
 ```json
 {
@@ -393,12 +396,19 @@ dbrain serve mcp --transport http --addr 127.0.0.1:8743 --path /mcp
 ```
 
 The HTTP endpoint supports MCP Streamable HTTP POST requests and returns
-`application/json` responses. Modern POST requests must include
-`Accept: application/json, text/event-stream`, `MCP-Protocol-Version`, and
-`Mcp-Method`; `tools/call`, `resources/read`, and `prompts/get` also require
-`Mcp-Name` matching the body. Non-ASCII or otherwise unsafe names use the
-`=?base64?...?=` sentinel encoding. Header values are checked against
-`params._meta`, `method`, and the relevant name/URI before dispatch.
+`application/json` responses. Legacy clients may repeat their negotiated
+`MCP-Protocol-Version` header, including `2025-03-26` or `2025-06-18`, without
+selecting the modern path. Modern POST requests are selected by a body whose
+`params._meta` contains the modern protocol-version key, by `Mcp-Method`, by
+`Mcp-Name`, or by the exact `MCP-Protocol-Version: 2026-07-28` marker. Once
+selected, they must include `Accept: application/json, text/event-stream`,
+`MCP-Protocol-Version`, and `Mcp-Method`; `tools/call`, `resources/read`, and
+`prompts/get` also require `Mcp-Name` matching the body. Thus the protocol
+version header is necessary for modern validation but is not, by itself, a
+modern marker when it carries a legacy or otherwise different negotiated
+version. Non-ASCII or otherwise unsafe names use the `=?base64?...?=` sentinel
+encoding. Header values are checked against `params._meta`, `method`, and the
+relevant name/URI before dispatch.
 
 Modern POST bodies contain exactly one request or notification. Accepted
 notifications return `202 Accepted` with no body. Unknown JSON-RPC methods
