@@ -24,6 +24,9 @@ development date for the change set.
   native call, and reader grace remains defense in depth. Semantic `used` still
   requires SQLite validation and exact reranking, not merely a warmed native
   root.
+- **Lifecycle coverage**: Web trace comparison now reuses the server-owned
+  semantic runtime, and runtime shutdown drains active builds before closing
+  cached roots.
 
 ### Metrics JSONL rotation (2026-08-10)
 

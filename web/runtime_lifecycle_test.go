@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -92,6 +93,43 @@ func TestWebResearchSurfacesReuseServerRuntime(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "runtime is shut down") {
 		t.Fatalf("trace-current harness ignored server runtime: %v", err)
+	}
+}
+
+func TestWebTraceCompareUsesServerRuntime(t *testing.T) {
+	cfg, st := openTestStore(t)
+	runtime := brainresearch.NewRuntime(cfg, st)
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("close runtime: %v", err)
+	}
+	s := &server{cfg: cfg, store: st, researchRuntime: runtime}
+
+	traceResult, err := researchtrace.Write(cfg, researchtrace.ResearchTrace{
+		SchemaVersion: researchtrace.SchemaVersion,
+		RunID:         "web-trace-compare-runtime",
+		Surface:       "web_chat",
+		Question:      "Alpha",
+		StartedAt:     time.Now().UTC(),
+		CompletedAt:   time.Now().UTC(),
+		Pack:          &brainresearch.Pack{Question: "Alpha"},
+	}, researchtrace.ArtifactContents{}, researchtrace.WriteOptions{Retention: researchtrace.RetentionOptions{KeepAll: true}})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	body, err := json.Marshal(ResearchTraceCompareRequest{TracePath: traceResult.RelativePath})
+	if err != nil {
+		t.Fatalf("marshal compare body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/research/trace-compare", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	s.handleResearchTraceCompare(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "semantic research runtime is shut down") {
+		t.Fatalf("trace compare did not use the server runtime: %s", rec.Body.String())
 	}
 }
 

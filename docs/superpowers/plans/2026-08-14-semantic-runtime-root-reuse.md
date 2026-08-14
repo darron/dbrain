@@ -58,6 +58,7 @@ The plan therefore separates runtime usability from ranking quality. After imple
 - `internal/researchsemantic/retriever.go` — expose the acquired generation lease to the searcher through request context and retain/release it around a detached cache load; preserve cancellation and lease-release error semantics.
 - `internal/researchrun/run.go` — retain one `brainresearch.Runtime` across initial retrieval and the one bounded retry.
 - `internal/researcheval/run.go` — retain one runtime across all cases so the eval records cold and warm behavior instead of reopening every root.
+- `internal/researcheval/trace.go` — let trace replay use an owner-supplied runtime while preserving the transient compatibility wrapper for the CLI.
 - `internal/mcpeval/run.go` and `internal/mcpeval/retrieval.go` — retain one MCP server/runtime across an eval report and close it once.
 - `internal/mcpserver/server.go` and `internal/mcpserver/research.go` — own a reusable research runtime and expose idempotent server shutdown.
 - `internal/mcpserver/transport_stdio.go` and `internal/mcpserver/http.go` — close the server/runtime with the transport lifecycle.
@@ -486,6 +487,24 @@ Decision: `do_not_enable_on_globally_yet`. The runtime fix is operational and
 safe to carry forward, but the current model/ranking behavior does not yet
 justify enabling semantic retrieval by default across future versions and
 platforms.
+
+### Claude code review follow-up
+
+The adversarial Claude review of `b4edc87` found no cache-state-machine blocker,
+but identified two lifecycle gaps. Both were verified against the code and
+fixed:
+
+- Web trace comparison now calls `researcheval.DiffTraceWithRuntime` with the
+  server-owned runtime, so trace replay no longer rebuilds a transient cache on
+  every request. `TestWebTraceCompareUsesServerRuntime` fails against the old
+  wiring and passes with the fix.
+- `Runtime.Shutdown` now waits for active builds before closing the root cache.
+  `TestRuntimeShutdownDrainsBuildBeforeClosingRootCache` fails against the old
+  ordering and passes with the fix.
+
+Focused tests, the full default gate, and the tagged native suite were rerun
+after these fixes; a focused Claude confirmation was requested against the
+revised checkout.
 
 ## Acceptance Criteria
 

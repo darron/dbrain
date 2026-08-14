@@ -2,6 +2,7 @@ package researcheval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,22 @@ func LoadTrace(path string) (researchtrace.ResearchTrace, string, error) {
 }
 
 func DiffTrace(ctx context.Context, cfg config.Config, st *store.Store, path string) (TraceDiff, error) {
+	return DiffTraceWithRuntime(ctx, cfg, st, nil, path)
+}
+
+// DiffTraceWithRuntime reruns a trace through the supplied owner runtime. A
+// nil runtime keeps the compatibility behavior of creating a transient one.
+func DiffTraceWithRuntime(ctx context.Context, cfg config.Config, st *store.Store, runtime *brainresearch.Runtime, path string) (diff TraceDiff, err error) {
+	if runtime == nil {
+		runtime = brainresearch.NewRuntime(cfg, st)
+		defer func() {
+			err = errors.Join(err, runtime.Close())
+		}()
+	}
+	return diffTraceWithRuntime(ctx, cfg, runtime, path)
+}
+
+func diffTraceWithRuntime(ctx context.Context, cfg config.Config, runtime *brainresearch.Runtime, path string) (TraceDiff, error) {
 	resolved, err := resolveTraceJSON(path, cfg)
 	if err != nil {
 		return TraceDiff{}, err
@@ -37,7 +54,7 @@ func DiffTrace(ctx context.Context, cfg config.Config, st *store.Store, path str
 	}
 
 	opts := OptionsFromTrace(trace)
-	pack, err := brainresearch.Build(ctx, cfg, st, opts)
+	pack, err := runtime.Build(ctx, opts)
 	if err != nil {
 		return TraceDiff{}, fmt.Errorf("rerun trace %s: %w", resolved, err)
 	}

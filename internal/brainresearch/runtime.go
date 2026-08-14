@@ -359,8 +359,8 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	r.closeOnce.Do(func() {
 		buildsDrained := r.activeBuilds.shutdown()
 		go func() {
-			cacheErr := r.rootCache.Close()
 			<-buildsDrained
+			cacheErr := r.rootCache.Close()
 			r.closeMu.Lock()
 			r.closeErr = cacheErr
 			r.closeMu.Unlock()

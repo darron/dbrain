@@ -103,6 +103,88 @@ func TestRuntimeShutdownRejectsNewBuilds(t *testing.T) {
 	}
 }
 
+func TestRuntimeShutdownDrainsBuildBeforeClosingRootCache(t *testing.T) {
+	root := t.TempDir()
+	writeRuntimeSemanticConfig(t, root, "on", "embed-model", 2)
+	_, st := inspectionTestStore(t)
+	readinessStarted := make(chan struct{})
+	releaseReadiness := make(chan struct{})
+	cacheClosed := make(chan struct{})
+	deps := runtimeDeps{
+		readiness: func(ctx context.Context, _ *store.Store, _ embedding.Profile, _ int, _ time.Time) (semanticreadiness.Snapshot, error) {
+			close(readinessStarted)
+			select {
+			case <-releaseReadiness:
+				return runtimeReadySnapshot(false), nil
+			case <-ctx.Done():
+				return semanticreadiness.Snapshot{}, ctx.Err()
+			}
+		},
+		provider: func(semanticconfig.Config) (embedding.Provider, error) {
+			return &runtimeProvider{info: embedding.Info{Provider: "ollama", Model: "embed-model", Dimensions: 2}}, nil
+		},
+		searcher: func(_ context.Context, runtime *Runtime, _ embedding.Profile, _ semanticreadiness.Snapshot, _ int) (semanticindex.Searcher, error) {
+			return semanticindex.NewExact(runtime.st), nil
+		},
+		rootLoader: func(context.Context, *Runtime, semanticruntime.RootKey) (semanticruntime.LoadedSearcher, error) {
+			return semanticruntime.LoadedSearcher{
+				Searcher: semanticindex.NewExact(st),
+				Close: func() error {
+					close(cacheClosed)
+					return nil
+				},
+			}, nil
+		},
+	}
+	runtime := newRuntimeWithDeps(config.Config{RootDir: root}, st, deps)
+	key := semanticruntime.RootKey{CacheDir: "cache", DatabaseID: "database", ProfileID: "profile", GenerationID: "generation"}
+	lease, err := runtime.rootCache.Acquire(t.Context(), key, func() (func() error, error) {
+		return func() error { return nil }, nil
+	})
+	if err != nil {
+		t.Fatalf("acquire test root: %v", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("close test root lease: %v", err)
+	}
+
+	type buildResult struct {
+		builder *Builder
+		err     error
+	}
+	buildDone := make(chan buildResult, 1)
+	go func() {
+		builder, err := runtime.NewBuilderContext(context.Background(), "", false, false)
+		buildDone <- buildResult{builder: builder, err: err}
+	}()
+	<-readinessStarted
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- runtime.Shutdown(context.Background()) }()
+	select {
+	case <-cacheClosed:
+		t.Fatal("runtime closed the root cache before the active build drained")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseReadiness)
+	result := <-buildDone
+	if result.err != nil {
+		t.Fatalf("runtime build: %v", result.err)
+	}
+	if err := result.builder.Close(); err != nil {
+		t.Fatalf("close runtime builder: %v", err)
+	}
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("runtime shutdown: %v", err)
+	}
+	select {
+	case <-cacheClosed:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not close the root cache after the build drained")
+	}
+}
+
 func TestRuntimeRootSpecsRemainBoundedAcrossGenerationChanges(t *testing.T) {
 	runtime := newRuntimeWithDeps(config.Config{}, nil, runtimeDeps{
 		rootLoader: func(context.Context, *Runtime, semanticruntime.RootKey) (semanticruntime.LoadedSearcher, error) {
