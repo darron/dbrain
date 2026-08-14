@@ -34,7 +34,7 @@ func TestRemoteMCPAuditCapabilityFollowsFinalizedBearerAuth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildHandler: %v", err)
 		}
-		defer cleanup()
+		defer func() { _ = cleanup() }()
 		listed := remoteMCPPost(t, handler, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
 		if remoteMCPHasAuditTool(t, listed) {
 			t.Fatalf("auth-disabled remote advertised dbrain_audit: %#v", listed)
@@ -66,7 +66,7 @@ func TestRemoteMCPAuditCapabilityFollowsFinalizedBearerAuth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildHandler: %v", err)
 		}
-		defer cleanup()
+		defer func() { _ = cleanup() }()
 		listed := remoteMCPPost(t, handler, created.Token, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
 		if !remoteMCPHasAuditTool(t, listed) {
 			t.Fatalf("authenticated remote omitted dbrain_audit: %#v", listed)

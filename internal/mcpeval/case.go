@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
+	"github.com/darron/dbrain/internal/mcpserver"
 	"github.com/darron/dbrain/internal/store"
 )
 
-func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (CaseResult, error) {
+func runCase(ctx context.Context, cfg config.Config, st *store.Store, server *mcpserver.Server, tc Case) (CaseResult, error) {
 	name := strings.TrimSpace(tc.Name)
 	if name == "" {
 		name = strings.TrimSpace(tc.Question)
@@ -21,7 +22,7 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 	}
 
 	started := time.Now()
-	response, exactTagEvidence, err := runRetrievalCase(ctx, cfg, st, tc)
+	response, exactTagEvidence, err := runRetrievalCase(ctx, cfg, st, server, tc)
 	if err != nil {
 		return CaseResult{}, fmt.Errorf("run eval case %q: %w", name, err)
 	}

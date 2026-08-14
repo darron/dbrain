@@ -41,13 +41,10 @@ func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions, depende
 		return err
 	}
 	logMCPServer("store_opened", "duration", time.Since(start).String())
-	defer func() {
-		_ = st.Close()
-	}()
 
 	if err := ApplyRuntimeAuthOptions(cfg, st, &opts); err != nil {
 		logMCPServer("http_auth_config_failed", "duration", time.Since(start).String(), "error", err.Error())
-		return err
+		return errors.Join(err, st.Close())
 	}
 	if opts.RequireBearerAuth {
 		logMCPServer("http_bearer_auth_enabled")
@@ -66,7 +63,7 @@ func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions, depende
 	listener, err := net.Listen("tcp", httpServer.Addr)
 	if err != nil {
 		logMCPServer("http_listen_failed", "duration", time.Since(start).String(), "error", err.Error())
-		return err
+		return errors.Join(err, closeServerStore(server, st, 5*time.Second))
 	}
 
 	errCh := make(chan error, 1)
@@ -81,17 +78,33 @@ func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions, depende
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			logMCPServer("http_shutdown_failed", "duration", time.Since(start).String(), "error", err.Error())
+			if shutdownCtx.Err() != nil && errors.Is(err, shutdownCtx.Err()) {
+				go func() {
+					_ = httpServer.Shutdown(context.Background())
+					_ = server.Close()
+					_ = st.Close()
+				}()
+				return err
+			}
+			return errors.Join(err, closeServerStore(server, st, 5*time.Second))
+		}
+		if err := closeServerStore(server, st, 5*time.Second); err != nil {
 			return err
 		}
 		logMCPServer("exiting_http", "duration", time.Since(start).String(), "error", "")
 		return nil
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		cleanupErr := closeServerStore(server, st, 5*time.Second)
+		joined := errors.Join(err, cleanupErr)
+		if joined == nil {
 			logMCPServer("exiting_http", "duration", time.Since(start).String(), "error", "")
 			return nil
 		}
-		logMCPServer("exiting_http", "duration", time.Since(start).String(), "error", err.Error())
-		return err
+		logMCPServer("exiting_http", "duration", time.Since(start).String(), "error", joined.Error())
+		return joined
 	}
 }
 

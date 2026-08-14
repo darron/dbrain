@@ -58,6 +58,7 @@ func (s *server) handleResearchRun(w http.ResponseWriter, r *http.Request) {
 	rawQuestion := runnerRawQuestion(req)
 	chatContinuity := runnerChatContinuity(req, rawQuestion)
 	result, err := researchrun.Run(r.Context(), s.cfg, s.store, researchrun.Options{
+		Runtime:            s.researchRuntime,
 		Question:           req.Question,
 		RawQuestion:        rawQuestion,
 		SynthesisQuestion:  runnerSynthesisQuestion(req),

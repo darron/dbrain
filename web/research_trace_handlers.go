@@ -78,6 +78,7 @@ func runTraceCurrentHarness(r *http.Request, s *server, trace researchtrace.Rese
 	opts := researcheval.OptionsFromTrace(trace)
 	traceDisabled := false
 	result, err := researchrun.Run(r.Context(), s.cfg, s.store, researchrun.Options{
+		Runtime:               s.researchRuntime,
 		Question:              opts.Question,
 		Topic:                 opts.Topic,
 		Limit:                 opts.Limit,

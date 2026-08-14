@@ -542,6 +542,31 @@ func TestServeWithDepsShutdownOrder(t *testing.T) {
 	assertEventOrder(t, events, "listener-close", "node-close", "lock-close")
 }
 
+func TestServeWithDepsSurfacesHandlerCleanupError(t *testing.T) {
+	events := []string{}
+	listener := newBlockingListener(&events)
+	node := &fakeRemoteNode{
+		status:   &ipnstate.Status{CertDomains: []string{"dbrain.example.ts.net."}},
+		localErr: errors.New("no local client"),
+		listener: listener,
+		events:   &events,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := testServeOptions(t)
+	opts.OnReady = cancel
+	want := errors.New("handler cleanup failed")
+	deps := testRemoteDeps(node, &events)
+	deps.buildHandler = func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func() error, error) {
+		return http.NotFoundHandler(), func() error { return want }, nil
+	}
+
+	err := serveWithDeps(ctx, config.Config{}, opts, &bytes.Buffer{}, deps)
+	if !errors.Is(err, want) {
+		t.Fatalf("serve error = %v, want joined cleanup error", err)
+	}
+}
+
 func TestServeWithDepsWarnsWhenFunnelEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -563,11 +588,11 @@ func TestServeWithDepsWarnsWhenFunnelEnabled(t *testing.T) {
 	opts.OnReady = cancel
 	var out bytes.Buffer
 	deps := testRemoteDeps(node, &events)
-	deps.buildHandler = func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error) {
+	deps.buildHandler = func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func() error, error) {
 		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte("ok"))
 		})
-		return handler, func() {}, nil
+		return handler, func() error { return nil }, nil
 	}
 
 	if err := serveWithDeps(ctx, loadRemoteAuthTestConfig(t, true, false), opts, &out, deps); err != nil {
@@ -715,12 +740,13 @@ func testRemoteDeps(node *fakeRemoteNode, events *[]string) remoteDeps {
 		newNode: func(Options, SecretResult, func(string, ...any), io.Writer) remoteNode {
 			return node
 		},
-		buildHandler: func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error) {
+		buildHandler: func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func() error, error) {
 			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte("ok"))
 			})
-			cleanup := func() {
+			cleanup := func() error {
 				*events = append(*events, "cleanup")
+				return nil
 			}
 			return handler, cleanup, nil
 		},

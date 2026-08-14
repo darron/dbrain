@@ -57,5 +57,12 @@ func (s *Server) toolResearchPack(ctx context.Context, raw json.RawMessage) (map
 }
 
 func (s *Server) BuildResearchPack(ctx context.Context, opts ResearchPackOptions) (ResearchPack, error) {
-	return brainresearch.Build(ctx, s.cfg, s.st, opts)
+	if s == nil || s.lifecycle == nil {
+		return ResearchPack{}, errServerClosed
+	}
+	if err := s.lifecycle.beginRequest(); err != nil {
+		return ResearchPack{}, err
+	}
+	defer s.lifecycle.endRequest()
+	return s.lifecycle.buildResearchPack(ctx, opts)
 }

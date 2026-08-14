@@ -2,6 +2,7 @@ package researcheval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -17,17 +18,21 @@ import (
 
 const evalPreparedSynthesisModel = "eval/research/no-call"
 
-func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Report, error) {
+func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (report Report, err error) {
 	started := time.Now().UTC()
-	report := Report{
+	report = Report{
 		StartedAt: started.Format(time.RFC3339),
 		Cases:     make([]CaseResult, 0, len(opts.Cases)),
 	}
+	runtime := brainresearch.NewRuntime(cfg, st)
+	defer func() {
+		err = errors.Join(err, runtime.Close())
+	}()
 
 	for _, tc := range opts.Cases {
-		result, err := runCase(ctx, cfg, st, tc)
-		if err != nil {
-			return Report{}, err
+		result, caseErr := runCase(ctx, cfg, st, runtime, tc)
+		if caseErr != nil {
+			return Report{}, caseErr
 		}
 		if result.Passed {
 			report.Passed++
@@ -40,7 +45,7 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 	return report, nil
 }
 
-func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (CaseResult, error) {
+func runCase(ctx context.Context, cfg config.Config, st *store.Store, runtime *brainresearch.Runtime, tc Case) (CaseResult, error) {
 	name := strings.TrimSpace(tc.Name)
 	if name == "" {
 		name = strings.TrimSpace(tc.Question)
@@ -49,11 +54,11 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 		return CaseResult{}, fmt.Errorf("research eval case %q has empty question", name)
 	}
 	if tc.RunWithRunner {
-		return runCaseWithRunner(ctx, cfg, st, name, tc)
+		return runCaseWithRunner(ctx, cfg, st, runtime, name, tc)
 	}
 
 	started := time.Now()
-	pack, err := brainresearch.Build(ctx, cfg, st, brainOptions(tc))
+	pack, err := runtime.Build(ctx, brainOptions(tc))
 	if err != nil {
 		return CaseResult{}, fmt.Errorf("run research eval case %q: %w", name, err)
 	}
@@ -85,9 +90,9 @@ func runCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (
 	return result, nil
 }
 
-func runCaseWithRunner(ctx context.Context, cfg config.Config, st *store.Store, name string, tc Case) (CaseResult, error) {
+func runCaseWithRunner(ctx context.Context, cfg config.Config, st *store.Store, runtime *brainresearch.Runtime, name string, tc Case) (CaseResult, error) {
 	started := time.Now()
-	runResult, err := researchrun.Run(ctx, cfg, st, runnerOptions(tc))
+	runResult, err := researchrun.Run(ctx, cfg, st, runnerOptions(tc, runtime))
 	if err != nil {
 		return CaseResult{}, fmt.Errorf("run research runner eval case %q: %w", name, err)
 	}
@@ -192,10 +197,11 @@ func brainOptions(tc Case) brainresearch.Options {
 	}
 }
 
-func runnerOptions(tc Case) researchrun.Options {
+func runnerOptions(tc Case, runtime *brainresearch.Runtime) researchrun.Options {
 	timeout := time.Duration(tc.PlannerTimeoutMS) * time.Millisecond
 	traceEnabled := false
 	return researchrun.Options{
+		Runtime:               runtime,
 		Question:              tc.Question,
 		RawQuestion:           tc.RawQuestion,
 		SynthesisQuestion:     firstNonEmpty(tc.RawQuestion, tc.Question),

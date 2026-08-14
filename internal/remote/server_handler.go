@@ -2,8 +2,11 @@ package remote
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/mcpserver"
@@ -12,12 +15,41 @@ import (
 	"github.com/darron/dbrain/web"
 )
 
-func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIsClient, logOut io.Writer) (http.Handler, func(), error) {
-	var closers []io.Closer
-	cleanup := func() {
-		for i := len(closers) - 1; i >= 0; i-- {
-			_ = closers[i].Close()
-		}
+type runtimeOwner interface {
+	Close() error
+	Shutdown(context.Context) error
+}
+
+func closeOwnedStore(owner runtimeOwner, closeStore func() error, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	shutdownErr := owner.Shutdown(ctx)
+	if ctx.Err() != nil && errors.Is(shutdownErr, ctx.Err()) {
+		go func() {
+			_ = owner.Close()
+			_ = closeStore()
+		}()
+		return shutdownErr
+	}
+	return errors.Join(shutdownErr, closeStore())
+}
+
+const handlerCleanupTimeout = 10 * time.Second
+
+func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIsClient, logOut io.Writer) (http.Handler, func() error, error) {
+	var cleanups []func() error
+	var cleanupOnce sync.Once
+	var cleanupErr error
+	cleanup := func() error {
+		cleanupOnce.Do(func() {
+			for i := len(cleanups) - 1; i >= 0; i-- {
+				cleanupErr = errors.Join(cleanupErr, cleanups[i]())
+			}
+		})
+		return cleanupErr
+	}
+	fail := func(err error) (http.Handler, func() error, error) {
+		return nil, nil, errors.Join(err, cleanup())
 	}
 
 	var webHandler http.Handler
@@ -26,10 +58,8 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 			MigrationReporter: startuplog.MigrationReporter(logOut),
 		})
 		if err != nil {
-			cleanup()
-			return nil, nil, err
+			return fail(err)
 		}
-		closers = append(closers, st)
 		webHandler, err = web.NewHandlerWithOptions(cfg, st, web.HandlerOptions{
 			SchedulerStatus:       opts.SchedulerStatus,
 			Context:               ctx,
@@ -40,28 +70,35 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 			AuditStandardInterval: opts.webAudit.StandardInterval,
 		})
 		if err != nil {
-			cleanup()
-			return nil, nil, err
+			return fail(errors.Join(err, st.Close()))
 		}
+		owner, ok := webHandler.(web.CloseableHandler)
+		if !ok {
+			return fail(errors.Join(errors.New("web handler does not expose lifecycle cleanup"), st.Close()))
+		}
+		cleanups = append(cleanups, func() error {
+			return closeOwnedStore(owner, st.Close, handlerCleanupTimeout)
+		})
 	}
 
 	var mcpHandler http.Handler
 	if opts.MCP {
 		st, err := store.OpenReadOnly(cfg.DBPath)
 		if err != nil {
-			cleanup()
-			return nil, nil, err
+			return fail(err)
 		}
-		closers = append(closers, st)
 		httpOptions := mcpserver.HTTPOptions{
 			Path:      opts.MCPPath,
 			LogOutput: logOut,
 		}
 		if err := mcpserver.ApplyRuntimeAuthOptions(cfg, st, &httpOptions); err != nil {
-			cleanup()
-			return nil, nil, err
+			return fail(errors.Join(err, st.Close()))
 		}
-		mcpHandler = mcpserver.NewWithDependencies(cfg, st, opts.mcpDependencies).HTTPHandler(httpOptions)
+		server := mcpserver.NewWithDependencies(cfg, st, opts.mcpDependencies)
+		mcpHandler = server.HTTPHandler(httpOptions)
+		cleanups = append(cleanups, func() error {
+			return closeOwnedStore(server, st.Close, handlerCleanupTimeout)
+		})
 	}
 
 	handler, err := NewHandler(HandlerOptions{
@@ -73,8 +110,7 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 		MCPHandler: mcpHandler,
 	})
 	if err != nil {
-		cleanup()
-		return nil, nil, err
+		return fail(err)
 	}
 	if lc != nil {
 		handler = identityLogger(lc, handler, logOut)

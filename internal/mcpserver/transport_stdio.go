@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,18 +25,32 @@ func Serve(ctx context.Context, cfg config.Config, in io.Reader, out io.Writer, 
 		return err
 	}
 	logMCPServer("store_opened", "duration", time.Since(start).String())
-	defer func() {
-		_ = st.Close()
-	}()
 
 	server := NewWithDependencies(cfg, st, firstServerDependencies(dependencies))
 	logMCPServer("ready")
-	if err := server.Serve(ctx, in, out); err != nil {
+	serveErr := server.Serve(ctx, in, out)
+	cleanupErr := closeServerStore(server, st, 5*time.Second)
+	err = errors.Join(serveErr, cleanupErr)
+	if err != nil {
 		logMCPServer("exiting", "duration", time.Since(start).String(), "error", err.Error())
 		return err
 	}
 	logMCPServer("exiting", "duration", time.Since(start).String(), "error", "")
 	return nil
+}
+
+func closeServerStore(server *Server, st *store.Store, timeout time.Duration) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	shutdownErr := server.Shutdown(shutdownCtx)
+	if shutdownCtx.Err() != nil && errors.Is(shutdownErr, shutdownCtx.Err()) {
+		go func() {
+			_ = server.Close()
+			_ = st.Close()
+		}()
+		return shutdownErr
+	}
+	return errors.Join(shutdownErr, st.Close())
 }
 
 func logMCPServer(event string, fields ...string) {

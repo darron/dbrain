@@ -1956,15 +1956,17 @@ func TestWebHandlerServesArchivedMediaAndSignedURL(t *testing.T) {
 	}
 
 	s := &server{
-		cfg:         cfg,
-		store:       st,
-		archive:     &fakeArchiveProxy{body: []byte("hello-video!"), signedURL: "https://signed.example.com/video.mp4"},
-		proxyBase:   "http://127.0.0.1:8742",
-		staticFS:    staticFS,
-		static:      http.FileServerFS(staticFS),
-		indexHTML:   indexHTML,
-		toolVersion: "test",
+		cfg:             cfg,
+		store:           st,
+		archive:         &fakeArchiveProxy{body: []byte("hello-video!"), signedURL: "https://signed.example.com/video.mp4"},
+		proxyBase:       "http://127.0.0.1:8742",
+		staticFS:        staticFS,
+		static:          http.FileServerFS(staticFS),
+		indexHTML:       indexHTML,
+		toolVersion:     "test",
+		researchRuntime: brainresearch.NewRuntime(cfg, st),
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	handler := s.newMux()
 
 	t.Run("media get", func(t *testing.T) {
