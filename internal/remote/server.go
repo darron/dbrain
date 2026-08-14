@@ -56,6 +56,15 @@ func newHTTPServer(handler http.Handler) *http.Server {
 	}
 }
 
+func runRemoteAsyncCleanup(shutdown func() error, cleanup func() error, logOut io.Writer) {
+	if err := shutdown(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		_, _ = fmt.Fprintf(logOut, "WARNING remote async cleanup failed component=http_server: %v\n", err)
+	}
+	if err := cleanup(); err != nil {
+		_, _ = fmt.Fprintf(logOut, "WARNING remote async cleanup failed component=runtime_or_store: %v\n", err)
+	}
+}
+
 func Serve(ctx context.Context, cfg config.Config, opts Options, logOut io.Writer) error {
 	return serveWithDeps(ctx, cfg, opts, logOut, defaultRemoteDeps())
 }
@@ -223,8 +232,9 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 		if shutdownCtx.Err() != nil && errors.Is(shutdownErr, shutdownCtx.Err()) {
 			cleanupPending = false
 			go func() {
-				_ = httpServer.Shutdown(context.Background())
-				_ = cleanup()
+				runRemoteAsyncCleanup(func() error {
+					return httpServer.Shutdown(context.Background())
+				}, cleanup, logOut)
 			}()
 		}
 		closeErr := node.Close()

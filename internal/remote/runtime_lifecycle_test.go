@@ -1,8 +1,10 @@
 package remote
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -76,5 +78,25 @@ func TestCloseOwnedStoreJoinsRuntimeAndStoreErrors(t *testing.T) {
 	err := closeOwnedStore(errorRuntimeOwner{err: runtimeErr}, func() error { return storeErr }, time.Second)
 	if !errors.Is(err, runtimeErr) || !errors.Is(err, storeErr) {
 		t.Fatalf("cleanup error = %v, want joined runtime and store errors", err)
+	}
+}
+
+func TestRunRemoteAsyncCleanupLogsErrors(t *testing.T) {
+	serverErr := errors.New("http server cleanup failed")
+	ownerErr := errors.New("runtime or store cleanup failed")
+	var log bytes.Buffer
+
+	runRemoteAsyncCleanup(
+		func() error { return serverErr },
+		func() error { return ownerErr },
+		&log,
+	)
+
+	output := log.String()
+	if !strings.Contains(output, "component=http_server") || !strings.Contains(output, serverErr.Error()) {
+		t.Fatalf("async cleanup log = %q, missing HTTP server error", output)
+	}
+	if !strings.Contains(output, "component=runtime_or_store") || !strings.Contains(output, ownerErr.Error()) {
+		t.Fatalf("async cleanup log = %q, missing owner error", output)
 	}
 }
