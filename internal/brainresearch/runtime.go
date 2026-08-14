@@ -67,6 +67,23 @@ type runtimeRootSpec struct {
 	exactMaxChunks int
 }
 
+type runtimeRootSpecScope struct {
+	cacheDir   string
+	databaseID string
+	profileID  string
+}
+
+type runtimeRootSpecState struct {
+	key  semanticruntime.RootKey
+	spec runtimeRootSpec
+}
+
+func runtimeRootScope(key semanticruntime.RootKey) runtimeRootSpecScope {
+	return runtimeRootSpecScope{
+		cacheDir: key.CacheDir, databaseID: key.DatabaseID, profileID: key.ProfileID,
+	}
+}
+
 // Runtime owns one semantic root cache for exactly one Store lifetime.
 type Runtime struct {
 	cfg       config.Config
@@ -75,7 +92,7 @@ type Runtime struct {
 	deps      runtimeDeps
 
 	rootSpecsMu sync.Mutex
-	rootSpecs   map[semanticruntime.RootKey]runtimeRootSpec
+	rootSpecs   map[runtimeRootSpecScope]runtimeRootSpecState
 
 	activeBuilds runtimeBuildTracker
 	closeOnce    sync.Once
@@ -157,7 +174,7 @@ func newRuntimeWithDeps(cfg config.Config, st *store.Store, deps runtimeDeps) *R
 	}
 	r := &Runtime{
 		cfg: cfg, st: st, deps: deps,
-		rootSpecs:    make(map[semanticruntime.RootKey]runtimeRootSpec),
+		rootSpecs:    make(map[runtimeRootSpecScope]runtimeRootSpecState),
 		activeBuilds: newRuntimeBuildTracker(),
 		drained:      make(chan struct{}),
 	}
@@ -375,15 +392,18 @@ func (r *Runtime) Close() error {
 
 func (r *Runtime) registerRootSpec(key semanticruntime.RootKey, spec runtimeRootSpec) {
 	r.rootSpecsMu.Lock()
-	r.rootSpecs[key] = spec
+	r.rootSpecs[runtimeRootScope(key)] = runtimeRootSpecState{key: key, spec: spec}
 	r.rootSpecsMu.Unlock()
 }
 
 func (r *Runtime) rootSpec(key semanticruntime.RootKey) (runtimeRootSpec, bool) {
 	r.rootSpecsMu.Lock()
 	defer r.rootSpecsMu.Unlock()
-	spec, ok := r.rootSpecs[key]
-	return spec, ok
+	state, ok := r.rootSpecs[runtimeRootScope(key)]
+	if !ok || state.key != key {
+		return runtimeRootSpec{}, false
+	}
+	return state.spec, true
 }
 
 func runtimeGenerationLeaseAcquirer(ctx context.Context, st *store.Store, cfg config.Config) (researchsemantic.GenerationLeaseAcquirer, error) {

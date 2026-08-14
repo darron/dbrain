@@ -103,6 +103,47 @@ func TestRuntimeShutdownRejectsNewBuilds(t *testing.T) {
 	}
 }
 
+func TestRuntimeRootSpecsRemainBoundedAcrossGenerationChanges(t *testing.T) {
+	runtime := newRuntimeWithDeps(config.Config{}, nil, runtimeDeps{
+		rootLoader: func(context.Context, *Runtime, semanticruntime.RootKey) (semanticruntime.LoadedSearcher, error) {
+			return semanticruntime.LoadedSearcher{}, errors.New("unused")
+		},
+	})
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	const generations = 100
+	for generation := 0; generation < generations; generation++ {
+		key := semanticruntime.RootKey{
+			CacheDir:     "/private/cache",
+			DatabaseID:   "database",
+			ProfileID:    "profile",
+			GenerationID: fmt.Sprintf("generation-%d", generation),
+		}
+		runtime.registerRootSpec(key, runtimeRootSpec{exactMaxChunks: generation})
+	}
+
+	runtime.rootSpecsMu.Lock()
+	specCount := len(runtime.rootSpecs)
+	runtime.rootSpecsMu.Unlock()
+	if specCount != 1 {
+		t.Fatalf("root spec count=%d want=1 current scope after %d generations", specCount, generations)
+	}
+	latest := semanticruntime.RootKey{
+		CacheDir:     "/private/cache",
+		DatabaseID:   "database",
+		ProfileID:    "profile",
+		GenerationID: "generation-99",
+	}
+	if spec, ok := runtime.rootSpec(latest); !ok || spec.exactMaxChunks != generations-1 {
+		t.Fatalf("latest root spec=%+v present=%t", spec, ok)
+	}
+	retired := latest
+	retired.GenerationID = "generation-0"
+	if spec, ok := runtime.rootSpec(retired); ok {
+		t.Fatalf("retired root spec unexpectedly retained: %+v", spec)
+	}
+}
+
 func TestNewRuntimeBuilderModeConstructionAndForceOff(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{RootDir: root}

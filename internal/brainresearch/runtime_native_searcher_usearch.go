@@ -22,6 +22,7 @@ import (
 
 var closeRuntimeGenerationLease = (*semanticlock.Lease).Close
 var openRuntimeUSearchRoot = semanticindex.OpenUSearchRoot
+var closeRuntimeUSearchSearcher = (*semanticindex.USearchCandidateSearcher).Close
 
 type nativeSemanticLeaseReleaseError struct {
 	cause error
@@ -159,15 +160,19 @@ func runtimeLoadSemanticRoot(ctx context.Context, runtime *Runtime, key semantic
 	if err != nil {
 		return semanticruntime.LoadedSearcher{}, fmt.Errorf("%w: open native semantic root: %w", errNativeRootArtifactsUnavailable, err)
 	}
+	searcher := semanticindex.NewUSearchCandidateSearcher(root, runtime.st)
+	loaded := semanticruntime.LoadedSearcher{
+		Searcher: searcher,
+		Close:    func() error { return closeRuntimeUSearchSearcher(searcher) },
+	}
 	current, readinessErr := currentRuntimeRootKey(ctx, runtime, spec)
 	if readinessErr != nil {
-		return semanticruntime.LoadedSearcher{}, errors.Join(fmt.Errorf("%w: validate native root readiness", errRuntimeReadinessUnavailable), root.Close())
+		return loaded, fmt.Errorf("%w: validate native root readiness", errRuntimeReadinessUnavailable)
 	}
 	if current != key {
-		return semanticruntime.LoadedSearcher{}, errors.Join(fmt.Errorf("%w: loaded native root no longer matches authoritative readiness", errNativeRootArtifactsUnavailable), root.Close())
+		return loaded, fmt.Errorf("%w: loaded native root no longer matches authoritative readiness", errNativeRootArtifactsUnavailable)
 	}
-	searcher := semanticindex.NewUSearchCandidateSearcher(root, runtime.st)
-	return semanticruntime.LoadedSearcher{Searcher: searcher, Close: searcher.Close}, nil
+	return loaded, nil
 }
 
 func currentRuntimeRootKey(ctx context.Context, runtime *Runtime, spec runtimeRootSpec) (semanticruntime.RootKey, error) {

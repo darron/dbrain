@@ -3,48 +3,56 @@
 ## Boundary
 
 - Repository: `/Users/darron/src/dbrain`
-- Integrated base: `fdd642342a920fefdf37961f8a0859136bdac822`
-- Scope: Task 2 runtime, native lazy-search, status, generation-lease, and retriever-context files only
-- Preserved: the pre-existing `Taskfile.yml` modification and untracked `docs/superpowers/` work
-- Not modified: Task 3 workflow owners or Task 4 documentation/changelog files
+- Approved integrated base: `fdd642342a920fefdf37961f8a0859136bdac822`
+- Task 2 implementation commit reviewed: `6513ec1330536ff5ea5bc7830f339e3d93e91030`
+- Scope: Task 2 runtime lifecycle, native lazy-root loading, retained generation leases, focused runtime tests, and this report only
+- Preserved unchanged: the pre-existing `Taskfile.yml` modification and untracked `docs/superpowers/` work
+- Not modified: Task 3/4 workflow, changelog, or documentation owners
 
 ## Implementation
 
-- Added `brainresearch.Runtime`, with one `semanticruntime.Manager` per runtime/store lifetime, reusable `NewBuilderContext` and `Build` methods, bounded shutdown, active-builder admission tracking, `Drained`, and compatibility ownership for existing builder/top-level wrappers.
-- Removed native root opening from builder admission. Native admission now constructs a lazy searcher after the existing 250 ms readiness/capability checks.
-- Added query-time authoritative readiness and complete `semanticruntime.RootKey` derivation using a canonical cache directory, database ID, profile, generation, snapshot revision, purge epoch, backend version, and descriptor checksum.
-- Added the 5-second manager acquisition wait independently from the 250 ms admission budget. Caller cancellation remains an ordinary cancellation; a cold wait timeout returns the path-free `root_load_timeout` status while the manager-owned load may finish.
-- Registered immutable root load specifications with the runtime manager. Cold loads run under the manager shutdown context, open and validate the native root once, re-read authoritative readiness before publication, and discard mismatched roots without generation retry.
-- Added retainable `semanticlock.Lease` references. Closing the query owner no longer releases the kernel lease until every retained detached-load reference closes; references are independent and idempotent.
-- Added the acquired generation lease to the `researchsemantic` search context. The native lazy searcher retains that exact lease for a cold detached load and never reacquires generation-shared behind an exclusive writer.
-- Preserved lexical fail-open behavior for shadow/on root timeout, root artifact, and runtime readiness failures. Added centralized path-free semantic reasons for generation contention, cold-load timeout, native artifacts, and runtime readiness.
-- Preserved CGO-free behavior: active native generations remain unavailable without the tagged backend, while exact-small retrieval remains unchanged.
+- `brainresearch.Runtime` continues to own one `semanticruntime.Manager` for one `*store.Store` lifetime. Builder admission remains lazy and never calls `OpenUSearchRoot`.
+- A cold native load still retains the query's already-acquired generation lease and runs under the manager-owned context. The caller has an independent five-second wait and does not cancel the detached native load.
+- `runtimeLoadSemanticRoot` now creates the `LoadedSearcher` immediately after a successful native open. If the post-open readiness check fails or the authoritative root key changes, it returns that loaded searcher and close callback alongside the error. `semanticruntime.Manager` therefore owns discarded-root cleanup, records close failures, and returns them from runtime shutdown.
+- Query-facing mismatch/readiness outcomes remain fail-open and path-free (`native_root_artifacts_unavailable` or `runtime_readiness_unavailable`) with no generation retry.
+- The runtime's root load specifications are now bounded by cache/database/profile scope. Registering a new generation replaces the retired generation's specification, so repeated generation changes do not accumulate historical keys.
+- A non-retainable `researchsemantic.GenerationLease` cannot start a cold native load. The production lazy-search path maps the manager's retained-guard requirement to path-free `native_root_artifacts_unavailable`, releases the query lease, and never invokes the loader.
+- The retained detached-load test now drives the real `semanticgc.Run` apply path against an eligible generation artifact. GC obtains its maintenance lock but cannot obtain generation-exclusive or delete the artifact until the retained load lease closes; deletion succeeds afterward.
+- Restored real tagged native coverage publishes a USearch segment/root and matching SQLite catalog, admits a runtime without opening it, moves a formerly distant member into L0, and verifies first-query validation/reranking/hydration plus warm-root reuse. The fixture uses 50 indexed rows so one deliberately stale native member remains within the production tombstone readiness threshold.
 
-## Tests
+## TDD Evidence
 
-TDD red evidence:
+- The bounded-spec regression first failed with `root spec count=100 want=1 current scope after 100 generations`.
+- The discarded-root shutdown test initially failed to compile because the manager-owned close seam did not yet exist.
+- The first restored real native fixture correctly exposed the production readiness gate: a two-row root with one stale member exceeded the two-percent tombstone limit. The fixture was expanded to 50 indexed members, preserving the stale-candidate/L0 behavior while remaining production-searchable.
+- After implementation, the focused discarded-root cleanup, non-retainable lease, real semantic GC exclusion, bounded-spec, and real native retrieval tests all pass.
 
-- `semanticlock` initially failed to compile because `Lease.Retain` did not exist.
-- `researchsemantic` initially failed to compile because the generation-lease context seam did not exist.
-- The first tagged Task 2 compile failed against the eager `runtimeSemanticSearcher` contract; the converted lazy runtime tests then exposed the missing test cache directory before passing.
-
-Final verification:
+## Verification
 
 ```text
 task fmt
+```
+
+Result: passed (`go fmt ./...`).
+
+```text
 task lint
 ```
 
-Result: formatter completed; linter reported `0 issues`.
+Result: passed with `0 issues`.
 
 ```text
-CGO_ENABLED=0 go test ./internal/brainresearch ./internal/semanticlock ./internal/researchsemantic ./internal/semanticruntime ./internal/semanticindex -count=1
+env GOCACHE=/private/tmp/dbrain-task2-gocache CGO_ENABLED=0 \
+  go test ./internal/brainresearch ./internal/semanticlock \
+  ./internal/researchsemantic ./internal/semanticruntime \
+  ./internal/semanticindex -count=1
 ```
 
-Result: all five packages passed.
+Result: all five focused default-build packages passed. The first sandboxed attempt was blocked because unrelated existing tests could not bind localhost `httptest` ports; the identical command passed outside that network sandbox.
 
 ```text
-MACOSX_DEPLOYMENT_TARGET=12.0 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+env GOCACHE=/private/tmp/dbrain-task2-gocache \
+  MACOSX_DEPLOYMENT_TARGET=12.0 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
   CGO_CFLAGS=-I/private/tmp/dbrain-usearch-v2.26.0-darwin-arm64/stage/include \
   CGO_LDFLAGS=-L/private/tmp/dbrain-usearch-v2.26.0-darwin-arm64/stage/lib \
   go test -tags=usearch -race \
@@ -53,14 +61,8 @@ MACOSX_DEPLOYMENT_TARGET=12.0 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
   -run 'Test(Runtime|Manager|USearch|GenerationLeaseRetain|Retriever)' -count=1
 ```
 
-Result: all five packages passed with no race report. The tagged runtime coverage includes lazy first load, warm reuse, root-key mismatch discard, explicit cold wait timeout, path-free readiness failure, retained-generation writer exclusion, blocked native-search shutdown, and shadow/on lexical fail-open JSON.
-
-```text
-task test-ci
-```
-
-Result: every Task 2 package passed in the repository-wide clean-environment race run. The overall task exited nonzero only because `internal/releaseautomation/TestUSearchPackagingTaskPolicy` recursively discovered unrelated `.worktrees/*` checkouts and compared those nested tagged packages with the root `USEARCH_RACE_PACKAGES` list. This is the ambient contamination explicitly anticipated by the approved plan; no worktree was removed and the unrelated `Taskfile.yml` change was not modified.
+Result: all five tagged packages passed with no race report. `internal/brainresearch` completed in 26.969s; the other packages completed in 1.619s to 2.371s.
 
 ## Remaining Limitation
 
-- Task 2 focused default, lint, and tagged native race gates passed. The repository-wide `task test-ci` gate is ambient-red only on the unrelated `.worktrees/*` packaging-policy discovery described above; a clean-clone rerun was not performed in this time-bounded checkpoint. Task 3 long-lived workflow reuse and Task 4 documentation/changelog work remain intentionally deferred and out of scope.
+- No Task 2 focused limitation remains. The full repository-wide `task test-ci` gate was not repeated in this focused REVISE loop: the prior Task 2 run already established an unrelated ambient failure in `internal/releaseautomation/TestUSearchPackagingTaskPolicy` caused by nested `.worktrees/*` discovery, and the user explicitly directed this loop not to wait on unrelated full-repository gates.
