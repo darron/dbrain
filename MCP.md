@@ -139,14 +139,30 @@ a non-empty local Ollama embedding model and positive dimensions.
   chunk/content provenance.
 
 On supported tagged builds, semantic refresh builds and atomically activates a
-segmented native USearch root. Queries use native candidates, validate them
-against current SQLite state, exactly rerank surviving vectors, and merge the
-exact L0 remainder. SQLite-authoritative exact scan remains the fallback for a
-ready profile at or below the measured 25,000-vector ceiling; configuration may
-lower that ceiling but cannot raise it. Semantic candidate depth defaults to
-50. Incomplete, corrupt, stale, timed-out, or otherwise unavailable semantic
-state reports its precise `semantic_readiness` state and reason, then fails open
-to lexical evidence before constructing the query embedding provider.
+segmented native USearch root. Runtime construction reads SQLite readiness under
+a 250 ms budget and admits a lazy lane without importing that root. After query
+embedding, shared-generation lease admission has its own 250 ms budget;
+`generation_busy` means only contention in that admission. A warm process-local
+runtime cache reuses the validated in-memory root. On a cold cache miss, the
+query retains shared generation protection while it waits up to five seconds
+for native import; `root_load_timeout` fails open to lexical evidence while the
+detached import may still warm the cache for a later request. Native candidates
+are validated against current SQLite state, exactly reranked, and merged with
+the exact L0 remainder. Thus `used` means validated semantic evidence, not only
+that a root was loaded. `native_root_artifacts_unavailable` identifies artifact
+or root-validation failures, and `runtime_readiness_unavailable` identifies a
+query-time readiness snapshot that cannot be read or no longer names a stable
+searchable root. These reasons, as well as `generation_busy` and
+`root_load_timeout`, fail open to lexical evidence. A cold import retains its
+lease through publication/discard and cleanup, so an exclusive refresh or GC
+writer can wait; the five-second caller wait does not interrupt a native call,
+and reader grace remains defense in depth. SQLite-authoritative exact scan
+remains the fallback for a ready profile at or below the measured 25,000-vector
+ceiling; configuration may lower that ceiling but cannot raise it. Semantic
+candidate depth defaults to 50. Incomplete, corrupt, stale, timed-out, or
+otherwise unavailable semantic state reports its precise `semantic_readiness`
+state and reason, then fails open to lexical evidence before constructing the
+query embedding provider.
 `catching_up` responses also expose content-free readiness diagnostics for dirty
 parents and estimated debt. Successful manual and scheduled `sync all` runs
 maintain enabled semantic state automatically. Other embedding providers and
