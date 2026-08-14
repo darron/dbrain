@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -651,8 +652,23 @@ func TestRuntimeUSearchIntegrationLazyLoadHydratesAndReusesRoot(t *testing.T) {
 	}
 	if len(docs) != 2 || docs[0].SourceKey != expectedNearestSourceKey || docs[0].Excerpt != "distant semantic evidence" ||
 		docs[0].Retrieval == nil || len(docs[0].Retrieval.Lanes) != 1 || docs[0].Retrieval.Lanes[0].RawDistance == nil ||
-		*docs[0].Retrieval.Lanes[0].RawDistance != 0 || docs[1].SourceKey != "source:runtime-0" {
+		*docs[0].Retrieval.Lanes[0].RawDistance != 0 {
 		t.Fatalf("hydrated docs=%+v", docs)
+	}
+	neighbor := docs[1]
+	currentNeighbor, current := chunksBySource[neighbor.SourceKey]
+	if neighbor.SourceKey == "" || neighbor.SourceKey == expectedNearestSourceKey || !current ||
+		neighbor.Chunk == nil || neighbor.Chunk.ID != currentNeighbor.ChunkID ||
+		neighbor.Chunk.Hash != currentNeighbor.ChunkTextHash || neighbor.Excerpt != currentNeighbor.Text ||
+		neighbor.Retrieval == nil || len(neighbor.Retrieval.Lanes) != 1 {
+		t.Fatalf("second result is not distinct current hydrated evidence: %+v", neighbor)
+	}
+	neighborLane := neighbor.Retrieval.Lanes[0]
+	if neighborLane.Name != "semantic" || neighborLane.Status != "used" ||
+		neighborLane.Backend != semanticindex.BackendUSearch || neighborLane.Generation != generationID ||
+		neighborLane.RawDistance == nil || math.IsNaN(*neighborLane.RawDistance) || math.IsInf(*neighborLane.RawDistance, 0) ||
+		*neighborLane.RawDistance < 0 || *neighborLane.RawDistance > 2 {
+		t.Fatalf("second result semantic lane is invalid: %+v", neighborLane)
 	}
 	if opens.Load() != 1 {
 		t.Fatalf("native root opens after first retrieval=%d want=1", opens.Load())

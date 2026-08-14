@@ -5,6 +5,7 @@
 - Repository: `/Users/darron/src/dbrain`
 - Approved integrated base: `fdd642342a920fefdf37961f8a0859136bdac822`
 - Task 2 implementation commit reviewed: `6513ec1330536ff5ea5bc7830f339e3d93e91030`
+- Task 2 lifecycle review-fix commit: `9f3283109379aa2163f99a41fca0a649d32200d2`
 - Scope: Task 2 runtime lifecycle, native lazy-root loading, retained generation leases, focused runtime tests, and this report only
 - Preserved unchanged: the pre-existing `Taskfile.yml` modification and untracked `docs/superpowers/` work
 - Not modified: Task 3/4 workflow, changelog, or documentation owners
@@ -19,6 +20,7 @@
 - A non-retainable `researchsemantic.GenerationLease` cannot start a cold native load. The production lazy-search path maps the manager's retained-guard requirement to path-free `native_root_artifacts_unavailable`, releases the query lease, and never invokes the loader.
 - The retained detached-load test now drives the real `semanticgc.Run` apply path against an eligible generation artifact. GC obtains its maintenance lock but cannot obtain generation-exclusive or delete the artifact until the retained load lease closes; deletion succeeds afterward.
 - Restored real tagged native coverage publishes a USearch segment/root and matching SQLite catalog, admits a runtime without opening it, moves a formerly distant member into L0, and verifies first-query validation/reranking/hydration plus warm-root reuse. The fixture uses 50 indexed rows so one deliberately stale native member remains within the production tombstone readiness threshold.
+- The tagged positive test keeps `source:runtime-1` as the exact L0 result but no longer assumes USearch will return one particular approximate neighbor. It accepts any distinct current root member and verifies its current chunk ID/hash/text, hydrated evidence, semantic lane/backend/generation, and finite cosine distance.
 
 ## TDD Evidence
 
@@ -62,6 +64,19 @@ env GOCACHE=/private/tmp/dbrain-task2-gocache \
 ```
 
 Result: all five tagged packages passed with no race report. `internal/brainresearch` completed in 26.969s; the other packages completed in 1.619s to 2.371s.
+
+Deterministic-test follow-up verification:
+
+```text
+env GOCACHE=/private/tmp/dbrain-task2-gocache \
+  MACOSX_DEPLOYMENT_TARGET=12.0 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+  CGO_CFLAGS=-I/private/tmp/dbrain-usearch-v2.26.0-darwin-arm64/stage/include \
+  CGO_LDFLAGS=-L/private/tmp/dbrain-usearch-v2.26.0-darwin-arm64/stage/lib \
+  go test -tags=usearch -race ./internal/brainresearch \
+  -run '^TestRuntimeUSearchIntegrationLazyLoadHydratesAndReusesRoot$' -count=5
+```
+
+Result: passed all five race-enabled runs in 12.288s.
 
 ## Remaining Limitation
 
