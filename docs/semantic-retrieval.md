@@ -57,16 +57,26 @@ warm root is then leased from the process-local, in-memory runtime cache,
 searched natively, SQLite-validated and exactly reranked, merged with exact
 L0, hydrated, and turned into evidence. A cold root retains a reference to
 that already-acquired shared generation lease while it is imported and
-validated. The ordinary caller waits up to five seconds for that import; a
-timed-out caller remains lexical while the non-preemptible load may complete
-and warm the same runtime cache for a later request. Published root and segment
-paths remain immutable.
+validated and until the manager decides whether to publish or discard it. The
+manager releases that retained guard before publishing; successful release is
+therefore required for publication. The ordinary caller waits up
+to five seconds for that import; a timed-out caller remains lexical while the
+non-preemptible load may complete and warm the same runtime cache for a later
+request. Published root and segment paths remain immutable.
+
+If a loaded root is rejected before it becomes a pending cache entry, the
+manager closes it before releasing the retained guard. If it was admitted as a
+pending entry but fails the release or publication checks, the manager closes
+it after releasing the guard. Both paths remain manager-owned.
 
 The retained cold-load lease is a deliberate liveness trade-off: an exclusive
-refresh or `dbrain semantic gc` writer can wait for import, validation,
-publication or discard, and discarded-searcher cleanup. Five seconds bounds
-the ordinary caller wait, not the native C call. Runtime shutdown likewise
-waits for in-use searches and loads rather than force-closing a native root.
+refresh or `dbrain semantic gc` writer can wait for native import, validation,
+and the pre-publication disposition decision. The manager-owned flight still
+keeps ownership through final discarded-searcher cleanup, but that cleanup is
+not protected by the generation lease after it has been released. Five seconds
+bounds the ordinary caller wait, not the native C call. Runtime shutdown
+likewise waits for in-use searches and loads rather than force-closing a native
+root.
 The normal ten-minute semantic-GC reader grace remains defense in depth, not
 the only protection for an importing root.
 
@@ -103,10 +113,14 @@ reasons fail open to unchanged lexical evidence:
 | `native_root_artifacts_unavailable` | Native cache/root artifacts, descriptor validation, or root load/validation failed. |
 | `runtime_readiness_unavailable` | The query-time authoritative readiness snapshot could not be read or no longer describes a stable searchable native root. |
 
-Caller cancellation or deadline expiry remains an error, and lease-release
-errors fail closed rather than being hidden. A semantic lane is `used` only
-after native candidates pass current SQLite validation and exact reranking; a
-cache miss or a warmed root is not evidence of semantic ranking quality.
+Caller cancellation or deadline expiry remains an error. Other semantic
+artifact, readiness, and lease-cleanup failures, plus query-time
+embedding-provider/search failures for a valid configuration, preserve lexical
+evidence at the research-pack boundary with the path-free status reason.
+Provider construction or configuration failures still abort setup. A semantic
+lane is `used` only after native candidates pass current SQLite validation and
+exact reranking; a cache miss or a warmed root is not evidence of semantic
+ranking quality.
 
 ## Output and recovery
 

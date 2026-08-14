@@ -10,7 +10,7 @@ vars:
   USEARCH_MACOS_DEPLOYMENT_TARGET: "12.0"
   USEARCH_BUILD_ROOT: "/private/tmp/dbrain-usearch-v2.26.0-darwin-arm64"
   USEARCH_STAGE_DIR: "{{.USEARCH_BUILD_ROOT}}/stage"
-  USEARCH_RACE_PACKAGES: "./cmd/devtools/semantic_usearch_bakeoff ./cmd/devtools/semantic_usearch_segment_flush ./internal/annbakeoff ./internal/app ./internal/brainresearch ./internal/semanticbuild ./internal/semanticindex"
+  USEARCH_RACE_PACKAGES: "./cmd/devtools/semantic_usearch_bakeoff ./cmd/devtools/semantic_usearch_segment_flush ./internal/annbakeoff ./internal/app ./internal/brainresearch ./internal/semanticbuild ./internal/semanticindex ./internal/semanticruntime"
   RELEASE_VERSION:
     sh: |
       if [ -n "${DBRAIN_RELEASE_VERSION:-}" ]; then
@@ -127,6 +127,10 @@ tasks:
         go build -tags usearch -buildvcs=true
         -ldflags "-X github.com/darron/dbrain/internal/version.ReleaseVersion={{.RELEASE_VERSION}} -X github.com/darron/dbrain/internal/version.BuildPlatform=darwin/arm64"
         -o ./bin/dbrain ./cmd/dbrain
+
+  build-semantic:
+    desc: Build bin/dbrain with native semantic retrieval enabled
+    deps: [build-usearch-darwin-arm64]
 
   verify-usearch-darwin-arm64:
     desc: Verify native architecture, linkage, deployment target, and semantic capability

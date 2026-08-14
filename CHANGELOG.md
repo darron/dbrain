@@ -16,10 +16,14 @@ development date for the change set.
   `native_root_artifacts_unavailable` and `runtime_readiness_unavailable`.
 - **Safe lexical fallback and root lifetime**: Every unavailable semantic lane
   preserves lexical evidence. A cold import retains its acquired generation
-  lease until publication/discard and cleanup, so refresh/GC may wait; the
-  five-second caller wait does not preempt a native call, and reader grace
-  remains defense in depth. Semantic `used` still requires SQLite validation
-  and exact reranking, not merely a warmed native root.
+  lease during native import, validation, and the pre-publication disposition
+  decision; successful release is required before publication. Roots rejected
+  before pending-cache admission close before release; pending roots that fail
+  release or publication checks close afterward. Refresh/GC may wait during
+  that guard-held portion; the five-second caller wait does not preempt a
+  native call, and reader grace remains defense in depth. Semantic `used` still
+  requires SQLite validation and exact reranking, not merely a warmed native
+  root.
 
 ### Metrics JSONL rotation (2026-08-10)
 

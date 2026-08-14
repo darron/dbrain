@@ -171,7 +171,7 @@ func usearchTaggedPackagePaths(t *testing.T) []string {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", ".gomodcache", "node_modules":
+			case ".git", ".gomodcache", ".worktrees", "node_modules":
 				return filepath.SkipDir
 			}
 			return nil

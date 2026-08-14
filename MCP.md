@@ -153,10 +153,16 @@ that a root was loaded. `native_root_artifacts_unavailable` identifies artifact
 or root-validation failures, and `runtime_readiness_unavailable` identifies a
 query-time readiness snapshot that cannot be read or no longer names a stable
 searchable root. These reasons, as well as `generation_busy` and
-`root_load_timeout`, fail open to lexical evidence. A cold import retains its
-lease through publication/discard and cleanup, so an exclusive refresh or GC
-writer can wait; the five-second caller wait does not interrupt a native call,
-and reader grace remains defense in depth. SQLite-authoritative exact scan
+`root_load_timeout`, fail open to lexical evidence. A cold import retains
+shared generation protection during native import, validation, and the
+pre-publication disposition decision. The manager releases that guard before
+publishing; successful release is required for publication. If a root is
+rejected before pending-cache admission, it is closed before release; if a
+pending root fails release or publication checks, the manager-owned flight
+closes it afterward. An exclusive refresh or GC writer can therefore wait
+during that guard-held portion, while the five-second caller wait does not
+interrupt a native call and reader grace remains defense in depth.
+SQLite-authoritative exact scan
 remains the fallback for a ready profile at or below the measured 25,000-vector
 ceiling; configuration may lower that ceiling but cannot raise it. Semantic
 candidate depth defaults to 50. Incomplete, corrupt, stale, timed-out, or
