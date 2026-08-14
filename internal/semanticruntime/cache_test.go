@@ -337,11 +337,11 @@ func TestManagerDoesNotExposeRootUntilGuardReleaseFinishes(t *testing.T) {
 	}()
 	waitClosed(t, releaseStarted, "guard release did not start")
 	manager.mu.Lock()
-	_, published := manager.entries[testRootKey("generation-1")]
+	entry, published := manager.entries[testRootKey("generation-1")]
 	flight := manager.flights[testRootKey("generation-1")]
 	manager.mu.Unlock()
-	if published {
-		t.Fatal("root was published before retained guard release finished")
+	if !published || entry == nil || !entry.pending {
+		t.Fatal("root was not tracked as a pending candidate before retained guard release finished")
 	}
 	if flight == nil {
 		t.Fatal("cold load flight disappeared before retained guard release finished")

@@ -85,6 +85,7 @@ type cacheEntry struct {
 	searchMu sync.Mutex
 	refs     int
 	ops      int
+	pending  bool
 	retired  bool
 	closing  bool
 }
@@ -158,7 +159,7 @@ func (m *Manager) Acquire(ctx context.Context, key RootKey, retain RetainLoadGua
 		return m.waitForFlight(ctx, flight)
 	}
 
-	if entry := m.entries[key]; entry != nil && !entry.retired && !entry.closing {
+	if entry := m.entries[key]; entry != nil && !entry.pending && !entry.retired && !entry.closing {
 		entry.refs++
 		m.mu.Unlock()
 		return newLease(entry), nil
@@ -269,10 +270,13 @@ func (m *Manager) runLoad(flight *loadFlight, release func() error) {
 			dispositionErr = ErrRootRetired
 		default:
 			// Keep the loaded root private to this flight until the retained
-			// generation guard has been released. A warm Acquire must not be
-			// able to observe or retire the candidate while that release is in
-			// progress.
-			entry = &cacheEntry{manager: m, key: flight.key, loaded: loaded}
+			// generation guard has been released. The pending entry is tracked
+			// for retirement and shutdown, but Acquire cannot turn it into a
+			// lease until the flight publishes it as ready.
+			entry = &cacheEntry{manager: m, key: flight.key, loaded: loaded, pending: true}
+			m.entries[flight.key] = entry
+			m.allEntries[entry] = struct{}{}
+			flight.entry = entry
 		}
 		m.mu.Unlock()
 	}
@@ -283,20 +287,28 @@ func (m *Manager) runLoad(flight *loadFlight, release func() error) {
 		m.recordCloseError(discardCloseErr)
 	}
 	releaseErr := release()
-	if loadErr == nil && entry != nil && releaseErr == nil {
+	if entry != nil {
 		m.mu.Lock()
 		state := m.scopes[flight.key.scope()]
 		currentFlight := m.flights[flight.key] == flight
-		switch {
-		case m.shutdown:
-			dispositionErr = ErrManagerClosed
-		case !currentFlight || state.key != flight.key || state.sequence != flight.sequence:
-			dispositionErr = ErrRootRetired
-		default:
-			m.entries[flight.key] = entry
-			m.allEntries[entry] = struct{}{}
-			flight.entry = entry
+		ready := loadErr == nil && releaseErr == nil && !m.shutdown && currentFlight &&
+			state.key == flight.key && state.sequence == flight.sequence && m.entries[flight.key] == entry && !entry.retired
+		if ready {
+			entry.pending = false
 			entry = nil
+		} else {
+			switch {
+			case m.shutdown:
+				dispositionErr = errors.Join(dispositionErr, ErrManagerClosed)
+			case !currentFlight || state.key != flight.key || state.sequence != flight.sequence || m.entries[flight.key] != entry:
+				dispositionErr = errors.Join(dispositionErr, ErrRootRetired)
+			}
+			if m.entries[flight.key] == entry {
+				delete(m.entries, flight.key)
+			}
+			entry.pending = false
+			entry.retired = true
+			entry.closing = true
 		}
 		m.mu.Unlock()
 	}
@@ -305,6 +317,10 @@ func (m *Manager) runLoad(flight *loadFlight, release func() error) {
 			discardCloseErr = errors.Join(discardCloseErr, closeErr)
 			m.recordCloseError(closeErr)
 		}
+		m.mu.Lock()
+		delete(m.allEntries, entry)
+		m.checkDrainedLocked()
+		m.mu.Unlock()
 	}
 
 	flightErr := errors.Join(loadErr, dispositionErr, discardCloseErr, releaseErr)
@@ -334,7 +350,7 @@ func (m *Manager) retireOtherEntriesLocked(scope rootScope, current RootKey) {
 }
 
 func (m *Manager) scheduleEntryCloseLocked(entry *cacheEntry) {
-	if entry == nil || entry.closing || !entry.retired || entry.refs != 0 || entry.ops != 0 {
+	if entry == nil || entry.closing || entry.pending || !entry.retired || entry.refs != 0 || entry.ops != 0 {
 		return
 	}
 	entry.closing = true
