@@ -336,6 +336,16 @@ func TestManagerDoesNotExposeRootUntilGuardReleaseFinishes(t *testing.T) {
 		firstResult <- acquireResult{lease: lease, err: err}
 	}()
 	waitClosed(t, releaseStarted, "guard release did not start")
+	manager.mu.Lock()
+	_, published := manager.entries[testRootKey("generation-1")]
+	flight := manager.flights[testRootKey("generation-1")]
+	manager.mu.Unlock()
+	if published {
+		t.Fatal("root was published before retained guard release finished")
+	}
+	if flight == nil {
+		t.Fatal("cold load flight disappeared before retained guard release finished")
+	}
 
 	secondResult := make(chan acquireResult, 1)
 	go func() {
@@ -365,6 +375,99 @@ func TestManagerDoesNotExposeRootUntilGuardReleaseFinishes(t *testing.T) {
 	}
 	if err := second.lease.Close(); err != nil {
 		t.Fatalf("Close second lease: %v", err)
+	}
+	if err := manager.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+func TestLeaseSearchRejectsRetiredRoot(t *testing.T) {
+	manager := New(func(context.Context, RootKey) (LoadedSearcher, error) {
+		return LoadedSearcher{Searcher: &fakeSearcher{}, Close: func() error { return nil }}, nil
+	}, time.Second)
+	oldGuard := newFakeGuard()
+	newGuard := newFakeGuard()
+	oldLease, err := manager.Acquire(context.Background(), testRootKey("generation-1"), oldGuard.Retain)
+	if err != nil {
+		t.Fatalf("Acquire old lease: %v", err)
+	}
+	newLease, err := manager.Acquire(context.Background(), testRootKey("generation-2"), newGuard.Retain)
+	if err != nil {
+		t.Fatalf("Acquire new lease: %v", err)
+	}
+
+	_, _, err = oldLease.Search(context.Background(), nil, semanticindex.SearchOptions{})
+	if !errors.Is(err, ErrRootRetired) {
+		t.Fatalf("retired Search error = %v, want ErrRootRetired", err)
+	}
+	if err := oldLease.Close(); err != nil {
+		t.Fatalf("Close old lease: %v", err)
+	}
+	if err := newLease.Close(); err != nil {
+		t.Fatalf("Close new lease: %v", err)
+	}
+	if err := manager.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+func TestLeaseSearchRejectsAfterShutdown(t *testing.T) {
+	manager := New(func(context.Context, RootKey) (LoadedSearcher, error) {
+		return LoadedSearcher{Searcher: &fakeSearcher{}, Close: func() error { return nil }}, nil
+	}, time.Second)
+	lease, err := manager.Acquire(context.Background(), testRootKey("generation-1"), newFakeGuard().Retain)
+	if err != nil {
+		t.Fatalf("Acquire lease: %v", err)
+	}
+	shutdownContext, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := manager.Shutdown(shutdownContext); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want context.DeadlineExceeded", err)
+	}
+
+	_, _, err = lease.Search(context.Background(), nil, semanticindex.SearchOptions{})
+	if !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("post-shutdown Search error = %v, want ErrManagerClosed", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("Close lease: %v", err)
+	}
+	if err := manager.Shutdown(context.Background()); err != nil {
+		t.Fatalf("final Shutdown: %v", err)
+	}
+}
+
+func TestManagerWaitsForDiscardedSearcherCloseBeforeFlightCompletes(t *testing.T) {
+	releaseErr := errors.New("release retained generation guard")
+	closeStarted := make(chan struct{})
+	allowClose := make(chan struct{})
+	manager := New(func(context.Context, RootKey) (LoadedSearcher, error) {
+		return LoadedSearcher{
+			Searcher: &fakeSearcher{},
+			Close: func() error {
+				close(closeStarted)
+				<-allowClose
+				return nil
+			},
+		}, nil
+	}, time.Second)
+	result := make(chan error, 1)
+	go func() {
+		_, err := manager.Acquire(context.Background(), testRootKey("generation-1"), func() (func() error, error) {
+			return func() error { return releaseErr }, nil
+		})
+		result <- err
+	}()
+	waitClosed(t, closeStarted, "discarded searcher close did not start")
+	manager.mu.Lock()
+	flight := manager.flights[testRootKey("generation-1")]
+	manager.mu.Unlock()
+	if flight == nil {
+		t.Fatal("load flight completed before discarded searcher close finished")
+	}
+	close(allowClose)
+	if err := <-result; !errors.Is(err, releaseErr) {
+		t.Fatalf("Acquire error = %v, want release error", err)
 	}
 	if err := manager.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)

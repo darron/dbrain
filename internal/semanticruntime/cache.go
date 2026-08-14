@@ -268,10 +268,11 @@ func (m *Manager) runLoad(flight *loadFlight, release func() error) {
 		case !currentFlight || state.key != flight.key || state.sequence != flight.sequence:
 			dispositionErr = ErrRootRetired
 		default:
+			// Keep the loaded root private to this flight until the retained
+			// generation guard has been released. A warm Acquire must not be
+			// able to observe or retire the candidate while that release is in
+			// progress.
 			entry = &cacheEntry{manager: m, key: flight.key, loaded: loaded}
-			m.entries[flight.key] = entry
-			m.allEntries[entry] = struct{}{}
-			flight.entry = entry
 		}
 		m.mu.Unlock()
 	}
@@ -282,15 +283,28 @@ func (m *Manager) runLoad(flight *loadFlight, release func() error) {
 		m.recordCloseError(discardCloseErr)
 	}
 	releaseErr := release()
-	if releaseErr != nil && entry != nil {
+	if loadErr == nil && entry != nil && releaseErr == nil {
 		m.mu.Lock()
-		if m.entries[entry.key] == entry {
-			delete(m.entries, entry.key)
+		state := m.scopes[flight.key.scope()]
+		currentFlight := m.flights[flight.key] == flight
+		switch {
+		case m.shutdown:
+			dispositionErr = ErrManagerClosed
+		case !currentFlight || state.key != flight.key || state.sequence != flight.sequence:
+			dispositionErr = ErrRootRetired
+		default:
+			m.entries[flight.key] = entry
+			m.allEntries[entry] = struct{}{}
+			flight.entry = entry
+			entry = nil
 		}
-		entry.retired = true
-		flight.entry = nil
-		m.scheduleEntryCloseLocked(entry)
 		m.mu.Unlock()
+	}
+	if entry != nil {
+		if closeErr := entry.loaded.Close(); closeErr != nil {
+			discardCloseErr = errors.Join(discardCloseErr, closeErr)
+			m.recordCloseError(closeErr)
+		}
 	}
 
 	flightErr := errors.Join(loadErr, dispositionErr, discardCloseErr, releaseErr)
@@ -429,10 +443,15 @@ func (l *Lease) Search(ctx context.Context, query []float32, options semanticind
 	entry := l.entry
 	manager := entry.manager
 	manager.mu.Lock()
-	if entry.closing {
+	if manager.shutdown {
 		manager.mu.Unlock()
 		l.mu.Unlock()
-		return nil, semanticindex.Status{}, ErrLeaseClosed
+		return nil, semanticindex.Status{}, ErrManagerClosed
+	}
+	if entry.retired || entry.closing {
+		manager.mu.Unlock()
+		l.mu.Unlock()
+		return nil, semanticindex.Status{}, ErrRootRetired
 	}
 	l.operations++
 	entry.ops++
