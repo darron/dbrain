@@ -146,7 +146,7 @@ func (s *Server) readTopicNoteResource(ctx context.Context, uri string, parsed *
 }
 
 func (s *Server) readResearchResource(ctx context.Context, uri string, parsed *url.URL, query string) ([]map[string]string, error) {
-	pack, err := s.BuildResearchPack(ctx, ResearchPackOptions{
+	pack, err := s.buildResearchPack(ctx, ResearchPackOptions{
 		Question:       query,
 		Topic:          firstQueryValue(parsed.Query(), "topic"),
 		Limit:          intFromQuery(parsed.Query(), "limit"),

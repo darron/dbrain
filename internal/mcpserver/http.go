@@ -80,9 +80,15 @@ func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions, depende
 			logMCPServer("http_shutdown_failed", "duration", time.Since(start).String(), "error", err.Error())
 			if shutdownCtx.Err() != nil && errors.Is(err, shutdownCtx.Err()) {
 				go func() {
-					_ = httpServer.Shutdown(context.Background())
-					_ = server.Close()
-					_ = st.Close()
+					if err := httpServer.Shutdown(context.Background()); err != nil && !errors.Is(err, http.ErrServerClosed) {
+						logMCPServer("async_cleanup_failed", "component", "http_server", "error", err.Error())
+					}
+					if err := server.Close(); err != nil {
+						logMCPServer("async_cleanup_failed", "component", "runtime", "error", err.Error())
+					}
+					if err := st.Close(); err != nil {
+						logMCPServer("async_cleanup_failed", "component", "store", "error", err.Error())
+					}
 				}()
 				return err
 			}
@@ -190,7 +196,7 @@ func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
 			http.Error(logged, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
-	return mux
+	return transportServer.withRequestAdmission(mux)
 }
 
 func authenticateBearerToken(ctx context.Context, opts HTTPOptions, token string) (BearerTokenIdentity, bool, error) {

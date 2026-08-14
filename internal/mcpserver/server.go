@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +97,28 @@ func (l *serverLifecycle) beginRequest() error {
 	}
 	l.active++
 	return nil
+}
+
+func (s *Server) withRequestAdmission(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s == nil {
+			http.Error(w, errServerClosed.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		if s.lifecycle == nil {
+			// Preserve the zero-value Server used by protocol-only tests. Real
+			// transports are constructed through NewWithDependencies and always
+			// have lifecycle admission.
+			next.ServeHTTP(w, r)
+			return
+		}
+		if err := s.lifecycle.beginRequest(); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		defer s.lifecycle.endRequest()
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (l *serverLifecycle) endRequest() {

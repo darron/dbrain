@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -21,13 +22,21 @@ type runtimeOwner interface {
 }
 
 func closeOwnedStore(owner runtimeOwner, closeStore func() error, timeout time.Duration) error {
+	return closeOwnedStoreWithLogger(owner, closeStore, timeout, nil)
+}
+
+func closeOwnedStoreWithLogger(owner runtimeOwner, closeStore func() error, timeout time.Duration, logCleanup func(string, error)) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	shutdownErr := owner.Shutdown(ctx)
 	if ctx.Err() != nil && errors.Is(shutdownErr, ctx.Err()) {
 		go func() {
-			_ = owner.Close()
-			_ = closeStore()
+			if err := owner.Close(); err != nil && logCleanup != nil {
+				logCleanup("runtime", err)
+			}
+			if err := closeStore(); err != nil && logCleanup != nil {
+				logCleanup("store", err)
+			}
 		}()
 		return shutdownErr
 	}
@@ -77,7 +86,11 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 			return fail(errors.Join(errors.New("web handler does not expose lifecycle cleanup"), st.Close()))
 		}
 		cleanups = append(cleanups, func() error {
-			return closeOwnedStore(owner, st.Close, handlerCleanupTimeout)
+			return closeOwnedStoreWithLogger(owner, st.Close, handlerCleanupTimeout, func(component string, err error) {
+				if logOut != nil {
+					_, _ = fmt.Fprintf(logOut, "WARNING remote async cleanup failed component=%s: %v\n", component, err)
+				}
+			})
 		})
 	}
 
@@ -97,7 +110,11 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 		server := mcpserver.NewWithDependencies(cfg, st, opts.mcpDependencies)
 		mcpHandler = server.HTTPHandler(httpOptions)
 		cleanups = append(cleanups, func() error {
-			return closeOwnedStore(server, st.Close, handlerCleanupTimeout)
+			return closeOwnedStoreWithLogger(server, st.Close, handlerCleanupTimeout, func(component string, err error) {
+				if logOut != nil {
+					_, _ = fmt.Fprintf(logOut, "WARNING remote async cleanup failed component=%s: %v\n", component, err)
+				}
+			})
 		})
 	}
 

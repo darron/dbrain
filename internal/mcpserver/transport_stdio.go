@@ -45,8 +45,12 @@ func closeServerStore(server *Server, st *store.Store, timeout time.Duration) er
 	shutdownErr := server.Shutdown(shutdownCtx)
 	if shutdownCtx.Err() != nil && errors.Is(shutdownErr, shutdownCtx.Err()) {
 		go func() {
-			_ = server.Close()
-			_ = st.Close()
+			if err := server.Close(); err != nil {
+				logMCPServer("async_cleanup_failed", "component", "runtime", "error", err.Error())
+			}
+			if err := st.Close(); err != nil {
+				logMCPServer("async_cleanup_failed", "component", "store", "error", err.Error())
+			}
 		}()
 		return shutdownErr
 	}
@@ -77,7 +81,15 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			return err
 		}
 
+		if transportServer.lifecycle != nil {
+			if err := transportServer.lifecycle.beginRequest(); err != nil {
+				return err
+			}
+		}
 		response, ok := transportServer.processPayload(ctx, payload)
+		if transportServer.lifecycle != nil {
+			transportServer.lifecycle.endRequest()
+		}
 		if !ok {
 			continue
 		}

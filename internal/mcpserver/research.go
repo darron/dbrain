@@ -33,7 +33,7 @@ func (s *Server) toolResearchPack(ctx context.Context, raw json.RawMessage) (map
 		return nil, fmt.Errorf("decode research pack args: %w", err)
 	}
 
-	pack, err := s.BuildResearchPack(ctx, ResearchPackOptions{
+	pack, err := s.buildResearchPack(ctx, ResearchPackOptions{
 		Question:        args.Question,
 		Topic:           args.Topic,
 		Limit:           args.Limit,
@@ -56,6 +56,13 @@ func (s *Server) toolResearchPack(ctx context.Context, raw json.RawMessage) (map
 	return toolOKResult(formatResearchPack(pack), pack), nil
 }
 
+func (s *Server) buildResearchPack(ctx context.Context, opts ResearchPackOptions) (ResearchPack, error) {
+	if s == nil || s.lifecycle == nil {
+		return ResearchPack{}, errServerClosed
+	}
+	return s.lifecycle.buildResearchPack(ctx, opts)
+}
+
 func (s *Server) BuildResearchPack(ctx context.Context, opts ResearchPackOptions) (ResearchPack, error) {
 	if s == nil || s.lifecycle == nil {
 		return ResearchPack{}, errServerClosed
@@ -64,5 +71,5 @@ func (s *Server) BuildResearchPack(ctx context.Context, opts ResearchPackOptions
 		return ResearchPack{}, err
 	}
 	defer s.lifecycle.endRequest()
-	return s.lifecycle.buildResearchPack(ctx, opts)
+	return s.buildResearchPack(ctx, opts)
 }

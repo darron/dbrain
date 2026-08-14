@@ -45,3 +45,16 @@ func TestRunnerRetrySharesOwnerRuntime(t *testing.T) {
 		t.Fatal("runner did not retain the owner-supplied runtime")
 	}
 }
+
+func TestNewRunnerClosesFallbackRuntime(t *testing.T) {
+	cfg, st := newRunnerStore(t)
+	traceDisabled := false
+	r := newRunner(context.Background(), cfg, st, Options{
+		Question:     "fallback runtime",
+		TraceEnabled: &traceDisabled,
+	})
+	r.cancel()
+	if _, err := r.runtime.Build(context.Background(), brainresearch.Options{Question: "after cancel"}); err == nil {
+		t.Fatal("runner-owned fallback runtime remained usable after runner cancellation")
+	}
+}

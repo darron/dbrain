@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/darron/dbrain/internal/ask"
@@ -70,8 +71,18 @@ func newRunner(ctx context.Context, cfg config.Config, st *store.Store, opts Opt
 		recorder.SetChatContinuity(opts.ChatContinuity)
 	}
 	runtime := opts.Runtime
+	ownedRuntime := false
 	if runtime == nil {
 		runtime = brainresearch.NewRuntime(cfg, st)
+		ownedRuntime = true
+	}
+	if ownedRuntime {
+		baseCancel := cancel
+		var closeOnce sync.Once
+		cancel = func() {
+			baseCancel()
+			closeOnce.Do(func() { _ = runtime.Close() })
+		}
 	}
 	return &runner{
 		ctx:               runCtx,

@@ -190,6 +190,11 @@ func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts 
 	if handlerOptions.LogOutput == nil {
 		handlerOptions.LogOutput = os.Stderr
 	}
+	logCleanup := func(component string, err error) {
+		if err != nil && handlerOptions.LogOutput != nil {
+			_, _ = fmt.Fprintf(handlerOptions.LogOutput, "WARNING web async cleanup failed component=%s: %v\n", component, err)
+		}
+	}
 	handler, err := NewHandlerWithOptions(cfg, st, handlerOptions)
 	if err != nil {
 		return errors.Join(err, st.Close())
@@ -225,9 +230,15 @@ func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts 
 		if shutdownErr != nil && !errors.Is(shutdownErr, http.ErrServerClosed) {
 			if errors.Is(shutdownErr, context.DeadlineExceeded) {
 				go func() {
-					_ = httpServer.Shutdown(context.Background())
-					_ = owner.Close()
-					_ = st.Close()
+					if err := httpServer.Shutdown(context.Background()); err != nil && !errors.Is(err, http.ErrServerClosed) {
+						logCleanup("http_server", err)
+					}
+					if err := owner.Close(); err != nil {
+						logCleanup("runtime", err)
+					}
+					if err := st.Close(); err != nil {
+						logCleanup("store", err)
+					}
 				}()
 				return errors.Join(listenErr, shutdownErr)
 			}
@@ -235,17 +246,25 @@ func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts 
 	default:
 	}
 
-	return errors.Join(listenErr, shutdownErr, closeWebHandlerStore(owner, st, 10*time.Second))
+	return errors.Join(listenErr, shutdownErr, closeWebHandlerStoreWithLogger(owner, st, 10*time.Second, logCleanup))
 }
 
 func closeWebHandlerStore(handler CloseableHandler, st *store.Store, timeout time.Duration) error {
+	return closeWebHandlerStoreWithLogger(handler, st, timeout, nil)
+}
+
+func closeWebHandlerStoreWithLogger(handler CloseableHandler, st *store.Store, timeout time.Duration, logCleanup func(string, error)) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	shutdownErr := handler.Shutdown(shutdownCtx)
 	if shutdownCtx.Err() != nil && errors.Is(shutdownErr, shutdownCtx.Err()) {
 		go func() {
-			_ = handler.Close()
-			_ = st.Close()
+			if err := handler.Close(); err != nil && logCleanup != nil {
+				logCleanup("runtime", err)
+			}
+			if err := st.Close(); err != nil && logCleanup != nil {
+				logCleanup("store", err)
+			}
 		}()
 		return shutdownErr
 	}
