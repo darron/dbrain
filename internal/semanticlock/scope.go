@@ -151,11 +151,23 @@ func (s *Scope) path(family Family) string {
 type Lease struct {
 	closeOnce sync.Once
 	closeErr  error
+	mu        sync.Mutex
+	closed    bool
+	stateOnce sync.Once
+	state     *leaseState
 	lock      leaseCloser
 	path      string
 	family    Family
 	mode      Mode
 	onClose   func()
+}
+
+type leaseState struct {
+	mu      sync.Mutex
+	refs    int
+	closing bool
+	lock    leaseCloser
+	onClose func()
 }
 
 type leaseCloser interface {
@@ -167,14 +179,84 @@ func (l *Lease) Close() error {
 		return nil
 	}
 	l.closeOnce.Do(func() {
-		if l.lock != nil {
-			l.closeErr = l.lock.Close()
-		}
-		if l.onClose != nil {
-			l.onClose()
-		}
+		l.mu.Lock()
+		l.closed = true
+		state := l.sharedState()
+		l.mu.Unlock()
+		l.closeErr = state.release()
 	})
 	return l.closeErr
+}
+
+// Retain returns an independent idempotent reference to the same kernel
+// lease. The kernel lease is released only after the owner and every retained
+// reference have closed.
+func (l *Lease) Retain() (*Lease, error) {
+	if l == nil {
+		return nil, ErrLeaseClosed
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil, ErrLeaseClosed
+	}
+	state := l.sharedState()
+	if err := state.retain(); err != nil {
+		return nil, err
+	}
+	return &Lease{state: state, path: l.path, family: l.family, mode: l.mode}, nil
+}
+
+// sharedState returns the reference-counted kernel lease state. l.mu must be
+// held by callers that can race Close or Retain.
+func (l *Lease) sharedState() *leaseState {
+	l.stateOnce.Do(func() {
+		if l.state == nil {
+			l.state = &leaseState{refs: 1, lock: l.lock, onClose: l.onClose}
+		}
+	})
+	return l.state
+}
+
+func (s *leaseState) retain() error {
+	if s == nil {
+		return ErrLeaseClosed
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing || s.refs <= 0 {
+		return ErrLeaseClosed
+	}
+	s.refs++
+	return nil
+}
+
+func (s *leaseState) release() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if s.refs <= 0 {
+		s.mu.Unlock()
+		return nil
+	}
+	s.refs--
+	if s.refs != 0 {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closing = true
+	lock, onClose := s.lock, s.onClose
+	s.mu.Unlock()
+
+	var err error
+	if lock != nil {
+		err = lock.Close()
+	}
+	if onClose != nil {
+		onClose()
+	}
+	return err
 }
 
 func (l *Lease) Path() string {

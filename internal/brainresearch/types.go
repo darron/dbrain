@@ -2,6 +2,8 @@ package brainresearch
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"time"
 
 	"github.com/darron/dbrain/internal/ask"
@@ -33,6 +35,14 @@ type Builder struct {
 	semanticReadinessDiagnostics *SemanticReadinessDiagnostics
 	semanticStatus               *semanticindex.Status
 	shadowComparison             *ShadowComparison
+	lifecycle                    *builderLifecycle
+}
+
+type builderLifecycle struct {
+	closeOnce           sync.Once
+	closeErr            error
+	releaseRuntimeBuild func()
+	ownedRuntime        *Runtime
 }
 
 // SemanticReadinessDiagnostics exposes bounded, content-free catch-up debt.
@@ -79,10 +89,26 @@ func (b *Builder) Close() error {
 	if b == nil {
 		return nil
 	}
-	if closer, ok := b.semanticRetriever.(interface{ Close() error }); ok {
-		return closer.Close()
+	if b.lifecycle == nil {
+		if closer, ok := b.semanticRetriever.(interface{ Close() error }); ok {
+			return closer.Close()
+		}
+		return nil
 	}
-	return nil
+	b.lifecycle.closeOnce.Do(func() {
+		var errs []error
+		if closer, ok := b.semanticRetriever.(interface{ Close() error }); ok {
+			errs = append(errs, closer.Close())
+		}
+		if b.lifecycle.releaseRuntimeBuild != nil {
+			b.lifecycle.releaseRuntimeBuild()
+		}
+		if b.lifecycle.ownedRuntime != nil {
+			errs = append(errs, b.lifecycle.ownedRuntime.Close())
+		}
+		b.lifecycle.closeErr = errors.Join(errs...)
+	})
+	return b.lifecycle.closeErr
 }
 
 // WithSemanticRetriever returns the builder with an explicitly injected local

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/darron/dbrain/internal/config"
@@ -14,6 +15,7 @@ import (
 	"github.com/darron/dbrain/internal/semanticindex"
 	"github.com/darron/dbrain/internal/semanticlock"
 	"github.com/darron/dbrain/internal/semanticreadiness"
+	"github.com/darron/dbrain/internal/semanticruntime"
 	"github.com/darron/dbrain/internal/store"
 )
 
@@ -21,14 +23,21 @@ type runtimeDeps struct {
 	readiness  func(context.Context, *store.Store, embedding.Profile, int, time.Time) (semanticreadiness.Snapshot, error)
 	capability func() semanticindex.Capability
 	provider   func(semanticconfig.Config) (embedding.Provider, error)
-	searcher   func(context.Context, *store.Store, config.Config, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error)
+	searcher   func(context.Context, *Runtime, embedding.Profile, semanticreadiness.Snapshot, int) (semanticindex.Searcher, error)
+	rootLoader func(context.Context, *Runtime, semanticruntime.RootKey) (semanticruntime.LoadedSearcher, error)
+	rootCache  func(semanticruntime.Loader, time.Duration) *semanticruntime.Manager
 }
 
-const semanticRuntimeAdmissionTimeout = 250 * time.Millisecond
+const (
+	semanticRuntimeAdmissionTimeout    = 250 * time.Millisecond
+	semanticRuntimeRootLoadWaitTimeout = 5 * time.Second
+)
 
 var errNativeBackendUnavailable = errors.New("native_backend_unavailable")
-var errNativeRootArtifactsUnavailable = errors.New("native_root_artifacts_unavailable")
-var errSemanticGenerationBusy = errors.New("generation_busy")
+var errNativeRootArtifactsUnavailable = errors.New(string(semanticindex.ReasonNativeRootArtifactsUnavailable))
+var errSemanticGenerationBusy = errors.New(string(semanticindex.ReasonGenerationBusy))
+var errRuntimeReadinessUnavailable = errors.New(string(semanticindex.ReasonRuntimeReadinessUnavailable))
+var errSemanticRuntimeClosed = errors.New("semantic research runtime is shut down")
 
 type semanticLeaseReleaseFailure interface {
 	semanticLeaseReleaseFailure()
@@ -46,8 +55,116 @@ func defaultRuntimeDeps() runtimeDeps {
 		provider: func(cfg semanticconfig.Config) (embedding.Provider, error) {
 			return embedding.NewOllama(embedding.OllamaOptions{BaseURL: cfg.OllamaBaseURL, Model: cfg.Model, Dimensions: cfg.Dimensions})
 		},
-		searcher: runtimeSemanticSearcher,
+		searcher:   runtimeSemanticSearcher,
+		rootLoader: runtimeLoadSemanticRoot,
+		rootCache:  semanticruntime.New,
 	}
+}
+
+type runtimeRootSpec struct {
+	cacheDir       string
+	profile        embedding.Profile
+	exactMaxChunks int
+}
+
+// Runtime owns one semantic root cache for exactly one Store lifetime.
+type Runtime struct {
+	cfg       config.Config
+	st        *store.Store
+	rootCache *semanticruntime.Manager
+	deps      runtimeDeps
+
+	rootSpecsMu sync.Mutex
+	rootSpecs   map[semanticruntime.RootKey]runtimeRootSpec
+
+	activeBuilds runtimeBuildTracker
+	closeOnce    sync.Once
+	closeMu      sync.Mutex
+	closeErr     error
+	drained      chan struct{}
+}
+
+type runtimeBuildTracker struct {
+	mu      sync.Mutex
+	active  int
+	closing bool
+	drained chan struct{}
+	done    bool
+}
+
+func newRuntimeBuildTracker() runtimeBuildTracker {
+	return runtimeBuildTracker{drained: make(chan struct{})}
+}
+
+func (t *runtimeBuildTracker) begin() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closing {
+		return errSemanticRuntimeClosed
+	}
+	t.active++
+	return nil
+}
+
+func (t *runtimeBuildTracker) release() {
+	t.mu.Lock()
+	if t.active > 0 {
+		t.active--
+	}
+	t.checkDrainedLocked()
+	t.mu.Unlock()
+}
+
+func (t *runtimeBuildTracker) shutdown() <-chan struct{} {
+	t.mu.Lock()
+	t.closing = true
+	t.checkDrainedLocked()
+	drained := t.drained
+	t.mu.Unlock()
+	return drained
+}
+
+func (t *runtimeBuildTracker) checkDrainedLocked() {
+	if t.closing && t.active == 0 && !t.done {
+		t.done = true
+		close(t.drained)
+	}
+}
+
+func NewRuntime(cfg config.Config, st *store.Store) *Runtime {
+	return newRuntimeWithDeps(cfg, st, defaultRuntimeDeps())
+}
+
+func newRuntimeWithDeps(cfg config.Config, st *store.Store, deps runtimeDeps) *Runtime {
+	defaults := defaultRuntimeDeps()
+	if deps.readiness == nil {
+		deps.readiness = defaults.readiness
+	}
+	if deps.capability == nil {
+		deps.capability = defaults.capability
+	}
+	if deps.provider == nil {
+		deps.provider = defaults.provider
+	}
+	if deps.searcher == nil {
+		deps.searcher = defaults.searcher
+	}
+	if deps.rootLoader == nil {
+		deps.rootLoader = defaults.rootLoader
+	}
+	if deps.rootCache == nil {
+		deps.rootCache = defaults.rootCache
+	}
+	r := &Runtime{
+		cfg: cfg, st: st, deps: deps,
+		rootSpecs:    make(map[semanticruntime.RootKey]runtimeRootSpec),
+		activeBuilds: newRuntimeBuildTracker(),
+		drained:      make(chan struct{}),
+	}
+	r.rootCache = deps.rootCache(func(ctx context.Context, key semanticruntime.RootKey) (semanticruntime.LoadedSearcher, error) {
+		return deps.rootLoader(ctx, r, key)
+	}, semanticRuntimeRootLoadWaitTimeout)
+	return r
 }
 
 func NewRuntimeBuilder(cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool) (*Builder, error) {
@@ -59,12 +176,34 @@ func NewRuntimeBuilderContext(ctx context.Context, cfg config.Config, st *store.
 }
 
 func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store.Store, configuredOverride semanticconfig.Mode, forceOn, forceOff bool, deps runtimeDeps) (*Builder, error) {
-	if deps.searcher == nil {
-		deps.searcher = defaultRuntimeDeps().searcher
+	runtime := newRuntimeWithDeps(cfg, st, deps)
+	b, err := runtime.NewBuilderContext(ctx, configuredOverride, forceOn, forceOff)
+	if err != nil {
+		_ = runtime.Close()
+		return nil, err
 	}
-	if deps.capability == nil {
-		deps.capability = semanticindex.RuntimeCapability
+	b.lifecycle.ownedRuntime = runtime
+	return b, nil
+}
+
+func (r *Runtime) NewBuilderContext(ctx context.Context, configuredOverride semanticconfig.Mode, forceOn, forceOff bool) (*Builder, error) {
+	if r == nil {
+		return nil, errSemanticRuntimeClosed
 	}
+	if err := r.activeBuilds.begin(); err != nil {
+		return nil, err
+	}
+	b, err := r.newBuilderContext(ctx, configuredOverride, forceOn, forceOff)
+	if err != nil {
+		r.activeBuilds.release()
+		return nil, err
+	}
+	b.lifecycle = &builderLifecycle{releaseRuntimeBuild: r.activeBuilds.release}
+	return b, nil
+}
+
+func (r *Runtime) newBuilderContext(ctx context.Context, configuredOverride semanticconfig.Mode, forceOn, forceOff bool) (*Builder, error) {
+	cfg, st, deps := r.cfg, r.st, r.deps
 	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, forceOn, forceOff); err != nil {
 		return nil, err
 	}
@@ -140,7 +279,7 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 			return b, nil
 		}
 	}
-	searcher, err := deps.searcher(ctx, st, cfg, profile, snapshot, exactMaxChunks)
+	searcher, err := deps.searcher(ctx, r, profile, snapshot, exactMaxChunks)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -182,6 +321,69 @@ func newRuntimeBuilderWithDeps(ctx context.Context, cfg config.Config, st *store
 		Profile: profile, Limit: ready.CandidateDepth, MaxChunks: exactMaxChunks,
 		Timeout: researchsemantic.DefaultQueryTimeout,
 	}), nil
+}
+
+func (r *Runtime) Build(ctx context.Context, opts Options) (Pack, error) {
+	b, err := r.NewBuilderContext(ctx, opts.EffectiveSemanticMode, opts.UseSemantic, opts.DisableSemantic)
+	if err != nil {
+		return Pack{}, err
+	}
+	pack, buildErr := b.Build(ctx, opts)
+	return pack, errors.Join(buildErr, b.Close())
+}
+
+func (r *Runtime) Shutdown(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.closeOnce.Do(func() {
+		buildsDrained := r.activeBuilds.shutdown()
+		go func() {
+			cacheErr := r.rootCache.Close()
+			<-buildsDrained
+			r.closeMu.Lock()
+			r.closeErr = cacheErr
+			r.closeMu.Unlock()
+			close(r.drained)
+		}()
+	})
+	select {
+	case <-r.drained:
+		r.closeMu.Lock()
+		defer r.closeMu.Unlock()
+		return r.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *Runtime) Drained() <-chan struct{} {
+	if r == nil {
+		drained := make(chan struct{})
+		close(drained)
+		return drained
+	}
+	return r.drained
+}
+
+func (r *Runtime) Close() error {
+	return r.Shutdown(context.Background())
+}
+
+func (r *Runtime) registerRootSpec(key semanticruntime.RootKey, spec runtimeRootSpec) {
+	r.rootSpecsMu.Lock()
+	r.rootSpecs[key] = spec
+	r.rootSpecsMu.Unlock()
+}
+
+func (r *Runtime) rootSpec(key semanticruntime.RootKey) (runtimeRootSpec, bool) {
+	r.rootSpecsMu.Lock()
+	defer r.rootSpecsMu.Unlock()
+	spec, ok := r.rootSpecs[key]
+	return spec, ok
 }
 
 func runtimeGenerationLeaseAcquirer(ctx context.Context, st *store.Store, cfg config.Config) (researchsemantic.GenerationLeaseAcquirer, error) {
