@@ -44,7 +44,7 @@ func newLinkCaptureDeadLettersCommand(root *rootOptions) *cobra.Command {
 				return err
 			}
 			if jsonOut {
-				return writeJSON(cmd.OutOrStdout(), captures)
+				return writeJSON(cmd.OutOrStdout(), redactLinkCapturesForOutput(captures))
 			}
 			if len(captures) == 0 {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no dead-lettered link captures")
@@ -113,7 +113,12 @@ func newLinkCaptureRequeueCommand(root *rootOptions) *cobra.Command {
 			}
 			if jsonOut {
 				if len(results) == 1 {
-					return writeJSON(cmd.OutOrStdout(), results[0])
+					result := results[0]
+					result.Capture = redactLinkCaptureForOutput(result.Capture)
+					return writeJSON(cmd.OutOrStdout(), result)
+				}
+				for i := range results {
+					results[i].Capture = redactLinkCaptureForOutput(results[i].Capture)
 				}
 				return writeJSON(cmd.OutOrStdout(), results)
 			}
@@ -125,4 +130,22 @@ func newLinkCaptureRequeueCommand(root *rootOptions) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print requeued captures as JSON")
 	return cmd
+}
+
+func redactLinkCaptureForOutput(capture store.LinkCapture) store.LinkCapture {
+	capture.Candidate.OriginalURL = redactURLUserInfo(capture.Candidate.OriginalURL)
+	capture.Candidate.CanonicalURL = redactURLUserInfo(capture.Candidate.CanonicalURL)
+	capture.Candidate.NormalizedURL = redactURLUserInfo(capture.Candidate.NormalizedURL)
+	return capture
+}
+
+func redactLinkCapturesForOutput(captures []store.LinkCapture) []store.LinkCapture {
+	if captures == nil {
+		return nil
+	}
+	redacted := make([]store.LinkCapture, len(captures))
+	for i, capture := range captures {
+		redacted[i] = redactLinkCaptureForOutput(capture)
+	}
+	return redacted
 }

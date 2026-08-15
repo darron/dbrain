@@ -15,9 +15,10 @@ development date for the change set.
   captures expose their failure kind through `dbrain link capture dead-letters`
   and can be explicitly reopened with `dbrain link capture requeue`.
 - **Contention follow-ups**: Admission timeout coverage now tests the actual
-  SQLite busy-timeout mechanism; direct web and MCP entry points use the shared
-  four-connection pool; bypass access-log entries say `auth="bypass"`; and
-  pending duplicate saves preserve their current attempt budget.
+  SQLite busy-timeout mechanism; direct web and HTTP-based MCP entry points use
+  the shared four-connection pool; bypass access-log entries say
+  `auth="bypass"`; and pending duplicate saves preserve their current attempt
+  budget.
 - **Deferred timing contract**: Documentation names the next `sync all` and the
   configured scheduler interval rather than promising an hourly run. The
   process-wide starvation channel remains outside this change.

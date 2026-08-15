@@ -199,7 +199,10 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 			// the live worker context here: processCtx is cancelled immediately
 			// after processCapture returns, and the terminal fallback must still
 			// be able to write when the failed attempt used its full timeout.
-			if fallbackErr := w.fallbackCapture(ctx, capture); fallbackErr == nil {
+			fallbackCtx, fallbackCancel := context.WithTimeout(ctx, w.captureTimeout)
+			fallbackErr := w.fallbackCapture(fallbackCtx, capture)
+			fallbackCancel()
+			if fallbackErr == nil {
 				if err := w.store.MarkLinkCaptureProcessed(ctx, capture.ID, w.now().UTC()); err != nil {
 					event.Outcome = "mark_processed_error"
 					event.ErrorKind = "mark_processed"
@@ -214,7 +217,7 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 				// failed, not because the original feed/import attempt failed.
 				// Keep the persisted category truthful; the joined error still
 				// retains the original failure for the worker log.
-				event.ErrorKind = "source_upsert"
+				event.ErrorKind = failureKind(fallbackErr)
 				processErr = errors.Join(processErr, fallbackErr)
 			}
 			event.Outcome = "dead_letter"

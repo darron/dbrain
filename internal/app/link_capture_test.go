@@ -26,9 +26,9 @@ func TestLinkCaptureDeadLetterCommandsListAndRequeue(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	candidate := model.SourceCandidate{
-		OriginalURL:   "https://example.com/dead-letter",
-		CanonicalURL:  "https://example.com/dead-letter",
-		NormalizedURL: "https://example.com/dead-letter",
+		OriginalURL:   "https://user:pass@example.com/dead-letter",
+		CanonicalURL:  "https://user:pass@example.com/dead-letter",
+		NormalizedURL: "https://user:pass@example.com/dead-letter",
 		SourceType:    "web",
 		Domain:        "example.com",
 		SourceKey:     "src:dead-letter-command",
@@ -55,16 +55,22 @@ func TestLinkCaptureDeadLetterCommandsListAndRequeue(t *testing.T) {
 	}
 
 	humanOutput := runRootCommand(t, root, "link", "capture", "dead-letters")
-	for _, want := range []string{"ID", "FAILURE_KIND", "feed_import", "https://example.com/dead-letter"} {
+	for _, want := range []string{"ID", "FAILURE_KIND", "feed_import", "https://user:REDACTED@example.com/dead-letter"} {
 		if !strings.Contains(humanOutput, want) {
 			t.Fatalf("human dead-letter output missing %q: %s", want, humanOutput)
 		}
+	}
+	if strings.Contains(humanOutput, "user:pass@") {
+		t.Fatalf("human dead-letter output exposed URL credentials: %s", humanOutput)
 	}
 
 	listOutput := runRootCommand(t, root, "link", "capture", "dead-letters", "--json")
 	var listed []store.LinkCapture
 	if err := json.Unmarshal([]byte(listOutput), &listed); err != nil {
 		t.Fatalf("decode dead-letter list: %v\n%s", err, listOutput)
+	}
+	if strings.Contains(listOutput, "user:pass@") || !strings.Contains(listOutput, "user:REDACTED@") {
+		t.Fatalf("JSON dead-letter list redaction = %s", listOutput)
 	}
 	if len(listed) != 1 || listed[0].ID != enqueued.Capture.ID || listed[0].LastError != "feed_import" || listed[0].AttemptCount != store.MaxLinkCaptureAttempts {
 		t.Fatalf("dead-letter list = %+v", listed)
@@ -77,6 +83,9 @@ func TestLinkCaptureDeadLetterCommandsListAndRequeue(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(requeueOutput), &requeued); err != nil {
 		t.Fatalf("decode requeue result: %v\n%s", err, requeueOutput)
+	}
+	if strings.Contains(requeueOutput, "user:pass@") || !strings.Contains(requeueOutput, "user:REDACTED@") {
+		t.Fatalf("JSON requeue redaction = %s", requeueOutput)
 	}
 	if !requeued.Reopened || requeued.Capture.ID != enqueued.Capture.ID {
 		t.Fatalf("requeue result = %+v", requeued)
