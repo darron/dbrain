@@ -136,7 +136,7 @@ func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
 			}
 		}
 		defer func() {
-			logMCPAccess(opts.LogOutput, r, logged.statusCode(), access)
+			logMCPAccess(opts.LogOutput, r, logged.statusCode(), access, transportServer.st.PoolStats())
 		}()
 
 		if !originAllowed(r, opts.AllowedOrigins) {

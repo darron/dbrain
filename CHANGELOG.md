@@ -5,6 +5,14 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Database pool diagnostics (2026-08-15)
+
+- **Request-level contention evidence**: Web and MCP access logs now include
+  the live database pool size, connection usage, cumulative wait count, and
+  cumulative wait duration. This distinguishes pool head-of-line blocking
+  from slow queries or process-wide scheduling problems during production
+  sync observation.
+
 ### Deferred capture fallback and follow-up hardening (2026-08-15)
 
 - **Normal enrichment ownership after capture retries**: A valid deferred

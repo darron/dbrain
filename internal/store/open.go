@@ -61,6 +61,35 @@ type Store struct {
 	retrievalProjectionPlanHashObserved func(int)
 }
 
+// PoolStats is a point-in-time snapshot of the store's database/sql pool.
+// WaitCount and WaitDuration are cumulative since the pool was opened; the
+// connection counts describe the pool at the time of the snapshot.
+type PoolStats struct {
+	MaxOpenConnections int
+	OpenConnections    int
+	InUse              int
+	Idle               int
+	WaitCount          int64
+	WaitDuration       time.Duration
+}
+
+// PoolStats returns the live database/sql pool counters used by operational
+// request logging. A zero-value snapshot is returned for an unavailable store.
+func (s *Store) PoolStats() PoolStats {
+	if s == nil || s.db == nil {
+		return PoolStats{}
+	}
+	stats := s.db.Stats()
+	return PoolStats{
+		MaxOpenConnections: stats.MaxOpenConnections,
+		OpenConnections:    stats.OpenConnections,
+		InUse:              stats.InUse,
+		Idle:               stats.Idle,
+		WaitCount:          stats.WaitCount,
+		WaitDuration:       stats.WaitDuration,
+	}
+}
+
 type sqlQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row

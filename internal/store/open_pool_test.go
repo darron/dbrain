@@ -50,6 +50,52 @@ func TestWritablePoolInitializesPragmasOnEveryConnection(t *testing.T) {
 	}
 }
 
+func TestPoolStatsReportsConnectionWait(t *testing.T) {
+	t.Parallel()
+
+	st, err := OpenWithOptions(filepath.Join(t.TempDir(), "brain.db"), OpenOptions{
+		MaxOpenConns: 1,
+		MaxIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("open writable pool: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	conn, err := st.db.Conn(t.Context())
+	if err != nil {
+		t.Fatalf("checkout connection: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	before := st.PoolStats()
+	queryDone := make(chan error, 1)
+	go func() {
+		var value int
+		queryDone <- st.db.QueryRowContext(t.Context(), "SELECT 1").Scan(&value)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && st.PoolStats().WaitCount < before.WaitCount+1 {
+		time.Sleep(time.Millisecond)
+	}
+	waiting := st.PoolStats()
+	if waiting.WaitCount < before.WaitCount+1 {
+		t.Fatalf("pool wait count did not increase: before=%+v after=%+v", before, waiting)
+	}
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("release held connection: %v", err)
+	}
+	if err := <-queryDone; err != nil {
+		t.Fatalf("waiting query: %v", err)
+	}
+	after := st.PoolStats()
+	if after.WaitDuration <= before.WaitDuration {
+		t.Fatalf("pool wait duration did not increase: before=%+v after=%+v", before, after)
+	}
+}
+
 func TestLinkCaptureAdmissionPoolUsesShortBusyTimeout(t *testing.T) {
 	t.Parallel()
 

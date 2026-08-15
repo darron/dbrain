@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/darron/dbrain/internal/store"
 )
 
 type webRequestStartedAtKey struct{}
@@ -26,7 +28,7 @@ func (s *server) withAccessLogging(next http.Handler) http.Handler {
 			if s.auth != nil {
 				auth = "bypass"
 			}
-			logWebAccess(s.logOutput, r.WithContext(ctx), logged.statusCode(), auth, "")
+			logWebAccess(s.logOutput, r.WithContext(ctx), logged.statusCode(), auth, "", s.store.PoolStats())
 			state.logged = true
 		}
 	})
@@ -96,13 +98,13 @@ func (a *authManager) logAccess(r *http.Request, status int, user authUser, auth
 			identity = strings.TrimSpace(user.ID)
 		}
 	}
-	logWebAccess(a.logOutput, r, status, auth, identity)
+	logWebAccess(a.logOutput, r, status, auth, identity, a.store.PoolStats())
 	if state, ok := r.Context().Value(webAccessLoggedKey{}).(*webAccessLogState); ok {
 		state.logged = true
 	}
 }
 
-func logWebAccess(out io.Writer, r *http.Request, status int, auth string, identity string) {
+func logWebAccess(out io.Writer, r *http.Request, status int, auth string, identity string, pool store.PoolStats) {
 	if out == nil {
 		out = os.Stderr
 	}
@@ -113,5 +115,5 @@ func logWebAccess(out io.Writer, r *http.Request, status int, auth string, ident
 	if started, ok := r.Context().Value(webRequestStartedAtKey{}).(time.Time); ok {
 		duration = time.Since(started)
 	}
-	_, _ = fmt.Fprintf(out, "DEBUG %s web request method=%s path=%s status=%d duration=%s auth=%q identity=%q remote=%q\n", time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, status, duration, auth, identity, r.RemoteAddr)
+	_, _ = fmt.Fprintf(out, "DEBUG %s web request method=%s path=%s status=%d duration=%s db_max_open=%d db_open=%d db_in_use=%d db_idle=%d db_wait_count=%d db_wait_duration=%s auth=%q identity=%q remote=%q\n", time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, status, duration, pool.MaxOpenConnections, pool.OpenConnections, pool.InUse, pool.Idle, pool.WaitCount, pool.WaitDuration, auth, identity, r.RemoteAddr)
 }
