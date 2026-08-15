@@ -46,8 +46,6 @@ func closeOwnedStoreWithLogger(owner runtimeOwner, closeStore func() error, time
 
 const handlerCleanupTimeout = 10 * time.Second
 
-const interactivePoolSize = 4
-
 func remoteLeaseWaitObserver(out io.Writer) store.AuthoritativeWriteWaitObserver {
 	return func(event store.AuthoritativeWriteWaitEvent) {
 		if out == nil {
@@ -78,8 +76,8 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 	if opts.Web {
 		st, err := store.OpenWithSemanticCacheOptions(cfg.DBPath, cfg.CacheDir, store.OpenOptions{
 			MigrationReporter:          startuplog.MigrationReporter(logOut),
-			MaxOpenConns:               interactivePoolSize,
-			MaxIdleConns:               interactivePoolSize,
+			MaxOpenConns:               store.InteractivePoolSize,
+			MaxIdleConns:               store.InteractivePoolSize,
 			AuthoritativeWriteObserver: remoteLeaseWaitObserver(logOut),
 		})
 		if err != nil {
@@ -113,8 +111,8 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 	var mcpHandler http.Handler
 	if opts.MCP {
 		st, err := store.OpenReadOnlyWithOptions(cfg.DBPath, store.OpenOptions{
-			MaxOpenConns: interactivePoolSize,
-			MaxIdleConns: interactivePoolSize,
+			MaxOpenConns: store.InteractivePoolSize,
+			MaxIdleConns: store.InteractivePoolSize,
 		})
 		if err != nil {
 			return fail(err)

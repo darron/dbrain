@@ -110,6 +110,10 @@ func (s *Store) EnqueueLinkCapture(ctx context.Context, candidate model.SourceCa
 			return LinkCaptureEnqueueResult{}, fmt.Errorf("reopen link capture: %w", err)
 		}
 
+		// A pending duplicate is an explicit retry request: clear stale
+		// backoff/error state, but preserve attempt_count so repeated saves
+		// cannot erase the current failure budget. Processed/dead rows take
+		// the reopen transition above and intentionally start a new window.
 		err = db.QueryRowContext(ctx, `
 			UPDATE link_capture_queue
 			SET original_url = ?, canonical_url = ?, source_type = ?, domain = ?,
@@ -194,6 +198,43 @@ func (s *Store) ListPendingLinkCaptures(ctx context.Context, now time.Time, limi
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate pending link captures: %w", err)
+	}
+	return captures, nil
+}
+
+// ListDeadLetteredLinkCaptures returns captures whose bounded intake retry
+// window ended without creating a source. The failure fields are deliberately
+// exposed as queue state: LastError is a normalized failure kind, not a raw
+// diagnostic message.
+func (s *Store) ListDeadLetteredLinkCaptures(ctx context.Context, limit int) ([]LinkCapture, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("link capture store is nil")
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := s.db.QueryContext(ctx, linkCaptureSelect+`
+		WHERE q.dead_lettered_at <> ''
+		ORDER BY q.dead_lettered_at DESC, q.id DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list dead-lettered link captures: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var captures []LinkCapture
+	for rows.Next() {
+		var capture LinkCapture
+		var fields linkCaptureScanFields
+		if err := rows.Scan(fields.values()...); err != nil {
+			return nil, fmt.Errorf("scan dead-lettered link capture: %w", err)
+		}
+		if err := fields.apply(&capture); err != nil {
+			return nil, fmt.Errorf("parse dead-lettered link capture: %w", err)
+		}
+		captures = append(captures, capture)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dead-lettered link captures: %w", err)
 	}
 	return captures, nil
 }

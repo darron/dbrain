@@ -61,7 +61,7 @@ func TestLinkCaptureQueueDuplicateReopensProcessedRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get refreshed pending capture: %v", err)
 	}
-	if !refreshed.NextAttemptAt.IsZero() || refreshed.LastError != "" {
+	if !refreshed.NextAttemptAt.IsZero() || refreshed.LastError != "" || refreshed.AttemptCount != 1 {
 		t.Fatalf("pending duplicate retained stale retry state: %+v", refreshed)
 	}
 }
@@ -93,7 +93,7 @@ func TestLinkCaptureQueueDoesNotWaitForSemanticLease(t *testing.T) {
 	}
 }
 
-func TestLinkCaptureQueueAdmissionHonorsSQLiteContextDeadline(t *testing.T) {
+func TestLinkCaptureQueueAdmissionUsesConfiguredBusyTimeout(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "brain.db")
@@ -108,15 +108,19 @@ func TestLinkCaptureQueueAdmissionHonorsSQLiteContextDeadline(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = blocker.ExecContext(context.Background(), `ROLLBACK`) })
 
-	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
-	defer cancel()
 	started := time.Now()
-	_, err = st.EnqueueLinkCapture(ctx, linkCaptureTestCandidate(), started.UTC())
+	// The modernc driver reports a Go context error only after SQLite's busy
+	// handler finishes waiting. The admission connection's per-connection
+	// busy_timeout is therefore the real request bound; this test must assert
+	// that mechanism rather than teach callers that a short context cancels the
+	// SQLite lock wait.
+	_, err = st.EnqueueLinkCapture(t.Context(), linkCaptureTestCandidate(), started.UTC())
 	if err == nil {
 		t.Fatal("expected bounded intake write to fail while SQLite writer is held")
 	}
-	if elapsed := time.Since(started); elapsed > 3*time.Second {
-		t.Fatalf("intake write ignored context deadline: %s (%v)", elapsed, err)
+	elapsed := time.Since(started)
+	if elapsed < LinkCaptureAdmissionBusyTimeout-500*time.Millisecond || elapsed > LinkCaptureAdmissionBusyTimeout+time.Second {
+		t.Fatalf("intake write did not honor configured busy timeout: %s (%v)", elapsed, err)
 	}
 }
 
@@ -187,6 +191,13 @@ func TestLinkCaptureQueueDeadLettersAfterBoundedAttempts(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("dead-lettered capture remained pending: %+v", pending)
+	}
+	dead, err := st.ListDeadLetteredLinkCaptures(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("list dead-lettered captures: %v", err)
+	}
+	if len(dead) != 1 || dead[0].ID != enqueued.Capture.ID || dead[0].AttemptCount != MaxLinkCaptureAttempts || dead[0].LastError != "worker_processing" || dead[0].DeadLetteredAt.IsZero() {
+		t.Fatalf("dead-lettered captures = %+v", dead)
 	}
 	if reopened, err := st.EnqueueLinkCapture(t.Context(), linkCaptureTestCandidate(), time.Now().UTC()); err != nil {
 		t.Fatalf("reopen dead-lettered capture: %v", err)

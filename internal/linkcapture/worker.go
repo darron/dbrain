@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -191,6 +192,34 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		event.Outcome = "retry"
 		event.ErrorKind = failureKind(processErr)
 		if capture.AttemptCount >= store.MaxLinkCaptureAttempts {
+			// The capture queue is an intake boundary, not the source
+			// enrichment retry policy. If the bounded intake work exhausted
+			// its attempts, preserve a valid URL as an ordinary source so the
+			// source worker can apply its failure-kind-aware retry rules. Use
+			// the live worker context here: processCtx is cancelled immediately
+			// after processCapture returns, and the terminal fallback must still
+			// be able to write when the failed attempt used its full timeout.
+			fallbackCtx, fallbackCancel := context.WithTimeout(ctx, w.captureTimeout)
+			fallbackErr := w.fallbackCapture(fallbackCtx, capture)
+			fallbackCancel()
+			if fallbackErr == nil {
+				if err := w.store.MarkLinkCaptureProcessed(ctx, capture.ID, w.now().UTC()); err != nil {
+					event.Outcome = "mark_processed_error"
+					event.ErrorKind = "mark_processed"
+					w.observeEvent(event)
+					return true, err
+				}
+				event.Outcome = "processed_fallback"
+				w.observeEvent(event)
+				return true, nil
+			} else {
+				// The terminal row is parked because the local fallback write
+				// failed, not because the original feed/import attempt failed.
+				// Keep the persisted category truthful; the joined error still
+				// retains the original failure for the worker log.
+				event.ErrorKind = failureKind(fallbackErr)
+				processErr = errors.Join(processErr, fallbackErr)
+			}
 			event.Outcome = "dead_letter"
 		}
 		failedAt := w.now().UTC()
@@ -208,6 +237,16 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	event.Outcome = "processed"
 	w.observeEvent(event)
 	return true, nil
+}
+
+func (w *Worker) fallbackCapture(ctx context.Context, capture store.LinkCapture) error {
+	if strings.TrimSpace(capture.Candidate.NormalizedURL) == "" {
+		return &processingError{kind: "invalid_capture", err: errors.New("capture normalized URL is empty")}
+	}
+	if _, err := w.store.UpsertSource(ctx, capture.Candidate); err != nil {
+		return &processingError{kind: "source_upsert", err: err}
+	}
+	return nil
 }
 
 func (w *Worker) processCapture(ctx context.Context, capture store.LinkCapture) error {

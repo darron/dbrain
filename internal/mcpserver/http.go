@@ -25,6 +25,7 @@ type HTTPOptions struct {
 	Addr                     string
 	Path                     string
 	AllowedOrigins           []string
+	StoreOpenOptions         store.OpenOptions
 	MaxBodyBytes             int64
 	RequireBearerAuth        bool
 	BearerTokenValidator     BearerTokenValidator
@@ -35,7 +36,7 @@ type HTTPOptions struct {
 func ServeHTTP(ctx context.Context, cfg config.Config, opts HTTPOptions, dependencies ...ServerDependencies) error {
 	start := time.Now()
 	logMCPServer("starting_http", "db_path", cfg.DBPath, "addr", defaultString(opts.Addr, DefaultHTTPAddr), "path", defaultString(opts.Path, DefaultHTTPPath), "pid", fmt.Sprintf("%d", os.Getpid()))
-	st, err := store.OpenReadOnly(cfg.DBPath)
+	st, err := store.OpenReadOnlyWithOptions(cfg.DBPath, opts.StoreOpenOptions)
 	if err != nil {
 		logMCPServer("store_open_failed", "duration", time.Since(start).String(), "error", err.Error())
 		return err

@@ -74,9 +74,10 @@ when you intentionally want public Tailscale Funnel exposure.`,
 				startuplog.WriteVersion(cmd.ErrOrStderr())
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "MCP HTTP: http://%s%s\n", resolvedAddr, resolvedPath)
 				return mcpserver.ServeHTTP(cmd.Context(), cfg, mcpserver.HTTPOptions{
-					Addr:           resolvedAddr,
-					Path:           resolvedPath,
-					AllowedOrigins: allowOrigins,
+					Addr:             resolvedAddr,
+					Path:             resolvedPath,
+					AllowedOrigins:   allowOrigins,
+					StoreOpenOptions: interactiveStoreOpenOptions(),
 				}, auditDependencies)
 			case "tsnet":
 				var auditDependencies mcpserver.ServerDependencies

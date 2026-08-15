@@ -83,6 +83,30 @@ auth:
 	}
 }
 
+func TestAccessLogLabelsPublicRouteAsBypassWhenAuthEnabled(t *testing.T) {
+	t.Parallel()
+
+	cfg, st := openTestStore(t)
+	writeAuthConfig(t, cfg, validAuthConfigYAML())
+	var accessLog bytes.Buffer
+	handler, err := NewHandlerWithOptions(cfg, st, HandlerOptions{LogOutput: &accessLog})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("login status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	logOutput := accessLog.String()
+	if !strings.Contains(logOutput, `path=/login`) || !strings.Contains(logOutput, `auth="bypass"`) {
+		t.Fatalf("public auth-bypass log = %q", logOutput)
+	}
+	if strings.Contains(logOutput, `auth="disabled"`) {
+		t.Fatalf("auth-enabled bypass route was logged as disabled: %q", logOutput)
+	}
+}
+
 func TestLoadAuthConfigRequiresStrongSessionKey(t *testing.T) {
 	cfg := loadTestConfig(t)
 	writeAuthConfig(t, cfg, `

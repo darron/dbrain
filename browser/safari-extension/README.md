@@ -47,6 +47,11 @@ project.
 
 The toolbar button posts the active tab URL to `POST /api/links` with
 `{ "url": "...", "enrich": false, "defer": true }`. dbrain durably captures
-the URL before returning `202 Accepted`; feed discovery and source enrichment
-run later. If dbrain web auth is enabled, log in to dbrain in Safari first; a
+the URL before returning `202 Accepted`; feed discovery or ordinary source
+creation runs in the deferred worker. The next `sync all` sources stage
+extracts and summarizes the source; when `scheduler.sync_all` is enabled, its
+configured `scheduler.sync_all.interval` controls when that happens (the
+default interval is `1h`). `dbrain web` alone does not run a scheduler, and
+`enrich` has no immediate stats payload with a deferred `202`. If dbrain web
+auth is enabled, log in to dbrain in Safari first; a
 `401` opens the dbrain login page.
