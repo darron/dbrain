@@ -17,6 +17,15 @@ import (
 
 const driverName = "sqlite"
 
+// InteractivePoolSize is the shared pool size for live web and MCP consumers.
+const InteractivePoolSize = 4
+
+// LinkCaptureAdmissionBusyTimeout is the effective lock-wait budget for the
+// deferred link admission connection. The modernc SQLite driver may report a
+// context error only after its busy handler has waited, so callers should use
+// this value when they need a bounded admission request.
+const LinkCaptureAdmissionBusyTimeout = 2 * time.Second
+
 type Store struct {
 	db *sql.DB
 	// Link-capture admission uses a dedicated one-connection pool with a short
@@ -266,7 +275,7 @@ func writableDSN(path string) string {
 
 const (
 	writableBusyTimeoutMillis             = 60000
-	linkCaptureAdmissionBusyTimeoutMillis = 2000
+	linkCaptureAdmissionBusyTimeoutMillis = int(LinkCaptureAdmissionBusyTimeout / time.Millisecond)
 )
 
 func writableDSNWithBusyTimeout(path string, busyTimeoutMillis int) string {

@@ -22,7 +22,11 @@ func (s *server) withAccessLogging(next http.Handler) http.Handler {
 		logged := newWebAccessLogWriter(w)
 		next.ServeHTTP(logged, r.WithContext(ctx))
 		if s != nil && !state.logged {
-			logWebAccess(s.logOutput, r.WithContext(ctx), logged.statusCode(), "disabled", "")
+			auth := "disabled"
+			if s.auth != nil {
+				auth = "bypass"
+			}
+			logWebAccess(s.logOutput, r.WithContext(ctx), logged.statusCode(), auth, "")
 			state.logged = true
 		}
 	})

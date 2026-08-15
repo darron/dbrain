@@ -16,7 +16,7 @@ func newLinkCommand(root *rootOptions) *cobra.Command {
 		Short: "Add and manage manually submitted links",
 		RunE:  helpCommand,
 	}
-	cmd.AddCommand(newLinkAddCommand(root))
+	cmd.AddCommand(newLinkAddCommand(root), newLinkCaptureCommand(root))
 	return cmd
 }
 

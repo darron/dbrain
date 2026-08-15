@@ -12,9 +12,13 @@ import (
 	"github.com/darron/dbrain/internal/linkadd"
 	"github.com/darron/dbrain/internal/linkextract"
 	"github.com/darron/dbrain/internal/model"
+	"github.com/darron/dbrain/internal/store"
 )
 
-const linkCaptureAdmissionTimeout = 2 * time.Second
+// The SQLite busy handler, not the Go context, is the effective bound for
+// admission lock waits. Keep the request context aligned with the store's
+// per-connection busy timeout so the two budgets cannot drift by hand.
+const linkCaptureAdmissionTimeout = store.LinkCaptureAdmissionBusyTimeout
 
 func (s *server) handleTag(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

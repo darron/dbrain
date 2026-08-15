@@ -118,6 +118,119 @@ func TestWorkerBackoffStartsAfterProcessingFinishes(t *testing.T) {
 	}
 }
 
+func TestWorkerExhaustedCaptureFallsBackToOrdinarySource(t *testing.T) {
+	t.Parallel()
+
+	st := openLinkCaptureWorkerStore(t)
+	base := time.Date(2026, time.August, 15, 4, 0, 0, 0, time.UTC)
+	candidate := workerTestCandidateWithURL("https://example.com/feed.xml")
+	enqueued, err := st.EnqueueLinkCapture(t.Context(), candidate, base)
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	clockCalls := 0
+	fetcher := &failingWorkerFeedFetcher{}
+	var observed QueueEvent
+	worker := New(config.Config{}, st, Options{
+		Now: func() time.Time {
+			current := base.Add(time.Duration(clockCalls) * time.Hour)
+			clockCalls++
+			return current
+		},
+		FeedFetcher: fetcher,
+		Observe:     func(event QueueEvent) { observed = event },
+	})
+
+	for attempt := 1; attempt <= store.MaxLinkCaptureAttempts; attempt++ {
+		worked, runErr := worker.RunOnce(t.Context())
+		if !worked {
+			t.Fatalf("attempt %d did no work", attempt)
+		}
+		if attempt < store.MaxLinkCaptureAttempts && runErr == nil {
+			t.Fatalf("attempt %d unexpectedly succeeded", attempt)
+		}
+		if attempt == store.MaxLinkCaptureAttempts && runErr != nil {
+			t.Fatalf("terminal fallback failed: %v", runErr)
+		}
+	}
+
+	if observed.Outcome != "processed_fallback" || observed.ErrorKind != "feed_import" {
+		t.Fatalf("terminal fallback event = %+v", observed)
+	}
+	if _, err := st.GetSource(t.Context(), candidate.SourceKey); err != nil {
+		t.Fatalf("fallback source was not created: %v", err)
+	}
+	sources, err := st.ListSourcesForEnrichment(t.Context(), 10, false, true, "dbrain-v1", "summarize", "")
+	if err != nil {
+		t.Fatalf("list fallback source backlog: %v", err)
+	}
+	if len(sources) != 1 || sources[0].SourceKey != candidate.SourceKey || sources[0].ExtractStatus != "" {
+		t.Fatalf("fallback source backlog = %+v", sources)
+	}
+	if fetcher.calls != store.MaxLinkCaptureAttempts {
+		t.Fatalf("failing feed fetch calls = %d, want %d", fetcher.calls, store.MaxLinkCaptureAttempts)
+	}
+	capture, err := st.GetLinkCapture(t.Context(), enqueued.Capture.ID)
+	if err != nil {
+		t.Fatalf("get fallback capture: %v", err)
+	}
+	if capture.ProcessedAt.IsZero() || !capture.DeadLetteredAt.IsZero() {
+		t.Fatalf("fallback capture state = %+v", capture)
+	}
+}
+
+func TestWorkerFallbackFailureParksAsSourceUpsert(t *testing.T) {
+	t.Parallel()
+
+	st := openLinkCaptureWorkerStore(t)
+	base := time.Date(2026, time.August, 15, 4, 0, 0, 0, time.UTC)
+	conflicting := workerTestCandidateWithURL("https://example.com/existing")
+	conflicting.SourceKey = "src:fallback-conflict"
+	if _, err := st.UpsertSource(t.Context(), conflicting); err != nil {
+		t.Fatalf("seed conflicting source: %v", err)
+	}
+	candidate := workerTestCandidateWithURL("https://example.com/exhausted-fallback")
+	candidate.SourceKey = conflicting.SourceKey
+	enqueued, err := st.EnqueueLinkCapture(t.Context(), candidate, base)
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	clockCalls := 0
+	var observed QueueEvent
+	worker := New(config.Config{}, st, Options{
+		Now: func() time.Time {
+			current := base.Add(time.Duration(clockCalls) * time.Hour)
+			clockCalls++
+			return current
+		},
+		Process: func(context.Context, store.LinkCapture) error {
+			return &processingError{kind: "feed_import", err: errors.New("feed import failed")}
+		},
+		Observe: func(event QueueEvent) { observed = event },
+	})
+
+	for attempt := 1; attempt <= store.MaxLinkCaptureAttempts; attempt++ {
+		worked, runErr := worker.RunOnce(t.Context())
+		if !worked {
+			t.Fatalf("attempt %d did no work", attempt)
+		}
+		if runErr == nil {
+			t.Fatalf("attempt %d unexpectedly succeeded", attempt)
+		}
+	}
+
+	if observed.Outcome != "dead_letter" || observed.ErrorKind != "source_upsert" {
+		t.Fatalf("fallback failure event = %+v", observed)
+	}
+	capture, err := st.GetLinkCapture(t.Context(), enqueued.Capture.ID)
+	if err != nil {
+		t.Fatalf("get parked capture: %v", err)
+	}
+	if !capture.ProcessedAt.IsZero() || capture.DeadLetteredAt.IsZero() || capture.LastError != "source_upsert" {
+		t.Fatalf("fallback failure capture state = %+v", capture)
+	}
+}
+
 func TestWorkerDefaultProcessDiscoversThenQueuesOrdinarySource(t *testing.T) {
 	t.Parallel()
 
@@ -231,6 +344,15 @@ func workerTestCandidateWithURL(raw string) model.SourceCandidate {
 type workerFeedFetcher struct {
 	body  []byte
 	calls int
+}
+
+type failingWorkerFeedFetcher struct {
+	calls int
+}
+
+func (f *failingWorkerFeedFetcher) Fetch(_ context.Context, feed store.Feed, _ feedimport.Options) (feedimport.FetchResult, error) {
+	f.calls++
+	return feedimport.FetchResult{RequestURL: feed.URL, FinalURL: feed.URL}, errors.New("feed fetch failed")
 }
 
 func (f *workerFeedFetcher) Fetch(_ context.Context, feed store.Feed, _ feedimport.Options) (feedimport.FetchResult, error) {

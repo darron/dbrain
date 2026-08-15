@@ -39,11 +39,11 @@ func newServeWebCommand(root *rootOptions) *cobra.Command {
 				handlerOptions.AuditSyncInterval = dependencies.SyncInterval
 				handlerOptions.AuditStandardInterval = dependencies.StandardInterval
 			}
+			storeOpenOptions := interactiveStoreOpenOptions()
+			storeOpenOptions.MigrationReporter = startuplog.MigrationReporter(cmd.ErrOrStderr())
 			return web.ServeWithOptions(cmd.Context(), cfg, addr, web.ServeOptions{
-				StoreOpenOptions: store.OpenOptions{
-					MigrationReporter: startuplog.MigrationReporter(cmd.ErrOrStderr()),
-				},
-				HandlerOptions: handlerOptions,
+				StoreOpenOptions: storeOpenOptions,
+				HandlerOptions:   handlerOptions,
 			})
 		},
 	}
@@ -51,4 +51,11 @@ func newServeWebCommand(root *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&addr, "addr", web.DefaultAddr(), "HTTP listen address")
 
 	return cmd
+}
+
+func interactiveStoreOpenOptions() store.OpenOptions {
+	return store.OpenOptions{
+		MaxOpenConns: store.InteractivePoolSize,
+		MaxIdleConns: store.InteractivePoolSize,
+	}
 }

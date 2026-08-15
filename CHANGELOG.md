@@ -5,6 +5,23 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Deferred capture fallback and follow-up hardening (2026-08-15)
+
+- **Normal enrichment ownership after capture retries**: A valid deferred
+  capture that exhausts its bounded intake attempts is preserved as an ordinary
+  source, allowing the existing source-stage retry and enrichment policy to
+  handle it. This fallback intentionally loses feed subscription/import
+  semantics; re-saving the URL retries normal link handling. Residual parked
+  captures expose their failure kind through `dbrain link capture dead-letters`
+  and can be explicitly reopened with `dbrain link capture requeue`.
+- **Contention follow-ups**: Admission timeout coverage now tests the actual
+  SQLite busy-timeout mechanism; direct web and MCP entry points use the shared
+  four-connection pool; bypass access-log entries say `auth="bypass"`; and
+  pending duplicate saves preserve their current attempt budget.
+- **Deferred timing contract**: Documentation names the next `sync all` and the
+  configured scheduler interval rather than promising an hourly run. The
+  process-wide starvation channel remains outside this change.
+
 ### Deferred link capture during sync contention (2026-08-14)
 
 - **Fast extension admission**: The browser link saver now durably captures
