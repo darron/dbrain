@@ -18,15 +18,19 @@ const (
 type StatusReason string
 
 const (
-	ReasonNone                 StatusReason = ""
-	ReasonProfileMismatch      StatusReason = "profile_mismatch"
-	ReasonDimensionMismatch    StatusReason = "dimension_mismatch"
-	ReasonTooLarge             StatusReason = "too_large"
-	ReasonIndexCorrupt         StatusReason = "index_corrupt"
-	ReasonCanceled             StatusReason = "canceled"
-	ReasonSearchError          StatusReason = "search_error"
-	ReasonProviderUnavailable  StatusReason = "provider_unavailable"
-	ReasonQueryEmbeddingFailed StatusReason = "query_embedding_failed"
+	ReasonNone                           StatusReason = ""
+	ReasonProfileMismatch                StatusReason = "profile_mismatch"
+	ReasonDimensionMismatch              StatusReason = "dimension_mismatch"
+	ReasonTooLarge                       StatusReason = "too_large"
+	ReasonIndexCorrupt                   StatusReason = "index_corrupt"
+	ReasonCanceled                       StatusReason = "canceled"
+	ReasonSearchError                    StatusReason = "search_error"
+	ReasonProviderUnavailable            StatusReason = "provider_unavailable"
+	ReasonQueryEmbeddingFailed           StatusReason = "query_embedding_failed"
+	ReasonGenerationBusy                 StatusReason = "generation_busy"
+	ReasonRootLoadTimeout                StatusReason = "root_load_timeout"
+	ReasonNativeRootArtifactsUnavailable StatusReason = "native_root_artifacts_unavailable"
+	ReasonRuntimeReadinessUnavailable    StatusReason = "runtime_readiness_unavailable"
 )
 
 type Status struct {

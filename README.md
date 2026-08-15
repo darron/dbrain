@@ -1320,14 +1320,18 @@ or validate it. Use `dbrain okf export` or `sync all --okf-export` to refresh
 the bundle first.
 
 Optional semantic retrieval defaults to `off`. `shadow` runs the local Ollama
-exact-vector lane and records bounded, content-free rank comparisons without
+semantic lane and records bounded, content-free rank comparisons without
 changing visible evidence, order, or synthesis; `on` returns RRF-fused evidence.
-Readiness is evaluated before provider construction under a 250 ms request
-budget. Incomplete, corrupt, stale, or unavailable state remains lexical with
-an explicit lane status and reason. Configuration may lower but cannot raise
-the measured 25,000-vector exact ceiling; larger complete profiles report
-`needs_index`. The cap is checked before request filters are applied. Direct
-`dbrain_research_pack` calls never write research traces. See
+Runtime construction reads the authoritative SQLite readiness snapshot under the
+request's 250 ms readiness budget without opening native artifacts. After
+shared-generation admission, a cold root may wait up to five seconds for a
+native import and validation; a validated root is reused by the process-scoped
+runtime. `generation_busy` therefore means admission contention only. Cold-root
+load timeout, unavailable native artifacts, or unavailable readiness preserve
+lexical evidence with an explicit path-free status reason. Configuration may
+lower but cannot raise the measured 25,000-vector exact ceiling; larger complete
+profiles report `needs_index`. The cap is checked before request filters are
+applied. Direct `dbrain_research_pack` calls never write research traces. See
 [MCP.md](MCP.md#semantic-retrieval-contract) for overrides and response fields.
 
 ### Semantic refresh after sync

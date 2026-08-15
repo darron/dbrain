@@ -9,9 +9,9 @@ import (
 	"github.com/darron/dbrain/internal/store"
 )
 
-func runRetrievalCase(ctx context.Context, cfg config.Config, st *store.Store, tc Case) (ask.Response, []ask.Evidence, error) {
+func runRetrievalCase(ctx context.Context, cfg config.Config, st *store.Store, server *mcpserver.Server, tc Case) (ask.Response, []ask.Evidence, error) {
 	if caseNeedsResearchPack(tc) {
-		pack, err := mcpserver.New(cfg, st).BuildResearchPack(ctx, mcpserver.ResearchPackOptions{
+		pack, err := server.BuildResearchPack(ctx, mcpserver.ResearchPackOptions{
 			Question:       tc.Question,
 			Limit:          tc.Limit,
 			SourceTypes:    tc.SourceTypes,

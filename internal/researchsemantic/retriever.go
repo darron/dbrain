@@ -28,10 +28,22 @@ type Options struct {
 
 const DefaultQueryTimeout = 15 * time.Second
 
-const ReasonGenerationBusy semanticindex.StatusReason = "generation_busy"
+const ReasonGenerationBusy = semanticindex.ReasonGenerationBusy
 
 type GenerationLease interface {
 	Close() error
+}
+
+type generationLeaseContextKey struct{}
+
+// GenerationLeaseFromContext returns the query's already-acquired generation
+// lease when Search is running under Retriever admission.
+func GenerationLeaseFromContext(ctx context.Context) GenerationLease {
+	if ctx == nil {
+		return nil
+	}
+	lease, _ := ctx.Value(generationLeaseContextKey{}).(GenerationLease)
+	return lease
 }
 
 type GenerationLeaseAcquirer func(context.Context) (GenerationLease, error)
@@ -158,7 +170,11 @@ func (r *Retriever) retrieveAdmitted(
 		lease = acquired
 	}
 
-	docs, status, retrieveErr := r.searchAndHydrate(ctx, queryVector, opts, info, profileID)
+	searchCtx := ctx
+	if lease != nil {
+		searchCtx = context.WithValue(ctx, generationLeaseContextKey{}, lease)
+	}
+	docs, status, retrieveErr := r.searchAndHydrate(searchCtx, queryVector, opts, info, profileID)
 	if lease != nil {
 		if releaseErr := lease.Close(); releaseErr != nil {
 			unavailable.Reason = semanticindex.ReasonSearchError

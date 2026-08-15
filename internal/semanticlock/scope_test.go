@@ -495,3 +495,46 @@ func TestExclusiveMaintenanceCloseWaitsForChildCloseAlreadyInProgress(t *testing
 		t.Fatal("maintenance was not released after child close completed")
 	}
 }
+
+func TestGenerationLeaseRetainKeepsKernelLeaseUntilFinalReference(t *testing.T) {
+	scope, err := NewScope(t.TempDir(), "database-retained-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := scope.AcquireGenerationShared(t.Context(), "owner=query\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := shared.Retain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	maintenance, err := scope.AcquireMaintenanceExclusive(t.Context(), "owner=refresh\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = maintenance.Close() }()
+	blockedCtx, cancelBlocked := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancelBlocked()
+	if generation, err := maintenance.AcquireGenerationExclusive(blockedCtx, "owner=refresh\n"); generation != nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("generation=%#v error=%v want retained shared lease contention", generation, err)
+	}
+
+	if err := retained.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := retained.Close(); err != nil {
+		t.Fatalf("idempotent retained close: %v", err)
+	}
+	generation, err := maintenance.AcquireGenerationExclusive(t.Context(), "owner=refresh\n")
+	if err != nil {
+		t.Fatalf("acquire after final retained release: %v", err)
+	}
+	if err := generation.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

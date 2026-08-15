@@ -44,6 +44,17 @@ type fakeSearcher struct {
 	closeErr error
 }
 
+type generationContextSearcher struct {
+	want GenerationLease
+}
+
+func (s *generationContextSearcher) Search(ctx context.Context, _ []float32, _ semanticindex.SearchOptions) ([]semanticindex.Hit, semanticindex.Status, error) {
+	if got := GenerationLeaseFromContext(ctx); got != s.want {
+		return nil, semanticindex.Status{}, fmt.Errorf("generation lease in search context = %#v, want %#v", got, s.want)
+	}
+	return []semanticindex.Hit{}, semanticindex.Status{State: semanticindex.StateSearched, Backend: semanticindex.BackendExact}, nil
+}
+
 func (f *fakeSearcher) Search(_ context.Context, query []float32, opts semanticindex.SearchOptions) ([]semanticindex.Hit, semanticindex.Status, error) {
 	f.queries = append(f.queries, append([]float32(nil), query...))
 	f.options = append(f.options, opts)
@@ -258,6 +269,23 @@ func TestRetrieverPinsGenerationThroughHydrationAndWriterIntentPreventsBarging(t
 	close(releaseActivation)
 	if err := <-activationErr; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRetrieverPlacesAcquiredGenerationLeaseInSearchContext(t *testing.T) {
+	lease := &fakeGenerationLease{}
+	retriever := NewWithGenerationLease(
+		unitProvider(),
+		&generationContextSearcher{want: lease},
+		&fakeHydrationStore{},
+		func(context.Context) (GenerationLease, error) { return lease, nil },
+	)
+	docs, status, err := retriever.Retrieve(t.Context(), "query", Options{Profile: testProfile(), Limit: 1, MaxChunks: 10})
+	if err != nil || status.State != semanticindex.StateSearched || len(docs) != 0 {
+		t.Fatalf("docs=%+v status=%+v err=%v", docs, status, err)
+	}
+	if lease.closes != 1 {
+		t.Fatalf("lease closes=%d want 1", lease.closes)
 	}
 }
 

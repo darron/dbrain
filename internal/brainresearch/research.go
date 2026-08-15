@@ -2,6 +2,7 @@ package brainresearch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -20,12 +21,9 @@ func New(cfg config.Config, st *store.Store) *Builder {
 }
 
 func Build(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Pack, error) {
-	b, err := NewRuntimeBuilderContext(ctx, cfg, st, opts.EffectiveSemanticMode, opts.UseSemantic, opts.DisableSemantic)
-	if err != nil {
-		return Pack{}, err
-	}
-	defer func() { _ = b.Close() }()
-	return b.Build(ctx, opts)
+	runtime := NewRuntime(cfg, st)
+	pack, buildErr := runtime.Build(ctx, opts)
+	return pack, errors.Join(buildErr, runtime.Close())
 }
 
 func (b *Builder) Build(ctx context.Context, opts Options) (Pack, error) {

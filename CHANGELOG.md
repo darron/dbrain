@@ -5,6 +5,29 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Lazy semantic runtime root reuse (2026-08-14)
+
+- **Truthful cold and warm diagnostics**: Runtime construction now reads
+  readiness under its 250 ms budget without opening native artifacts, and
+  `generation_busy` now means only shared-generation admission contention.
+  Cold callers wait up to five seconds for native import and report
+  `root_load_timeout` while a detached import may still warm the process-local
+  cache; artifact and query-time readiness failures report
+  `native_root_artifacts_unavailable` and `runtime_readiness_unavailable`.
+- **Safe lexical fallback and root lifetime**: Every unavailable semantic lane
+  preserves lexical evidence. A cold import retains its acquired generation
+  lease during native import, validation, and the pre-publication disposition
+  decision; successful release is required before publication. Roots rejected
+  before pending-cache admission close before release; pending roots that fail
+  release or publication checks close afterward. Refresh/GC may wait during
+  that guard-held portion; the five-second caller wait does not preempt a
+  native call, and reader grace remains defense in depth. Semantic `used` still
+  requires SQLite validation and exact reranking, not merely a warmed native
+  root.
+- **Lifecycle coverage**: Web trace comparison now reuses the server-owned
+  semantic runtime, and runtime shutdown drains active builds before closing
+  cached roots.
+
 ### Metrics JSONL rotation (2026-08-10)
 
 - **Bounded local metrics**: Added size-based rotation for the configured
@@ -94,16 +117,10 @@ development date for the change set.
 
 ### Bounded native semantic admission (2026-08-05)
 
-- **Research stays lexical while native admission is busy**: Research-pack
-  requests now apply the existing short admission budget to both the generation
-  lock probe and cooperative native-root opening. A growing or cold root fails
-  open with `generation_busy` instead of traversing every segment for minutes,
-  preserving the lexical evidence exactly. The same reason can therefore mean
-  either writer contention or a slow root open exhausting the shared budget.
-- **Slow readers no longer delay semantic publication**: Runtime admission
-  releases its shared generation probe before opening immutable root artifacts.
-  Query-time generation locking and SQLite generation, purge-epoch, and snapshot
-  validation still prevent stale candidates from becoming evidence.
+- **Research stays lexical while generation admission is busy**: A contended
+  shared-generation admission reports `generation_busy` and preserves lexical
+  evidence exactly. Native root loading now has the separate runtime behavior
+  documented above.
 
 ### Semantic sync progress bars (2026-08-05)
 

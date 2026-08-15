@@ -94,7 +94,11 @@ func TestUSearchPackagingTaskPolicy(t *testing.T) {
 		t.Errorf("test-usearch-darwin-arm64 race-enabled commands=%d want only the focused package command", got)
 	}
 
-	wantRacePackages := usearchTaggedPackagePaths(t)
+	// The cache is build-tag-independent, but its operation/close safety tests
+	// are part of the native semantic runtime contract and therefore run in the
+	// tagged race task as a deliberate supplemental package.
+	wantRacePackages := append(usearchTaggedPackagePaths(t), "./internal/semanticruntime")
+	sort.Strings(wantRacePackages)
 	gotRacePackages := strings.Fields(taskfileQuotedVariable(t, taskfile, "USEARCH_RACE_PACKAGES"))
 	if !reflect.DeepEqual(gotRacePackages, wantRacePackages) {
 		t.Errorf("USEARCH_RACE_PACKAGES=%v want every package selected by a usearch build constraint: %v", gotRacePackages, wantRacePackages)
@@ -167,7 +171,7 @@ func usearchTaggedPackagePaths(t *testing.T) []string {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", ".gomodcache", "node_modules":
+			case ".git", ".gomodcache", ".worktrees", "node_modules":
 				return filepath.SkipDir
 			}
 			return nil

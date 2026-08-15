@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,18 +25,36 @@ func Serve(ctx context.Context, cfg config.Config, in io.Reader, out io.Writer, 
 		return err
 	}
 	logMCPServer("store_opened", "duration", time.Since(start).String())
-	defer func() {
-		_ = st.Close()
-	}()
 
 	server := NewWithDependencies(cfg, st, firstServerDependencies(dependencies))
 	logMCPServer("ready")
-	if err := server.Serve(ctx, in, out); err != nil {
+	serveErr := server.Serve(ctx, in, out)
+	cleanupErr := closeServerStore(server, st, 5*time.Second)
+	err = errors.Join(serveErr, cleanupErr)
+	if err != nil {
 		logMCPServer("exiting", "duration", time.Since(start).String(), "error", err.Error())
 		return err
 	}
 	logMCPServer("exiting", "duration", time.Since(start).String(), "error", "")
 	return nil
+}
+
+func closeServerStore(server *Server, st *store.Store, timeout time.Duration) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	shutdownErr := server.Shutdown(shutdownCtx)
+	if shutdownCtx.Err() != nil && errors.Is(shutdownErr, shutdownCtx.Err()) {
+		go func() {
+			if err := server.Close(); err != nil {
+				logMCPServer("async_cleanup_failed", "component", "runtime", "error", err.Error())
+			}
+			if err := st.Close(); err != nil {
+				logMCPServer("async_cleanup_failed", "component", "store", "error", err.Error())
+			}
+		}()
+		return shutdownErr
+	}
+	return errors.Join(shutdownErr, st.Close())
 }
 
 func logMCPServer(event string, fields ...string) {
@@ -62,7 +81,15 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			return err
 		}
 
+		if transportServer.lifecycle != nil {
+			if err := transportServer.lifecycle.beginRequest(); err != nil {
+				return err
+			}
+		}
 		response, ok := transportServer.processPayload(ctx, payload)
+		if transportServer.lifecycle != nil {
+			transportServer.lifecycle.endRequest()
+		}
 		if !ok {
 			continue
 		}

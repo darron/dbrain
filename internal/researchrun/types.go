@@ -86,6 +86,7 @@ type ProgressEvent struct {
 }
 
 type Options struct {
+	Runtime               *brainresearch.Runtime
 	Question              string
 	RawQuestion           string
 	SynthesisQuestion     string

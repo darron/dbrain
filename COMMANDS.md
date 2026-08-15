@@ -1485,10 +1485,14 @@ an error. Effective `shadow` or `on` requires a configured local Ollama model
 and positive dimensions. `shadow` computes bounded, content-free comparisons
 but preserves lexical evidence/order/synthesis exactly. `on` RRF-fuses lexical
 and semantic candidates while preserving protected evidence and provenance.
-Provider/search failures, or more than the configured exact-scan cap (default
+Query-time embedding-provider/search failures for a valid configuration, an
+unavailable native root, or more than the configured exact-scan cap (default
 25,000 current ready embeddings for the configured profile), fail the semantic
-lane open to lexical evidence with an explicit status and reason. The cap is
-counted before request filters are applied.
+lane open to lexical evidence with an explicit status and reason. Provider
+construction or configuration failures still abort setup. The cap is counted
+before request filters are applied. A semantic lane is `used` only after
+candidates pass current SQLite validation and exact reranking; a loaded root
+alone is not a ranking-quality claim.
 
 ```sh
 dbrain research "What validates Kubernetes manifests?"
@@ -1542,13 +1546,33 @@ indexed-content purge, which synchronously deletes that item's retrieval chunks,
 embeddings, and stale affected generation metadata. This does not claim that
 every delete path or future parent kind has the same integration.
 
-Semantic admission runs before query-provider construction under a 250 ms
-budget. Configuration may lower, but cannot raise, the hard 25,000-vector exact
-scan ceiling. Complete larger profiles report `needs_index` and stay lexical.
-The readiness planner is also bounded: it rejects more than 4,096 evidence
-sections, limits exact materialization to 8 MiB, and limits allocation-free
-preflight scanning to 128 MiB. Full `status` and `verify` remain the
-authoritative maintenance surfaces for detecting aggregate drift.
+Runtime construction reads SQLite readiness under a 250 ms budget before query
+provider construction, without importing a native root. After embedding, the
+query has a separate 250 ms shared-generation lease-acquisition budget;
+`generation_busy` means only contention in that acquisition. A cold native
+root is then imported lazily and the caller waits up to five seconds:
+`root_load_timeout` returns lexical evidence while the detached load may still
+warm the process-local runtime cache. Warm requests reuse the validated
+in-memory root but still take the query-time generation lease and SQLite
+validation/reranking path. `native_root_artifacts_unavailable` reports native
+artifact or root-validation failure; `runtime_readiness_unavailable` reports a
+query-time readiness snapshot that cannot be read or is no longer a stable
+searchable root. All four reasons fail open to lexical evidence. A cold import
+retains shared generation protection during native import, validation, and the
+pre-publication disposition decision. The manager releases that guard before
+publishing; successful release is required for publication. If a root is
+rejected before pending-cache admission, it is closed before release; if a
+pending root fails release or publication checks, the manager-owned flight
+closes it afterward. Refresh or GC may therefore wait during that guard-held
+portion; the five-second value does not interrupt native loading, and reader
+grace remains defense in depth.
+Configuration may lower, but cannot raise, the hard 25,000-vector exact scan
+ceiling. Complete larger profiles
+report `needs_index` and stay lexical. The readiness planner is also bounded:
+it rejects more than 4,096 evidence sections, limits exact materialization to
+8 MiB, and limits allocation-free preflight scanning to 128 MiB. Full `status`
+and `verify` remain the authoritative maintenance surfaces for detecting
+aggregate drift.
 
 `semantic refresh` runs the durable projection, embedding, flush, compaction,
 verification, and readiness pipeline. Successful manual and scheduled `sync

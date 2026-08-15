@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/darron/dbrain/internal/ask"
@@ -21,27 +22,37 @@ const (
 	defaultStageTimeout  = 30 * time.Second
 )
 
-func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Result, error) {
+func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (result Result, err error) {
 	if strings.TrimSpace(opts.Question) == "" {
 		return Result{}, fmt.Errorf("question is required")
 	}
 	if _, err := semanticconfig.EffectiveMode(semanticconfig.ModeOff, opts.UseSemantic, opts.DisableSemantic); err != nil {
 		return Result{}, err
 	}
+	runtime := opts.Runtime
+	if runtime == nil {
+		runtime = brainresearch.NewRuntime(cfg, st)
+		defer func() {
+			err = errors.Join(err, runtime.Close())
+		}()
+	}
+	opts.Runtime = runtime
 	r := newRunner(ctx, cfg, st, opts)
 	defer r.cancel()
 	return r.run()
 }
 
 type runner struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	cfg      config.Config
-	st       *store.Store
-	opts     Options
-	recorder *researchtrace.Recorder
-	result   Result
-	steps    int
+	ctx               context.Context
+	cancel            context.CancelFunc
+	cfg               config.Config
+	st                *store.Store
+	opts              Options
+	recorder          *researchtrace.Recorder
+	result            Result
+	steps             int
+	runtime           *brainresearch.Runtime
+	buildResearchPack func(context.Context, brainresearch.Options) (brainresearch.Pack, error)
 }
 
 func newRunner(ctx context.Context, cfg config.Config, st *store.Store, opts Options) *runner {
@@ -59,13 +70,29 @@ func newRunner(ctx context.Context, cfg config.Config, st *store.Store, opts Opt
 		recorder = researchtrace.NewRecorder(surface, opts.Question)
 		recorder.SetChatContinuity(opts.ChatContinuity)
 	}
+	runtime := opts.Runtime
+	ownedRuntime := false
+	if runtime == nil {
+		runtime = brainresearch.NewRuntime(cfg, st)
+		ownedRuntime = true
+	}
+	if ownedRuntime {
+		baseCancel := cancel
+		var closeOnce sync.Once
+		cancel = func() {
+			baseCancel()
+			closeOnce.Do(func() { _ = runtime.Close() })
+		}
+	}
 	return &runner{
-		ctx:      runCtx,
-		cancel:   cancel,
-		cfg:      cfg,
-		st:       st,
-		opts:     opts,
-		recorder: recorder,
+		ctx:               runCtx,
+		cancel:            cancel,
+		cfg:               cfg,
+		st:                st,
+		opts:              opts,
+		recorder:          recorder,
+		runtime:           runtime,
+		buildResearchPack: runtime.Build,
 	}
 }
 
@@ -287,7 +314,7 @@ func (r *runner) run() (Result, error) {
 func (r *runner) buildPack(includeRelated bool, question string, attempt string) (brainresearch.Pack, error) {
 	ctx, cancel := r.stageContext()
 	defer cancel()
-	return brainresearch.Build(ctx, r.cfg, r.st, brainresearch.Options{
+	return r.buildResearchPack(ctx, brainresearch.Options{
 		Question:              question,
 		RawQuestion:           r.rawQuestion(),
 		Topic:                 r.opts.Topic,

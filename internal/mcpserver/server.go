@@ -2,10 +2,14 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/darron/dbrain/internal/audit"
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/version"
@@ -19,6 +23,24 @@ type Server struct {
 	deps          ServerDependencies
 	capabilities  transportCapabilities
 	newAuditTimer func(time.Duration) auditTimer
+	lifecycle     *serverLifecycle
+}
+
+var errServerClosed = errors.New("mcp server is shut down")
+
+type serverLifecycle struct {
+	runtime           *brainresearch.Runtime
+	buildResearchPack func(context.Context, brainresearch.Options) (brainresearch.Pack, error)
+	shutdownRuntime   func(context.Context) error
+
+	mu           sync.Mutex
+	active       int
+	closing      bool
+	requestsDone chan struct{}
+	requestsOnce sync.Once
+	closeOnce    sync.Once
+	closeDone    chan struct{}
+	closeErr     error
 }
 
 func New(cfg config.Config, st *store.Store) *Server {
@@ -56,7 +78,96 @@ func newWallClockAuditTimer(timeout time.Duration) auditTimer {
 }
 
 func NewWithDependencies(cfg config.Config, st *store.Store, deps ServerDependencies) *Server {
-	return &Server{cfg: cfg, st: st, deps: deps, newAuditTimer: newWallClockAuditTimer}
+	runtime := brainresearch.NewRuntime(cfg, st)
+	lifecycle := &serverLifecycle{
+		runtime:           runtime,
+		buildResearchPack: runtime.Build,
+		shutdownRuntime:   runtime.Shutdown,
+		requestsDone:      make(chan struct{}),
+		closeDone:         make(chan struct{}),
+	}
+	return &Server{cfg: cfg, st: st, deps: deps, newAuditTimer: newWallClockAuditTimer, lifecycle: lifecycle}
+}
+
+func (l *serverLifecycle) beginRequest() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closing {
+		return errServerClosed
+	}
+	l.active++
+	return nil
+}
+
+func (s *Server) withRequestAdmission(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s == nil {
+			http.Error(w, errServerClosed.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		if s.lifecycle == nil {
+			// Preserve the zero-value Server used by protocol-only tests. Real
+			// transports are constructed through NewWithDependencies and always
+			// have lifecycle admission.
+			next.ServeHTTP(w, r)
+			return
+		}
+		if err := s.lifecycle.beginRequest(); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		defer s.lifecycle.endRequest()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (l *serverLifecycle) endRequest() {
+	l.mu.Lock()
+	if l.active > 0 {
+		l.active--
+	}
+	l.signalRequestsDoneLocked()
+	l.mu.Unlock()
+}
+
+func (l *serverLifecycle) signalRequestsDoneLocked() {
+	if l.closing && l.active == 0 {
+		l.requestsOnce.Do(func() { close(l.requestsDone) })
+	}
+}
+
+func (l *serverLifecycle) startClose() {
+	l.mu.Lock()
+	l.closing = true
+	l.signalRequestsDoneLocked()
+	l.mu.Unlock()
+	l.closeOnce.Do(func() {
+		go func() {
+			<-l.requestsDone
+			l.closeErr = l.shutdownRuntime(context.Background())
+			close(l.closeDone)
+		}()
+	})
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s == nil || s.lifecycle == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.lifecycle.startClose()
+	select {
+	case <-s.lifecycle.closeDone:
+		return s.lifecycle.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Server) Close() error {
+	return s.Shutdown(context.Background())
 }
 
 func firstServerDependencies(values []ServerDependencies) ServerDependencies {

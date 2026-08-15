@@ -49,16 +49,36 @@ maintenance for each bounded projection, embedding, flush, compaction,
 verification, and readiness unit. Flush and compaction hold exclusive generation
 for their entire execution while exclusive maintenance is already held; this
 includes native build/publication and SQLite root activation. An emergency L0
-flush from the embedding stage uses the same nested order. Runtime admission
-uses one short budget to probe shared-generation availability and cooperatively
-open the immutable native root, but releases the probe before root loading so a
-slow reader cannot delay publication. After query embedding, queries acquire
-shared generation and retain it through native candidate search,
-current-generation SQLite validation and reranking, exact L0 merge, chunk
-hydration, and final evidence construction. Published root and segment paths
-remain immutable. `dbrain semantic gc` reclaims superseded catalog rows and
-cache directories under the same lock order, with a retention grace period
-covering readers that released their generation probe before opening a root.
+flush from the embedding stage uses the same nested order. Runtime construction
+takes its SQLite readiness snapshot under a 250 ms budget and admits a lazy
+semantic lane; it does not open native-root artifacts. After query embedding, a
+query has a separate 250 ms budget to acquire shared generation protection. A
+warm root is then leased from the process-local, in-memory runtime cache,
+searched natively, SQLite-validated and exactly reranked, merged with exact
+L0, hydrated, and turned into evidence. A cold root retains a reference to
+that already-acquired shared generation lease while it is imported and
+validated and until the manager decides whether to publish or discard it. The
+manager releases that retained guard before publishing; successful release is
+therefore required for publication. The ordinary caller waits up
+to five seconds for that import; a timed-out caller remains lexical while the
+non-preemptible load may complete and warm the same runtime cache for a later
+request. Published root and segment paths remain immutable.
+
+If a loaded root is rejected before it becomes a pending cache entry, the
+manager closes it before releasing the retained guard. If it was admitted as a
+pending entry but fails the release or publication checks, the manager closes
+it after releasing the guard. Both paths remain manager-owned.
+
+The retained cold-load lease is a deliberate liveness trade-off: an exclusive
+refresh or `dbrain semantic gc` writer can wait for native import, validation,
+and the pre-publication disposition decision. The manager-owned flight still
+keeps ownership through final discarded-searcher cleanup, but that cleanup is
+not protected by the generation lease after it has been released. Five seconds
+bounds the ordinary caller wait, not the native C call. Runtime shutdown
+likewise waits for in-use searches and loads rather than force-closing a native
+root.
+The normal ten-minute semantic-GC reader grace remains defense in depth, not
+the only protection for an importing root.
 
 Ordinary chunk replacement and projection application preserve the active root.
 Changed embeddings are removed, replacement embeddings enter exact L0, and the
@@ -81,14 +101,26 @@ Failure to acquire refresh's exclusive maintenance lease is the typed
 `semantic_lock_unavailable` refresh error and therefore makes an enabled,
 supported sync exit non-zero. Failure to acquire a source transaction's shared
 maintenance lease remains a source-write/source-sync error and stops before
-semantic admission. Generation contention or exhaustion of the shared 250 ms
-admission budget during a slow root open fails open with the path-free
-`generation_busy` reason and preserves the lexical result exactly. Time spent
-waiting for the probe reduces the budget left for root loading. Native
-`LoadBuffer` cannot be preempted, so cancellation is observed before and after
-each segment rather than as a strict 250 ms wall-clock bound. Caller cancellation
-or deadline expiry remains an error, and lease-release errors fail closed rather
-than being hidden.
+semantic admission. `generation_busy` means only that shared-generation lease
+admission encountered contention or exhausted its 250 ms acquisition budget;
+it never means a slow native root open. The following path-free semantic-lane
+reasons fail open to unchanged lexical evidence:
+
+| Reason | Meaning |
+| --- | --- |
+| `generation_busy` | Shared-generation admission was contended for longer than its 250 ms budget. |
+| `root_load_timeout` | A cold-root caller waited five seconds without the shared import becoming ready; the detached import may still warm this runtime later. |
+| `native_root_artifacts_unavailable` | Native cache/root artifacts, descriptor validation, or root load/validation failed. |
+| `runtime_readiness_unavailable` | The query-time authoritative readiness snapshot could not be read or no longer describes a stable searchable native root. |
+
+Caller cancellation or deadline expiry remains an error. Other semantic
+artifact, readiness, and lease-cleanup failures, plus query-time
+embedding-provider/search failures for a valid configuration, preserve lexical
+evidence at the research-pack boundary with the path-free status reason.
+Provider construction or configuration failures still abort setup. A semantic
+lane is `used` only after native candidates pass current SQLite validation and
+exact reranking; a cache miss or a warmed root is not evidence of semantic
+ranking quality.
 
 ## Output and recovery
 

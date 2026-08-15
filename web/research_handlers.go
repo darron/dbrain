@@ -37,7 +37,7 @@ func (s *server) handleResearch(w http.ResponseWriter, r *http.Request) {
 	}
 	researchCtx, cancel := context.WithTimeout(r.Context(), defaultResearchTimeout)
 	defer cancel()
-	pack, err := brainresearch.Build(researchCtx, s.cfg, s.store, brainresearch.Options{
+	pack, err := s.researchRuntime.Build(researchCtx, brainresearch.Options{
 		Question:        req.Question,
 		Topic:           req.Topic,
 		Limit:           clampLimit(limit, 1, maxResearchLimit),

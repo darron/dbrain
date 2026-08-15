@@ -57,7 +57,7 @@ func (s *server) handleResearchTraceCompare(w http.ResponseWriter, r *http.Reque
 		"old_answer":    traceAnswer(trace),
 		"old_status":    traceAnswerStatus(trace),
 	}
-	diff, err := researcheval.DiffTrace(r.Context(), s.cfg, s.store, req.TracePath)
+	diff, err := researcheval.DiffTraceWithRuntime(r.Context(), s.cfg, s.store, s.researchRuntime, req.TracePath)
 	if err != nil {
 		response["diff_error"] = err.Error()
 	} else {
@@ -78,6 +78,7 @@ func runTraceCurrentHarness(r *http.Request, s *server, trace researchtrace.Rese
 	opts := researcheval.OptionsFromTrace(trace)
 	traceDisabled := false
 	result, err := researchrun.Run(r.Context(), s.cfg, s.store, researchrun.Options{
+		Runtime:               s.researchRuntime,
 		Question:              opts.Question,
 		Topic:                 opts.Topic,
 		Limit:                 opts.Limit,

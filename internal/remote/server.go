@@ -41,7 +41,7 @@ type remoteDeps struct {
 	acquireStateLock func(string) (stateLock, error)
 	resolveAuthKey   func(context.Context, Options) (SecretResult, error)
 	newNode          func(Options, SecretResult, func(string, ...any), io.Writer) remoteNode
-	buildHandler     func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func(), error)
+	buildHandler     func(context.Context, config.Config, Options, whoIsClient, io.Writer) (http.Handler, func() error, error)
 }
 
 func newHTTPServer(handler http.Handler) *http.Server {
@@ -53,6 +53,15 @@ func newHTTPServer(handler http.Handler) *http.Server {
 		// WriteTimeout is an absolute response deadline, not an idle timeout,
 		// so handler-level runner/stage/model timeouts must bound that work.
 		WriteTimeout: 0,
+	}
+}
+
+func runRemoteAsyncCleanup(shutdown func() error, cleanup func() error, logOut io.Writer) {
+	if err := shutdown(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		_, _ = fmt.Fprintf(logOut, "WARNING remote async cleanup failed component=http_server: %v\n", err)
+	}
+	if err := cleanup(); err != nil {
+		_, _ = fmt.Fprintf(logOut, "WARNING remote async cleanup failed component=runtime_or_store: %v\n", err)
 	}
 }
 
@@ -87,7 +96,7 @@ func defaultRemoteDeps() remoteDeps {
 	}
 }
 
-func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut io.Writer, deps remoteDeps) error {
+func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut io.Writer, deps remoteDeps) (returnErr error) {
 	if logOut == nil {
 		logOut = os.Stderr
 	}
@@ -162,7 +171,12 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	cleanupPending := true
+	defer func() {
+		if cleanupPending {
+			returnErr = errors.Join(returnErr, cleanup())
+		}
+	}()
 
 	listener, err := listen(node, opts)
 	if err != nil {
@@ -214,6 +228,14 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 			if shutdownErr == nil {
 				shutdownErr = shutdownCtx.Err()
 			}
+		}
+		if shutdownCtx.Err() != nil && errors.Is(shutdownErr, shutdownCtx.Err()) {
+			cleanupPending = false
+			go func() {
+				runRemoteAsyncCleanup(func() error {
+					return httpServer.Shutdown(context.Background())
+				}, cleanup, logOut)
+			}()
 		}
 		closeErr := node.Close()
 		nodeClosed = true

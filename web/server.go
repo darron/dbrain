@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/httpsecurity"
 	"github.com/darron/dbrain/internal/schedulerstate"
@@ -58,6 +60,91 @@ type server struct {
 	auditSyncInterval     time.Duration
 	auditStandardInterval time.Duration
 	auditNow              func() time.Time
+	researchRuntime       *brainresearch.Runtime
+}
+
+// CloseableHandler preserves the public http.Handler constructor contract while
+// exposing bounded and unbounded lifecycle cleanup to owning transports.
+type CloseableHandler interface {
+	http.Handler
+	Close() error
+	Shutdown(context.Context) error
+}
+
+type closeableHandler struct {
+	handler http.Handler
+	closeFn func() error
+
+	mu           sync.Mutex
+	active       int
+	closing      bool
+	requestsDone chan struct{}
+	requestsOnce sync.Once
+	closeOnce    sync.Once
+	closeDone    chan struct{}
+	closeErr     error
+}
+
+func newCloseableHandler(handler http.Handler, closeFn func() error) *closeableHandler {
+	return &closeableHandler{
+		handler: handler, closeFn: closeFn,
+		requestsDone: make(chan struct{}), closeDone: make(chan struct{}),
+	}
+}
+
+func (h *closeableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	if h.closing {
+		h.mu.Unlock()
+		http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	h.active++
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		h.active--
+		h.signalRequestsDoneLocked()
+		h.mu.Unlock()
+	}()
+	h.handler.ServeHTTP(w, r)
+}
+
+func (h *closeableHandler) signalRequestsDoneLocked() {
+	if h.closing && h.active == 0 {
+		h.requestsOnce.Do(func() { close(h.requestsDone) })
+	}
+}
+
+func (h *closeableHandler) startClose() {
+	h.mu.Lock()
+	h.closing = true
+	h.signalRequestsDoneLocked()
+	h.mu.Unlock()
+	h.closeOnce.Do(func() {
+		go func() {
+			<-h.requestsDone
+			h.closeErr = h.closeFn()
+			close(h.closeDone)
+		}()
+	})
+}
+
+func (h *closeableHandler) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h.startClose()
+	select {
+	case <-h.closeDone:
+		return h.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *closeableHandler) Close() error {
+	return h.Shutdown(context.Background())
 }
 
 type ServeOptions struct {
@@ -97,18 +184,24 @@ func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts 
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = st.Close()
-	}()
 
 	handlerOptions := opts.HandlerOptions
 	handlerOptions.Context = ctx
 	if handlerOptions.LogOutput == nil {
 		handlerOptions.LogOutput = os.Stderr
 	}
+	logCleanup := func(component string, err error) {
+		if err != nil && handlerOptions.LogOutput != nil {
+			_, _ = fmt.Fprintf(handlerOptions.LogOutput, "WARNING web async cleanup failed component=%s: %v\n", component, err)
+		}
+	}
 	handler, err := NewHandlerWithOptions(cfg, st, handlerOptions)
 	if err != nil {
-		return err
+		return errors.Join(err, st.Close())
+	}
+	owner, ok := handler.(CloseableHandler)
+	if !ok {
+		return errors.Join(errors.New("web handler does not expose lifecycle cleanup"), st.Close())
 	}
 
 	httpServer := &http.Server{
@@ -130,18 +223,52 @@ func ServeWithOptions(ctx context.Context, cfg config.Config, addr string, opts 
 		listenErr = nil
 	}
 
+	var shutdownErr error
 	select {
-	case shutdownErr := <-errCh:
-		if listenErr != nil {
-			return listenErr
-		}
+	case shutdownResult := <-errCh:
+		shutdownErr = shutdownResult
 		if shutdownErr != nil && !errors.Is(shutdownErr, http.ErrServerClosed) {
-			return shutdownErr
+			if errors.Is(shutdownErr, context.DeadlineExceeded) {
+				go func() {
+					if err := httpServer.Shutdown(context.Background()); err != nil && !errors.Is(err, http.ErrServerClosed) {
+						logCleanup("http_server", err)
+					}
+					if err := owner.Close(); err != nil {
+						logCleanup("runtime", err)
+					}
+					if err := st.Close(); err != nil {
+						logCleanup("store", err)
+					}
+				}()
+				return errors.Join(listenErr, shutdownErr)
+			}
 		}
 	default:
 	}
 
-	return listenErr
+	return errors.Join(listenErr, shutdownErr, closeWebHandlerStoreWithLogger(owner, st, 10*time.Second, logCleanup))
+}
+
+func closeWebHandlerStore(handler CloseableHandler, st *store.Store, timeout time.Duration) error {
+	return closeWebHandlerStoreWithLogger(handler, st, timeout, nil)
+}
+
+func closeWebHandlerStoreWithLogger(handler CloseableHandler, st *store.Store, timeout time.Duration, logCleanup func(string, error)) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	shutdownErr := handler.Shutdown(shutdownCtx)
+	if shutdownCtx.Err() != nil && errors.Is(shutdownErr, shutdownCtx.Err()) {
+		go func() {
+			if err := handler.Close(); err != nil && logCleanup != nil {
+				logCleanup("runtime", err)
+			}
+			if err := st.Close(); err != nil && logCleanup != nil {
+				logCleanup("store", err)
+			}
+		}()
+		return shutdownErr
+	}
+	return errors.Join(shutdownErr, st.Close())
 }
 
 func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
@@ -197,9 +324,24 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 		auditSyncInterval:     opts.AuditSyncInterval,
 		auditStandardInterval: opts.AuditStandardInterval,
 		auditNow:              opts.AuditNow,
+		researchRuntime:       brainresearch.NewRuntime(cfg, st),
 	}
 
-	return httpsecurity.OriginGuard(s.newMux()), nil
+	return newCloseableHandler(httpsecurity.OriginGuard(s.newMux()), s.Close), nil
+}
+
+func (s *server) Shutdown(ctx context.Context) error {
+	if s == nil || s.researchRuntime == nil {
+		return nil
+	}
+	return s.researchRuntime.Shutdown(ctx)
+}
+
+func (s *server) Close() error {
+	if s == nil || s.researchRuntime == nil {
+		return nil
+	}
+	return s.researchRuntime.Close()
 }
 
 func writeAuthStartupStatus(out io.Writer, authCfg authConfig) {
