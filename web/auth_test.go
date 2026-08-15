@@ -623,7 +623,7 @@ func TestGitHubOAuthCallbackCreatesAuthenticatedSession(t *testing.T) {
 		t.Fatalf("unexpected auth bootstrap info: %#v", response.Auth)
 	}
 	logOutput := accessLog.String()
-	for _, value := range []string{"web request", "method=GET", "path=/api/bootstrap", "status=200", "duration=", `auth="github"`, `identity="darron"`} {
+	for _, value := range []string{"web request", "method=GET", "path=/api/bootstrap", "status=200", "duration=", "db_max_open=1", "db_open=", "db_in_use=", "db_idle=", "db_wait_count=", "db_wait_duration=", `auth="github"`, `identity="darron"`} {
 		if !strings.Contains(logOutput, value) {
 			t.Fatalf("expected authenticated web access log to contain %q, got %q", value, logOutput)
 		}

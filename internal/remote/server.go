@@ -191,6 +191,8 @@ func serveWithDeps(ctx context.Context, cfg config.Config, opts Options, logOut 
 	go func() {
 		errCh <- httpServer.Serve(listener)
 	}()
+	stopProcessHeartbeat := startProcessHeartbeat(ctx, logOut)
+	defer stopProcessHeartbeat()
 
 	urls := URLs(status, opts)
 	if opts.Web && urls.WebURL != "" {

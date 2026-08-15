@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/darron/dbrain/internal/store"
 )
 
 type mcpRequestStartedAtKey struct{}
@@ -60,7 +62,7 @@ func (w *mcpAccessLogWriter) statusCode() int {
 	return w.status
 }
 
-func logMCPAccess(out io.Writer, r *http.Request, status int, identity mcpAccessLogIdentity) {
+func logMCPAccess(out io.Writer, r *http.Request, status int, identity mcpAccessLogIdentity, pool store.PoolStats) {
 	if out == nil {
 		return
 	}
@@ -74,5 +76,5 @@ func logMCPAccess(out io.Writer, r *http.Request, status int, identity mcpAccess
 	if started, ok := r.Context().Value(mcpRequestStartedAtKey{}).(time.Time); ok {
 		duration = time.Since(started)
 	}
-	_, _ = fmt.Fprintf(out, "DEBUG %s mcp request method=%s path=%s status=%d duration=%s auth=%q token_status=%q token_name=%q token_fingerprint=%q remote=%q\n", time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, status, duration, identity.Auth, identity.TokenStatus, identity.TokenName, identity.TokenFingerprint, r.RemoteAddr)
+	_, _ = fmt.Fprintf(out, "DEBUG %s mcp request method=%s path=%s status=%d duration=%s db_max_open=%d db_open=%d db_in_use=%d db_idle=%d db_wait_count=%d db_wait_duration=%s auth=%q token_status=%q token_name=%q token_fingerprint=%q remote=%q\n", time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, status, duration, pool.MaxOpenConnections, pool.OpenConnections, pool.InUse, pool.Idle, pool.WaitCount, pool.WaitDuration, identity.Auth, identity.TokenStatus, identity.TokenName, identity.TokenFingerprint, r.RemoteAddr)
 }
