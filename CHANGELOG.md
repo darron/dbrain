@@ -12,6 +12,10 @@ development date for the change set.
   cumulative wait duration. This distinguishes pool head-of-line blocking
   from slow queries or process-wide scheduling problems during production
   sync observation.
+- **Sync and intake diagnostics**: Deferred link admission logs report the
+  dedicated admission pool, scheduled sync logs report their separate pool at
+  run completion, and remote serving emits a warning when the process
+  heartbeat is delayed beyond two seconds.
 
 ### Deferred capture fallback and follow-up hardening (2026-08-15)
 

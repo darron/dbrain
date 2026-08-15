@@ -560,6 +560,7 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 	options.Metrics = metricsRun
 	options.ParentOwnsRunCompletion = true
 	stats, err := runSyncAll(ctx, cfg, st, options)
+	_ = logScheduledSyncPoolStats(logOut, st.PoolStats())
 	if err != nil {
 		_ = st.Close()
 		st = nil
@@ -624,6 +625,14 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 		return wrapScheduledSyncBoundary(scheduledBoundaryOutput, outputErr)
 	}
 	return nil
+}
+
+func logScheduledSyncPoolStats(logOut io.Writer, stats store.PoolStats) error {
+	if logOut == nil {
+		return nil
+	}
+	_, err := fmt.Fprintf(logOut, "scheduler sync all pool stats: db_max_open=%d db_open=%d db_in_use=%d db_idle=%d db_wait_count=%d db_wait_duration=%s\n", stats.MaxOpenConnections, stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount, stats.WaitDuration)
+	return err
 }
 
 func logScheduledSyncStats(logOut io.Writer, stats syncjob.Stats) error {

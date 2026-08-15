@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -54,6 +55,31 @@ func TestWebDeferredLinkCaptureReturnsBeforeFeedDiscovery(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0].Candidate.CanonicalURL != page.URL+"/article" {
 		t.Fatalf("pending captures = %+v", pending)
+	}
+}
+
+func TestWebDeferredLinkCaptureLogsAdmissionPoolStats(t *testing.T) {
+	t.Parallel()
+
+	var logOutput bytes.Buffer
+	cfg, st := openTestStore(t)
+	handler, err := NewHandlerWithOptions(cfg, st, HandlerOptions{LogOutput: &logOutput})
+	if err != nil {
+		t.Fatalf("NewHandlerWithOptions: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/links", strings.NewReader(`{"url":"https://example.com/article","enrich":false,"defer":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("deferred status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	logOutputText := logOutput.String()
+	for _, want := range []string{"link capture admission", "admission_db_max_open=1", "admission_db_wait_count=", "admission_db_wait_duration="} {
+		if !strings.Contains(logOutputText, want) {
+			t.Fatalf("admission log missing %q: %s", want, logOutputText)
+		}
 	}
 }
 

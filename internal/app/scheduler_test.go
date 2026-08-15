@@ -81,6 +81,28 @@ scheduler:
 	}
 }
 
+func TestLogScheduledSyncPoolStats(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	err := logScheduledSyncPoolStats(&out, store.PoolStats{
+		MaxOpenConnections: 1,
+		OpenConnections:    1,
+		InUse:              1,
+		Idle:               0,
+		WaitCount:          3,
+		WaitDuration:       4 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("logScheduledSyncPoolStats: %v", err)
+	}
+	for _, want := range []string{"scheduler sync all pool stats", "db_max_open=1", "db_open=1", "db_in_use=1", "db_idle=0", "db_wait_count=3", "db_wait_duration=4s"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("pool stats log missing %q: %s", want, out.String())
+		}
+	}
+}
+
 func TestSchedulerSyncMarkersAreContentFreeAndExplicit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "metrics.jsonl")
 	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage})

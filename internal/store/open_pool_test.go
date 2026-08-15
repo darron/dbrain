@@ -135,6 +135,24 @@ func TestLinkCaptureAdmissionPoolUsesShortBusyTimeout(t *testing.T) {
 	}
 }
 
+func TestLinkCaptureAdmissionPoolStatsReportsDedicatedPool(t *testing.T) {
+	t.Parallel()
+
+	st, err := OpenWithOptions(filepath.Join(t.TempDir(), "brain.db"), OpenOptions{})
+	if err != nil {
+		t.Fatalf("open writable store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.EnqueueLinkCapture(t.Context(), linkCaptureTestCandidate(), time.Now().UTC()); err != nil {
+		t.Fatalf("initialize admission pool: %v", err)
+	}
+
+	stats := st.LinkCaptureAdmissionPoolStats()
+	if stats.MaxOpenConnections != 1 {
+		t.Fatalf("admission pool max open = %d, want 1: %+v", stats.MaxOpenConnections, stats)
+	}
+}
+
 func TestReadOnlyPoolInitializesPragmasOnEveryConnection(t *testing.T) {
 	t.Parallel()
 

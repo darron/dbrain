@@ -79,7 +79,27 @@ func (s *Store) PoolStats() PoolStats {
 	if s == nil || s.db == nil {
 		return PoolStats{}
 	}
-	stats := s.db.Stats()
+	return snapshotPoolStats(s.db)
+}
+
+// LinkCaptureAdmissionPoolStats returns the dedicated deferred-link admission
+// pool snapshot. It returns the main pool for in-memory stores and a zero-value
+// snapshot when the file-backed admission pool has not been initialized.
+func (s *Store) LinkCaptureAdmissionPoolStats() PoolStats {
+	if s == nil || s.db == nil {
+		return PoolStats{}
+	}
+	if s.linkCaptureAdmissionPath == "" {
+		return s.PoolStats()
+	}
+	return snapshotPoolStats(s.linkCaptureAdmissionDB)
+}
+
+func snapshotPoolStats(db *sql.DB) PoolStats {
+	if db == nil {
+		return PoolStats{}
+	}
+	stats := db.Stats()
 	return PoolStats{
 		MaxOpenConnections: stats.MaxOpenConnections,
 		OpenConnections:    stats.OpenConnections,

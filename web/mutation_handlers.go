@@ -242,7 +242,11 @@ func (s *server) logLinkCaptureAdmission(started time.Time, outcome string, queu
 	if s == nil || s.logOutput == nil {
 		return
 	}
-	_, _ = fmt.Fprintf(s.logOutput, "DEBUG link capture admission duration=%s outcome=%s queued=%d\n", time.Since(started), outcome, queued)
+	pool := store.PoolStats{}
+	if s.store != nil {
+		pool = s.store.LinkCaptureAdmissionPoolStats()
+	}
+	_, _ = fmt.Fprintf(s.logOutput, "DEBUG link capture admission duration=%s outcome=%s queued=%d admission_db_max_open=%d admission_db_open=%d admission_db_in_use=%d admission_db_idle=%d admission_db_wait_count=%d admission_db_wait_duration=%s\n", time.Since(started), outcome, queued, pool.MaxOpenConnections, pool.OpenConnections, pool.InUse, pool.Idle, pool.WaitCount, pool.WaitDuration)
 }
 
 func splitFeedInputs(ctx context.Context, urls []string) ([]string, []string, []feedimport.DiscoveryCandidate) {
