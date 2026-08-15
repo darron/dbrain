@@ -663,7 +663,7 @@ func TestSemanticRefreshRunsMigrationV26RepairsGenuineV25Database(t *testing.T) 
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, semanticRefreshRunsRepairMigrationVersion).Scan(&before); err != nil || before != 1 {
 		t.Fatalf("v26 before read count=%d err=%v", before, err)
 	}
-	if len(events) != 10 ||
+	if len(events) != 12 ||
 		events[0].Phase != MigrationStarted || events[0].Version != semanticRefreshRunsRepairMigrationVersion ||
 		events[1].Phase != MigrationApplied || events[1].Version != semanticRefreshRunsRepairMigrationVersion ||
 		events[2].Phase != MigrationStarted || events[2].Version != semanticRefreshRunsArchiveMigrationVersion ||
@@ -673,7 +673,9 @@ func TestSemanticRefreshRunsMigrationV26RepairsGenuineV25Database(t *testing.T) 
 		events[6].Phase != MigrationStarted || events[6].Version != semanticSegmentedDirtyTriggerVersion ||
 		events[7].Phase != MigrationApplied || events[7].Version != semanticSegmentedDirtyTriggerVersion ||
 		events[8].Phase != MigrationStarted || events[8].Version != mastodonSyncStateVersion ||
-		events[9].Phase != MigrationApplied || events[9].Version != mastodonSyncStateVersion {
+		events[9].Phase != MigrationApplied || events[9].Version != mastodonSyncStateVersion ||
+		events[10].Phase != MigrationStarted || events[10].Version != linkCaptureQueueVersion ||
+		events[11].Phase != MigrationApplied || events[11].Version != linkCaptureQueueVersion {
 		t.Fatalf("migration events=%+v", events)
 	}
 	var createdText string

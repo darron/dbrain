@@ -29,9 +29,12 @@ this request:
 ```json
 {
   "url": "https://example.com/page",
-  "enrich": false
+  "enrich": false,
+  "defer": true
 }
 ```
 
-Successful saves show an `OK` badge briefly. Authentication failures open the
-dbrain login page; log in and click the toolbar button again.
+The API durably captures the URL and returns `202 Accepted`; feed discovery and
+source enrichment run later. Successful saves show an `OK` badge briefly.
+Authentication failures open the dbrain login page; log in and click the
+toolbar button again.

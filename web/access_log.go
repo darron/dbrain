@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -8,6 +9,28 @@ import (
 	"strings"
 	"time"
 )
+
+type webRequestStartedAtKey struct{}
+type webAccessLoggedKey struct{}
+
+func (s *server) withAccessLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		state := &webAccessLogState{}
+		ctx := context.WithValue(r.Context(), webRequestStartedAtKey{}, started)
+		ctx = context.WithValue(ctx, webAccessLoggedKey{}, state)
+		logged := newWebAccessLogWriter(w)
+		next.ServeHTTP(logged, r.WithContext(ctx))
+		if s != nil && !state.logged {
+			logWebAccess(s.logOutput, r.WithContext(ctx), logged.statusCode(), "disabled", "")
+			state.logged = true
+		}
+	})
+}
+
+type webAccessLogState struct {
+	logged bool
+}
 
 type webAccessLogWriter struct {
 	http.ResponseWriter
@@ -70,6 +93,9 @@ func (a *authManager) logAccess(r *http.Request, status int, user authUser, auth
 		}
 	}
 	logWebAccess(a.logOutput, r, status, auth, identity)
+	if state, ok := r.Context().Value(webAccessLoggedKey{}).(*webAccessLogState); ok {
+		state.logged = true
+	}
 }
 
 func logWebAccess(out io.Writer, r *http.Request, status int, auth string, identity string) {
@@ -79,5 +105,9 @@ func logWebAccess(out io.Writer, r *http.Request, status int, auth string, ident
 	if status == 0 {
 		status = http.StatusOK
 	}
-	_, _ = fmt.Fprintf(out, "DEBUG %s web request method=%s path=%s status=%d auth=%q identity=%q remote=%q\n", time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, status, auth, identity, r.RemoteAddr)
+	duration := time.Duration(0)
+	if started, ok := r.Context().Value(webRequestStartedAtKey{}).(time.Time); ok {
+		duration = time.Since(started)
+	}
+	_, _ = fmt.Fprintf(out, "DEBUG %s web request method=%s path=%s status=%d duration=%s auth=%q identity=%q remote=%q\n", time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, status, duration, auth, identity, r.RemoteAddr)
 }

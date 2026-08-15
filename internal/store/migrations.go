@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	currentSchemaVersion                       = 30
+	currentSchemaVersion                       = 31
 	auditProvenanceMigrationVersion            = 12
 	auditProvenanceMigrationName               = "audit_provenance_v1"
 	retrievalMigrationVersion                  = 13
@@ -48,6 +48,8 @@ const (
 	semanticSegmentedDirtyTriggerName          = "retrieval_segmented_dirty_trigger_repair"
 	mastodonSyncStateVersion                   = 30
 	mastodonSyncStateName                      = "mastodon_sync_state_v1"
+	linkCaptureQueueVersion                    = 31
+	linkCaptureQueueName                       = "link_capture_queue_v1"
 )
 
 type schemaMigration struct {
@@ -301,6 +303,13 @@ var schemaMigrations = []schemaMigration{
 			return ensureMastodonSyncStateTable(s.db)
 		},
 	},
+	{
+		Version: linkCaptureQueueVersion,
+		Name:    linkCaptureQueueName,
+		Run: func(s *Store) error {
+			return s.ensureLinkCaptureQueueSchema()
+		},
+	},
 }
 
 func newRetrievalDatabaseID() (string, error) {
@@ -374,6 +383,9 @@ func (s *Store) migrate(reporter MigrationReporter) error {
 	// Repair the v30 Mastodon state invariant even when the migration metadata
 	// was stamped before its table or index was fully created.
 	if err := ensureMastodonSyncStateTable(s.db); err != nil {
+		return err
+	}
+	if err := s.ensureLinkCaptureQueueSchema(); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {

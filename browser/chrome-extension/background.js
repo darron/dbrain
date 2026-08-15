@@ -56,7 +56,7 @@ async function postLink(baseUrl, pageURL) {
 			"Content-Type": "application/json",
 		},
 		credentials: "include",
-		body: JSON.stringify({ url: pageURL, enrich: false }),
+		body: JSON.stringify({ url: pageURL, enrich: false, defer: true }),
 	});
 	const bodyText = await response.text();
 	const body = parseJSONBody(bodyText);

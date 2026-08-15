@@ -5,6 +5,18 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Deferred link capture during sync contention (2026-08-14)
+
+- **Fast extension admission**: The browser link saver now durably captures
+  validated URLs and returns `202 Accepted` before feed discovery or source
+  enrichment. A restart-safe worker drains captures with idempotent retry and
+  preserves the authoritative semantic lease for source writes.
+- **Interactive contention visibility**: Remote web/MCP stores use separate
+  four-connection pools with per-connection SQLite pragmas; lease wait, queue
+  wait, and web/MCP request duration are logged without raw URLs. The residual
+  process-wide starvation channel remains explicitly measurable rather than
+  claimed fixed.
+
 ### Lazy semantic runtime root reuse (2026-08-14)
 
 - **Truthful cold and warm diagnostics**: Runtime construction now reads

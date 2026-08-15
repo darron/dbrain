@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+type mcpRequestStartedAtKey struct{}
+
 type mcpAccessLogWriter struct {
 	http.ResponseWriter
 	status int
@@ -68,5 +70,9 @@ func logMCPAccess(out io.Writer, r *http.Request, status int, identity mcpAccess
 	if identity.Auth == "" {
 		identity.Auth = "unknown"
 	}
-	_, _ = fmt.Fprintf(out, "DEBUG %s mcp request method=%s path=%s status=%d auth=%q token_status=%q token_name=%q token_fingerprint=%q remote=%q\n", time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, status, identity.Auth, identity.TokenStatus, identity.TokenName, identity.TokenFingerprint, r.RemoteAddr)
+	duration := time.Duration(0)
+	if started, ok := r.Context().Value(mcpRequestStartedAtKey{}).(time.Time); ok {
+		duration = time.Since(started)
+	}
+	_, _ = fmt.Fprintf(out, "DEBUG %s mcp request method=%s path=%s status=%d duration=%s auth=%q token_status=%q token_name=%q token_fingerprint=%q remote=%q\n", time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, status, duration, identity.Auth, identity.TokenStatus, identity.TokenName, identity.TokenFingerprint, r.RemoteAddr)
 }

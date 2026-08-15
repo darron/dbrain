@@ -124,6 +124,8 @@ func (s *Server) HTTPHandler(opts HTTPOptions) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		r = r.WithContext(context.WithValue(r.Context(), mcpRequestStartedAtKey{}, started))
 		logged := newMCPAccessLogWriter(w)
 		access := mcpAccessLogIdentity{Auth: "disabled"}
 		if opts.RequireBearerAuth {

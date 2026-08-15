@@ -123,6 +123,12 @@ func isLikelyFeedURL(rawURL string) bool {
 		strings.Contains(lower, "format=atom")
 }
 
+// IsLikelyFeedURL reports whether a URL has a feed-shaped path and can skip
+// HTML discovery before feed import.
+func IsLikelyFeedURL(rawURL string) bool {
+	return isLikelyFeedURL(rawURL)
+}
+
 func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Stats, error) {
 	opts = normalizeOptions(opts)
 	now := opts.Now()

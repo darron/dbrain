@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,16 @@ import (
 )
 
 const defaultSchedulerSyncInterval = time.Hour
+
+func schedulerLeaseWaitObserver(out io.Writer) store.AuthoritativeWriteWaitObserver {
+	return func(event store.AuthoritativeWriteWaitEvent) {
+		if out == nil {
+			return
+		}
+		metadata := strings.Join(strings.Fields(event.Metadata), " ")
+		_, _ = fmt.Fprintf(out, "DEBUG store authoritative lease metadata=%q wait=%s outcome=%s\n", metadata, event.Wait, event.Outcome)
+	}
+}
 
 type schedulerSyncConfig struct {
 	Enabled    bool
@@ -530,7 +541,9 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 			err = errors.Join(err, wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr))
 		}
 	}()
-	st, err := store.OpenWithSemanticCache(cfg.DBPath, cfg.CacheDir)
+	st, err := store.OpenWithSemanticCacheOptions(cfg.DBPath, cfg.CacheDir, store.OpenOptions{
+		AuthoritativeWriteObserver: schedulerLeaseWaitObserver(logOut),
+	})
 	if err != nil {
 		return wrapScheduledSyncBoundary(scheduledBoundaryStoreOpen, err)
 	}

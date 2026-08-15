@@ -1352,6 +1352,7 @@ func TestHTTPHandlerLogsBearerTokenIdentity(t *testing.T) {
 		"method=POST",
 		"path=/mcp",
 		"status=200",
+		"duration=",
 		`auth="bearer"`,
 		`token_status="accepted"`,
 		`token_name="codex"`,
