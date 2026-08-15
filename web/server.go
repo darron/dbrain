@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/darron/dbrain/internal/brainresearch"
 	"github.com/darron/dbrain/internal/config"
 	"github.com/darron/dbrain/internal/httpsecurity"
+	"github.com/darron/dbrain/internal/linkcapture"
 	"github.com/darron/dbrain/internal/schedulerstate"
 	"github.com/darron/dbrain/internal/store"
 	"github.com/darron/dbrain/internal/summarizecli"
@@ -61,6 +63,8 @@ type server struct {
 	auditStandardInterval time.Duration
 	auditNow              func() time.Time
 	researchRuntime       *brainresearch.Runtime
+	linkCaptureWorker     *linkcapture.Worker
+	logOutput             io.Writer
 }
 
 // CloseableHandler preserves the public http.Handler constructor contract while
@@ -276,6 +280,7 @@ func NewHandler(cfg config.Config, st *store.Store) (http.Handler, error) {
 }
 
 func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptions) (http.Handler, error) {
+	lifecycleCtx := opts.Context
 	startupCtx := opts.Context
 	if startupCtx == nil {
 		startupCtx = context.Background()
@@ -325,23 +330,50 @@ func NewHandlerWithOptions(cfg config.Config, st *store.Store, opts HandlerOptio
 		auditStandardInterval: opts.AuditStandardInterval,
 		auditNow:              opts.AuditNow,
 		researchRuntime:       brainresearch.NewRuntime(cfg, st),
+		logOutput:             opts.LogOutput,
+	}
+	if lifecycleCtx != nil {
+		var logger *slog.Logger
+		if opts.LogOutput != nil {
+			logger = slog.New(slog.NewTextHandler(opts.LogOutput, nil))
+		}
+		s.linkCaptureWorker = linkcapture.New(cfg, st, linkcapture.Options{Logger: logger})
+		s.linkCaptureWorker.Start(lifecycleCtx)
 	}
 
-	return newCloseableHandler(httpsecurity.OriginGuard(s.newMux()), s.Close), nil
+	root := httpsecurity.OriginGuard(s.newMux())
+	if opts.LogOutput != nil {
+		root = s.withAccessLogging(root)
+	}
+	return newCloseableHandler(root, s.Close), nil
 }
 
 func (s *server) Shutdown(ctx context.Context) error {
-	if s == nil || s.researchRuntime == nil {
+	if s == nil {
 		return nil
 	}
-	return s.researchRuntime.Shutdown(ctx)
+	var err error
+	if s.linkCaptureWorker != nil {
+		err = errors.Join(err, s.linkCaptureWorker.Shutdown(ctx))
+	}
+	if s.researchRuntime != nil {
+		err = errors.Join(err, s.researchRuntime.Shutdown(ctx))
+	}
+	return err
 }
 
 func (s *server) Close() error {
-	if s == nil || s.researchRuntime == nil {
+	if s == nil {
 		return nil
 	}
-	return s.researchRuntime.Close()
+	var err error
+	if s.linkCaptureWorker != nil {
+		err = errors.Join(err, s.linkCaptureWorker.Close())
+	}
+	if s.researchRuntime != nil {
+		err = errors.Join(err, s.researchRuntime.Close())
+	}
+	return err
 }
 
 func writeAuthStartupStatus(out io.Writer, authCfg authConfig) {

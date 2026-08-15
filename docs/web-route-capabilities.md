@@ -32,7 +32,7 @@ auth-disabled selected surface.
 | `/api/chat/transcripts` | `POST` | Write local file | Saves a non-indexed Markdown diagnostic transcript under `data/chat-transcripts/` and returns a data-directory-relative path. |
 | `/api/chat/shares` | `GET`, `POST` | Read/write DB | Lists the authenticated or local owner's public chat shares and creates or refreshes a share from a completed chat answer. |
 | `/api/chat/shares/{slug}` | `DELETE` | Delete DB row | Deletes only the authenticated or local owner's matching share. Missing and foreign-owner slugs both return `204` so the route does not expose whether another owner's share exists. Subject to the shared Origin guard. |
-| `/api/links` | `POST` | Write DB; optional remote fetch/model call | Adds one or more URLs. When `enrich` is true, the request can fetch remote content and summarize it. |
+| `/api/links` | `POST` | Write DB; optional remote fetch/model call | Adds one or more URLs. When `defer: true`, validated captures are durably queued and the route returns `202` before feed discovery or enrichment; otherwise existing synchronous behavior applies. When `enrich` is true, the synchronous request can fetch remote content and summarize it. |
 | `/api/tag` | `POST` | Write DB; update FTS | Updates item or source tags. Source tag writes re-sync source FTS. |
 | `/api/media/signed-url` | `GET` | Read DB; archive access | Returns a short-lived archive URL, proxy URL, media type, and expiry without exposing bucket/key or local source path. |
 | `/media/asset/<id>` | `GET`, `HEAD` | Read DB; archive access | Proxies archived media from configured S3-compatible storage. Supports range requests. |

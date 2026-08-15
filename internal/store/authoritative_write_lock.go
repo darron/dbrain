@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 type authoritativeWriteTx = *sql.Tx
@@ -56,7 +57,22 @@ func withAuthoritativeWriteTxAcquire[T any](
 
 	var lease io.Closer
 	if acquire != nil {
+		waitStarted := time.Now()
 		lease, err = acquire(ctx, metadata)
+		if st.authoritativeWriteObserver != nil {
+			outcome := "acquired"
+			if err != nil {
+				outcome = "error"
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					outcome = "canceled"
+				}
+			}
+			st.authoritativeWriteObserver(AuthoritativeWriteWaitEvent{
+				Metadata: metadata,
+				Wait:     time.Since(waitStarted),
+				Outcome:  outcome,
+			})
+		}
 		if err != nil {
 			return result, fmt.Errorf("acquire authoritative semantic write lease: %w", err)
 		}

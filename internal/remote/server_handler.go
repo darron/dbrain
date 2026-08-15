@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +46,18 @@ func closeOwnedStoreWithLogger(owner runtimeOwner, closeStore func() error, time
 
 const handlerCleanupTimeout = 10 * time.Second
 
+const interactivePoolSize = 4
+
+func remoteLeaseWaitObserver(out io.Writer) store.AuthoritativeWriteWaitObserver {
+	return func(event store.AuthoritativeWriteWaitEvent) {
+		if out == nil {
+			return
+		}
+		metadata := strings.Join(strings.Fields(event.Metadata), " ")
+		_, _ = fmt.Fprintf(out, "DEBUG store authoritative lease metadata=%q wait=%s outcome=%s\n", metadata, event.Wait, event.Outcome)
+	}
+}
+
 func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIsClient, logOut io.Writer) (http.Handler, func() error, error) {
 	var cleanups []func() error
 	var cleanupOnce sync.Once
@@ -64,7 +77,10 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 	var webHandler http.Handler
 	if opts.Web {
 		st, err := store.OpenWithSemanticCacheOptions(cfg.DBPath, cfg.CacheDir, store.OpenOptions{
-			MigrationReporter: startuplog.MigrationReporter(logOut),
+			MigrationReporter:          startuplog.MigrationReporter(logOut),
+			MaxOpenConns:               interactivePoolSize,
+			MaxIdleConns:               interactivePoolSize,
+			AuthoritativeWriteObserver: remoteLeaseWaitObserver(logOut),
 		})
 		if err != nil {
 			return fail(err)
@@ -96,7 +112,10 @@ func buildHandler(ctx context.Context, cfg config.Config, opts Options, lc whoIs
 
 	var mcpHandler http.Handler
 	if opts.MCP {
-		st, err := store.OpenReadOnly(cfg.DBPath)
+		st, err := store.OpenReadOnlyWithOptions(cfg.DBPath, store.OpenOptions{
+			MaxOpenConns: interactivePoolSize,
+			MaxIdleConns: interactivePoolSize,
+		})
 		if err != nil {
 			return fail(err)
 		}

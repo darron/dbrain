@@ -348,6 +348,7 @@ type LinkAddRequest struct {
 	URL    string   `json:"url"`
 	URLs   []string `json:"urls"`
 	Enrich bool     `json:"enrich"`
+	Defer  bool     `json:"defer"`
 }
 
 type TagRequest struct {

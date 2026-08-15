@@ -46,5 +46,7 @@ project.
    origin when Safari prompts.
 
 The toolbar button posts the active tab URL to `POST /api/links` with
-`{ "url": "...", "enrich": false }`. If dbrain web auth is enabled, log in to
-dbrain in Safari first; a `401` opens the dbrain login page.
+`{ "url": "...", "enrich": false, "defer": true }`. dbrain durably captures
+the URL before returning `202 Accepted`; feed discovery and source enrichment
+run later. If dbrain web auth is enabled, log in to dbrain in Safari first; a
+`401` opens the dbrain login page.

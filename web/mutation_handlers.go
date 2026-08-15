@@ -10,7 +10,11 @@ import (
 
 	"github.com/darron/dbrain/internal/feedimport"
 	"github.com/darron/dbrain/internal/linkadd"
+	"github.com/darron/dbrain/internal/linkextract"
+	"github.com/darron/dbrain/internal/model"
 )
+
+const linkCaptureAdmissionTimeout = 2 * time.Second
 
 func (s *server) handleTag(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -67,6 +71,10 @@ func (s *server) handleLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(urls) == 0 {
 		writeMessage(w, http.StatusBadRequest, "url is required")
+		return
+	}
+	if req.Defer {
+		s.handleDeferredLinks(w, r, urls)
 		return
 	}
 
@@ -138,6 +146,99 @@ func (s *server) handleLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+type deferredLinkCaptureResult struct {
+	URL          string `json:"url"`
+	CanonicalURL string `json:"canonical_url,omitempty"`
+	SourceKey    string `json:"source_key,omitempty"`
+	Queued       bool   `json:"queued"`
+	Reopened     bool   `json:"reopened,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+func (s *server) handleDeferredLinks(w http.ResponseWriter, r *http.Request, urls []string) {
+	admissionStarted := time.Now()
+	candidates := make([]model.SourceCandidate, 0, len(urls))
+	candidateResultIndexes := make([]int, 0, len(urls))
+	results := make([]deferredLinkCaptureResult, 0, len(urls))
+	for _, raw := range urls {
+		candidate, ok := linkextract.NormalizeCandidate(raw)
+		if !ok {
+			results = append(results, deferredLinkCaptureResult{
+				URL: strings.TrimSpace(raw), Error: "unsupported or invalid URL",
+			})
+			continue
+		}
+		candidateResultIndexes = append(candidateResultIndexes, len(results))
+		candidates = append(candidates, candidate)
+		results = append(results, deferredLinkCaptureResult{URL: candidate.OriginalURL})
+	}
+	if len(candidates) == 0 {
+		s.logLinkCaptureAdmission(admissionStarted, "invalid", 0)
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"deferred": true,
+			"queued":   0,
+			"results":  results,
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), linkCaptureAdmissionTimeout)
+	defer cancel()
+	now := time.Now().UTC()
+	queued := 0
+	admissionErrors := 0
+	for i, candidate := range candidates {
+		result := &results[candidateResultIndexes[i]]
+		enqueued, err := s.store.EnqueueLinkCapture(ctx, candidate, now)
+		if err != nil {
+			result.Error = "durable link capture unavailable"
+			admissionErrors++
+			continue
+		}
+		result.CanonicalURL = candidate.CanonicalURL
+		result.SourceKey = candidate.SourceKey
+		result.Queued = true
+		result.Reopened = enqueued.Reopened
+		queued++
+	}
+
+	if queued == 0 {
+		outcome := "invalid"
+		status := http.StatusBadRequest
+		response := map[string]any{
+			"deferred": true,
+			"queued":   0,
+			"results":  results,
+		}
+		if admissionErrors > 0 {
+			outcome = "error"
+			status = http.StatusServiceUnavailable
+			response["error"] = "durable link capture unavailable"
+		}
+		s.logLinkCaptureAdmission(admissionStarted, outcome, 0)
+		writeJSON(w, status, response)
+		return
+	}
+
+	s.logLinkCaptureAdmission(admissionStarted, "accepted", queued)
+	response := map[string]any{
+		"deferred": true,
+		"queued":   queued,
+		"results":  results,
+	}
+	if admissionErrors > 0 {
+		response["partial"] = true
+	}
+	writeJSON(w, http.StatusAccepted, response)
+}
+
+func (s *server) logLinkCaptureAdmission(started time.Time, outcome string, queued int) {
+	if s == nil || s.logOutput == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(s.logOutput, "DEBUG link capture admission duration=%s outcome=%s queued=%d\n", time.Since(started), outcome, queued)
 }
 
 func splitFeedInputs(ctx context.Context, urls []string) ([]string, []string, []feedimport.DiscoveryCandidate) {
