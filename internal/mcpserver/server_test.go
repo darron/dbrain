@@ -1353,7 +1353,7 @@ func TestHTTPHandlerLogsBearerTokenIdentity(t *testing.T) {
 		"path=/mcp",
 		"status=200",
 		"duration=",
-		"db_max_open=",
+		"db_max_open=1",
 		"db_open=",
 		"db_in_use=",
 		"db_idle=",
