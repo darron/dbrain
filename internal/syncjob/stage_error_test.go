@@ -114,6 +114,56 @@ func TestRunSyncStagePlanStopsAfterCancellation(t *testing.T) {
 	}
 }
 
+func TestRunSyncStagePlanPreservesPriorStageErrorOnCancellation(t *testing.T) {
+	priorCause := errors.New("github unavailable")
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	var ran []syncStageID
+	plan := []syncStage{
+		{
+			ID:      syncStageGitHub,
+			Enabled: func(stageOptions) bool { return true },
+			Run: func(context.Context, config.Config, *store.Store, stageOptions, *Stats) error {
+				ran = append(ran, syncStageGitHub)
+				return priorCause
+			},
+		},
+		{
+			ID:      syncStageYouTube,
+			After:   []syncStageID{syncStageGitHub},
+			Enabled: func(stageOptions) bool { return true },
+			Run: func(context.Context, config.Config, *store.Store, stageOptions, *Stats) error {
+				ran = append(ran, syncStageYouTube)
+				cancel()
+				return context.Canceled
+			},
+		},
+		{
+			ID:      syncStageFeeds,
+			After:   []syncStageID{syncStageYouTube},
+			Enabled: func(stageOptions) bool { return true },
+			Run: func(context.Context, config.Config, *store.Store, stageOptions, *Stats) error {
+				ran = append(ran, syncStageFeeds)
+				return nil
+			},
+		},
+	}
+
+	err := runSyncStagePlanWithPlan(ctx, config.Config{}, nil, stageOptions{}, &Stats{}, plan)
+	if !errors.Is(err, priorCause) {
+		t.Fatalf("prior stage error = %#v", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation joined with prior stage error = %#v", err)
+	}
+	if got := erroredStageCount(err); got != 1 {
+		t.Fatalf("errored stage count = %d, want 1", got)
+	}
+	if !slices.Equal(ran, []syncStageID{syncStageGitHub, syncStageYouTube}) {
+		t.Fatalf("ran stages after cancellation = %v", ran)
+	}
+}
+
 func TestWrapStageErrorReturnsNilForNilCause(t *testing.T) {
 	if err := WrapStageError("apple_notes", nil); err != nil {
 		t.Fatalf("nil cause wrapped as %#v", err)

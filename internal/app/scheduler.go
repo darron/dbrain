@@ -559,38 +559,50 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 	}
 	options.Metrics = metricsRun
 	options.ParentOwnsRunCompletion = true
-	stats, err := runSyncAll(ctx, cfg, st, options)
+	stats, syncErr := runSyncAll(ctx, cfg, st, options)
 	_ = logScheduledSyncPoolStats(logOut, st.PoolStats())
-	if err != nil {
+	if syncErr != nil && ctx.Err() != nil {
 		_ = st.Close()
 		st = nil
-		syncjob.EmitRunCompleted(metricsRun, stats, err)
+		syncjob.EmitRunCompleted(metricsRun, stats, syncErr)
 		closeErr := closeMetrics()
 		closeMetrics = func() error { return nil }
 		if closeErr != nil {
-			return errors.Join(err, wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr))
+			return errors.Join(syncErr, wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr))
 		}
-		return err
+		return syncErr
 	}
 	if err := st.Close(); err != nil {
 		st = nil
 		boundaryErr := wrapScheduledSyncBoundary(scheduledBoundaryStoreClose, err)
-		syncjob.EmitRunCompleted(metricsRun, stats, boundaryErr)
-		return boundaryErr
+		runErr := errors.Join(syncErr, boundaryErr)
+		syncjob.EmitRunCompleted(metricsRun, stats, runErr)
+		return runErr
 	}
 	st = nil
 
 	if err := logScheduledSyncStats(logOut, stats); err != nil {
 		boundaryErr := wrapScheduledSyncBoundary(scheduledBoundaryOutput, err)
-		syncjob.EmitRunCompleted(metricsRun, stats, boundaryErr)
-		return boundaryErr
+		runErr := errors.Join(syncErr, boundaryErr)
+		syncjob.EmitRunCompleted(metricsRun, stats, runErr)
+		return runErr
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		runErr := errors.Join(syncErr, ctxErr)
+		syncjob.EmitRunCompleted(metricsRun, stats, runErr)
+		closeErr := closeMetrics()
+		closeMetrics = func() error { return nil }
+		if closeErr != nil {
+			return errors.Join(runErr, wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr))
+		}
+		return runErr
 	}
 	reporter := newSemanticProgressReporter(logOut, time.Now)
 	semanticStartedAt := time.Now().UTC()
 	metricsErr := emitSemanticRefreshStarted(metricsRun, semanticStartedAt)
 	refreshDeps := deps
 	refreshDeps.startedAt = semanticStartedAt
-	result, err := runConfiguredSemanticRefresh(
+	result, semanticErr := runConfiguredSemanticRefresh(
 		ctx,
 		cfg,
 		refreshDeps,
@@ -601,28 +613,31 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 			return nil
 		},
 	)
-	if finishErr := reporter.Finish(err == nil); finishErr != nil {
-		err = errors.Join(err, wrapScheduledSyncBoundary(scheduledBoundaryOutput, finishErr))
+	if finishErr := reporter.Finish(semanticErr == nil); finishErr != nil {
+		semanticErr = errors.Join(semanticErr, wrapScheduledSyncBoundary(scheduledBoundaryOutput, finishErr))
 	}
 	completedDeps := completeSemanticRefreshDeps(deps)
-	gcResult := maybeRunAutomaticSemanticGC(ctx, cfg, resolvedFlags.semanticGC, result, err, completedDeps.semanticGC)
+	runErr := errors.Join(syncErr, semanticErr)
+	gcResult := maybeRunAutomaticSemanticGC(ctx, cfg, resolvedFlags.semanticGC, result, runErr, completedDeps.semanticGC)
 	stats = completeSyncStatsWithSemanticGC(stats, result, gcResult)
-	metricsErr = errors.Join(metricsErr, emitFullSyncCompletionWithGC(metricsRun, stats, result, gcResult, err))
+	metricsErr = errors.Join(metricsErr, emitFullSyncCompletionWithGCAndRunError(metricsRun, stats, result, gcResult, semanticErr, runErr))
 	if closeErr := closeMetrics(); closeErr != nil {
 		metricsErr = errors.Join(metricsErr, wrapScheduledSyncBoundary(scheduledBoundaryMetricsClose, closeErr))
 	}
 	closeMetrics = func() error { return nil }
-	if err != nil {
-		return errors.Join(err, metricsErr)
+	if semanticErr == nil {
+		if outputErr := logScheduledSemanticRefreshResult(logOut, result); outputErr != nil {
+			runErr = errors.Join(runErr, wrapScheduledSyncBoundary(scheduledBoundaryOutput, outputErr))
+		}
+		if outputErr := logScheduledSemanticGCResult(logOut, gcResult); outputErr != nil {
+			runErr = errors.Join(runErr, wrapScheduledSyncBoundary(scheduledBoundaryOutput, outputErr))
+		}
+	}
+	if runErr != nil {
+		return errors.Join(runErr, metricsErr)
 	}
 	if metricsErr != nil {
 		return metricsErr
-	}
-	if outputErr := logScheduledSemanticRefreshResult(logOut, result); outputErr != nil {
-		return wrapScheduledSyncBoundary(scheduledBoundaryOutput, outputErr)
-	}
-	if outputErr := logScheduledSemanticGCResult(logOut, gcResult); outputErr != nil {
-		return wrapScheduledSyncBoundary(scheduledBoundaryOutput, outputErr)
 	}
 	return nil
 }

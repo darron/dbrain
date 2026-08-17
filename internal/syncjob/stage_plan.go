@@ -156,6 +156,9 @@ func runSyncStagePlanWithPlan(ctx context.Context, cfg config.Config, st *store.
 	var stageErrors []error
 	for _, stage := range plan {
 		if err := ctx.Err(); err != nil {
+			if len(stageErrors) > 0 {
+				return errors.Join(stageErrors...)
+			}
 			return err
 		}
 		if !stage.Enabled(opts) {
@@ -168,6 +171,9 @@ func runSyncStagePlanWithPlan(ctx context.Context, cfg config.Config, st *store.
 			stageErr := WrapStageError(string(stage.ID), err)
 			emitSyncStageMetrics(opts.Common.Metrics, opts, stats, stage.ID, stageErr)
 			if ctxErr := ctx.Err(); ctxErr != nil {
+				if len(stageErrors) > 0 {
+					return errors.Join(stageErrors...)
+				}
 				return ctxErr
 			}
 			stageErrors = append(stageErrors, stageErr)

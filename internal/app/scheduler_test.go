@@ -371,7 +371,7 @@ metrics:
 	}
 }
 
-func TestRunScheduledSyncAllSourceErrorClosesStoreAndSkipsSemanticRefresh(t *testing.T) {
+func TestRunScheduledSyncAllSourceErrorClosesStoreAndContinuesSemanticRefresh(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -394,7 +394,7 @@ func TestRunScheduledSyncAllSourceErrorClosesStoreAndSkipsSemanticRefresh(t *tes
 	deps := semanticRefreshDeps{
 		resolve: func(string) (semanticconfig.Config, error) {
 			admissions++
-			return semanticRefreshTestConfig(semanticconfig.ModeOn), nil
+			return semanticRefreshTestConfig(semanticconfig.ModeOff), nil
 		},
 	}
 
@@ -408,14 +408,98 @@ func TestRunScheduledSyncAllSourceErrorClosesStoreAndSkipsSemanticRefresh(t *tes
 	if !errors.Is(err, sourceErr) {
 		t.Fatalf("scheduled sync error = %v, want source error", err)
 	}
-	if admissions != 0 {
-		t.Fatalf("semantic admissions = %d, want 0", admissions)
+	if admissions != 1 {
+		t.Fatalf("semantic admissions = %d, want 1", admissions)
 	}
 	if sourceStore == nil {
 		t.Fatal("source sync did not receive a store")
 	}
 	if _, probeErr := sourceStore.RetrievalPurgeEpoch(t.Context()); probeErr == nil {
 		t.Fatal("source store remained open after source failure")
+	}
+}
+
+func TestRunScheduledSyncAllSourceAndSemanticFailuresRemainJoined(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	sourceErr := errors.New("source sync failed")
+	semanticErr := semanticrefresh.NewError(
+		semanticrefresh.ErrorEmbedding,
+		store.SemanticRefreshRun{RunID: "source-plus-semantic", Stage: store.SemanticRefreshEmbedding},
+		"",
+		semanticrefresh.Debt{},
+		errors.New("private semantic failure"),
+	)
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		return syncjob.Stats{}, sourceErr
+	}
+	refreshes := 0
+	deps := successfulSyncSemanticDeps(func(
+		context.Context,
+		semanticrefresh.RunLedger,
+		semanticrefresh.StageExecutor,
+		semanticrefresh.Request,
+	) (semanticrefresh.Result, error) {
+		refreshes++
+		return semanticrefresh.Result{}, semanticErr
+	})
+
+	err = runScheduledSyncAllUnlockedWithSemanticDeps(
+		t.Context(), cfg, scheduledSyncSemanticTestFlags(), io.Discard, deps,
+	)
+	if !errors.Is(err, sourceErr) || !errors.Is(err, semanticErr) {
+		t.Fatalf("joined scheduled error = %v, want source and semantic causes", err)
+	}
+	if refreshes != 1 {
+		t.Fatalf("semantic refreshes = %d, want 1", refreshes)
+	}
+}
+
+func TestRunScheduledSyncAllCancellationSkipsSemanticRefresh(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	runSyncAll = func(ctx context.Context, _ config.Config, _ *store.Store, _ syncjob.Options) (syncjob.Stats, error) {
+		cancel()
+		return syncjob.Stats{}, ctx.Err()
+	}
+	admissions := 0
+	deps := semanticRefreshDeps{
+		resolve: func(string) (semanticconfig.Config, error) {
+			admissions++
+			return semanticRefreshTestConfig(semanticconfig.ModeOff), nil
+		},
+	}
+
+	err = runScheduledSyncAllUnlockedWithSemanticDeps(
+		ctx, cfg, scheduledSyncSemanticTestFlags(), io.Discard, deps,
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error = %v", err)
+	}
+	if admissions != 0 {
+		t.Fatalf("semantic admissions after cancellation = %d, want 0", admissions)
 	}
 }
 
@@ -714,10 +798,11 @@ func TestRunScheduledSyncAllSemanticProgressFailureDoesNotRenderCompletion(t *te
 
 func TestRunScheduledSyncAllSemanticFailuresPreserveStableTypedCodes(t *testing.T) {
 	tests := []struct {
-		name     string
-		context  func() context.Context
-		deps     func(*testing.T) semanticRefreshDeps
-		wantCode string
+		name          string
+		context       func() context.Context
+		deps          func(*testing.T) semanticRefreshDeps
+		wantCode      string
+		wantCancelled bool
 	}{
 		{
 			name:    "supported broken",
@@ -783,7 +868,7 @@ func TestRunScheduledSyncAllSemanticFailuresPreserveStableTypedCodes(t *testing.
 					return completedSyncSemanticResult(), nil
 				})
 			},
-			wantCode: semanticrefresh.ErrorCancelled,
+			wantCancelled: true,
 		},
 	}
 	for _, test := range tests {
@@ -810,6 +895,12 @@ func TestRunScheduledSyncAllSemanticFailuresPreserveStableTypedCodes(t *testing.
 				io.Discard,
 				test.deps(t),
 			)
+			if test.wantCancelled {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancelled scheduled sync error = %v, want context cancellation", err)
+				}
+				return
+			}
 			var refreshErr *semanticrefresh.RefreshError
 			if !errors.As(err, &refreshErr) {
 				t.Fatalf("scheduled sync error = %T %v, want typed RefreshError", err, err)
