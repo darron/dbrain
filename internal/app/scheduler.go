@@ -614,7 +614,7 @@ func runScheduledSyncAllUnlockedWithSemanticDeps(
 	}
 	completedDeps := completeSemanticRefreshDeps(deps)
 	runErr := errors.Join(syncErr, semanticErr)
-	gcResult := maybeRunAutomaticSemanticGC(ctx, cfg, resolvedFlags.semanticGC, result, runErr, completedDeps.semanticGC)
+	gcResult := maybeRunAutomaticSemanticGC(ctx, cfg, resolvedFlags.semanticGC, result, semanticErr, completedDeps.semanticGC)
 	stats = completeSyncStatsWithSemanticGC(stats, result, gcResult)
 	metricsErr = errors.Join(metricsErr, emitFullSyncCompletionWithGCAndRunError(metricsRun, stats, result, gcResult, semanticErr, runErr))
 	if closeErr := closeMetrics(); closeErr != nil {

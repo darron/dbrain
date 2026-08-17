@@ -60,7 +60,7 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 			completedDeps := completeSemanticRefreshDeps(deps)
 			gcResult := maybeRunAutomaticSemanticGC(
 				cmd.Context(), completed.cfg, completed.semanticGC, result,
-				errors.Join(completed.runErr, semanticErr), completedDeps.semanticGC,
+				semanticErr, completedDeps.semanticGC,
 			)
 			elapsed := result.Duration
 			completed.stats = completeSyncStatsWithSemanticGC(completed.stats, result, gcResult)
@@ -80,11 +80,12 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 					return errors.Join(runErr, metricsErr)
 				}
 				if completed.jsonOut {
-					if writeErr := writeSyncSemanticErrorJSON(
+					if writeErr := writeSyncSemanticErrorJSONWithRunError(
 						cmd.OutOrStdout(),
 						completed.stats,
 						result,
 						refreshErr,
+						completed.runErr,
 					); writeErr != nil {
 						return errors.Join(writeErr, metricsErr)
 					}
@@ -104,7 +105,7 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 			}
 
 			if completed.jsonOut {
-				if err := writeSyncSemanticResultJSON(cmd.OutOrStdout(), completed.stats, result, gcResult); err != nil {
+				if err := writeSyncSemanticResultJSONWithRunError(cmd.OutOrStdout(), completed.stats, result, completed.runErr, gcResult); err != nil {
 					return err
 				}
 				if completed.runErr != nil {

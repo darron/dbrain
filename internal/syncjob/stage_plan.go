@@ -171,6 +171,9 @@ func runSyncStagePlanWithPlan(ctx context.Context, cfg config.Config, st *store.
 			stageErr := WrapStageError(string(stage.ID), err)
 			emitSyncStageMetrics(opts.Common.Metrics, opts, stats, stage.ID, stageErr)
 			if ctxErr := ctx.Err(); ctxErr != nil {
+				if !isSyncStageCancellationOnly(err) {
+					stageErrors = append(stageErrors, stageErr)
+				}
 				if len(stageErrors) > 0 {
 					return errors.Join(stageErrors...)
 				}
@@ -182,6 +185,25 @@ func runSyncStagePlanWithPlan(ctx context.Context, cfg config.Config, st *store.
 		emitSyncStageMetrics(opts.Common.Metrics, opts, stats, stage.ID, nil)
 	}
 	return errors.Join(stageErrors...)
+}
+
+func isSyncStageCancellationOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !isSyncStageCancellationOnly(child) {
+				return false
+			}
+		}
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func validateSyncStagePlan(plan []syncStage) error {

@@ -563,6 +563,14 @@ func TestSyncFamilySourceFailureContinuesSemanticAdmission(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"semantic"`) {
 		t.Fatalf("stdout = %q, want semantic result output", stdout.String())
 	}
+	document := decodeOneSyncJSONDocument(t, stdout.Bytes())
+	var runError string
+	if err := json.Unmarshal(document["run_error"], &runError); err != nil {
+		t.Fatalf("decode source run error: %v", err)
+	}
+	if runError != sourceErr.Error() {
+		t.Fatalf("run_error = %q, want %q", runError, sourceErr)
+	}
 	released, lockErr := acquireSyncAllLock(cfg, "source-error-probe")
 	if lockErr != nil {
 		t.Fatalf("source failure left coarse sync lock held: %v", lockErr)
@@ -617,6 +625,13 @@ func TestSyncFamilySourceAndSemanticFailuresRemainJoined(t *testing.T) {
 	document := decodeOneSyncJSONDocument(t, stdout.Bytes())
 	if _, exists := document["semantic_error"]; !exists {
 		t.Fatal("joined source and semantic failure omitted semantic_error")
+	}
+	var runError string
+	if err := json.Unmarshal(document["run_error"], &runError); err != nil {
+		t.Fatalf("decode joined source run error: %v", err)
+	}
+	if runError != sourceErr.Error() {
+		t.Fatalf("run_error = %q, want %q", runError, sourceErr)
 	}
 }
 

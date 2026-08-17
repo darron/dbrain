@@ -164,6 +164,31 @@ func TestRunSyncStagePlanPreservesPriorStageErrorOnCancellation(t *testing.T) {
 	}
 }
 
+func TestRunSyncStagePlanPreservesCurrentStageErrorWhenCancellationRaces(t *testing.T) {
+	cause := errors.New("github rate limited")
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	plan := []syncStage{{
+		ID:      syncStageGitHub,
+		Enabled: func(stageOptions) bool { return true },
+		Run: func(context.Context, config.Config, *store.Store, stageOptions, *Stats) error {
+			cancel()
+			return cause
+		},
+	}}
+
+	err := runSyncStagePlanWithPlan(ctx, config.Config{}, nil, stageOptions{}, &Stats{}, plan)
+	if !errors.Is(err, cause) {
+		t.Fatalf("racing stage error = %#v, want %v", err, cause)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("racing cancellation joined with stage error = %#v", err)
+	}
+	if got := erroredStageCount(err); got != 1 {
+		t.Fatalf("errored stage count = %d, want 1", got)
+	}
+}
+
 func TestWrapStageErrorReturnsNilForNilCause(t *testing.T) {
 	if err := WrapStageError("apple_notes", nil); err != nil {
 		t.Fatalf("nil cause wrapped as %#v", err)
