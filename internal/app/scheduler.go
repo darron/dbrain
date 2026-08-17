@@ -460,11 +460,7 @@ func (s *syncScheduler) run(ctx context.Context, reason string) (scheduledSyncOu
 }
 
 func isScheduledSyncCancellation(err error) bool {
-	if errors.Is(err, context.Canceled) {
-		return true
-	}
-	var refreshErr *semanticrefresh.RefreshError
-	return errors.As(err, &refreshErr) && refreshErr.Code == semanticrefresh.ErrorCancelled
+	return isCancellationOnly(err)
 }
 
 func emitSchedulerSyncMarker(cfg config.Config, name string) {

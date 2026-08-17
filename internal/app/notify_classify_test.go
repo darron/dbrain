@@ -39,6 +39,13 @@ func TestClassifyScheduledSyncOutcomesPreservesEveryDistinctJoinedFailure(t *tes
 			syncjob.WrapStageError("github", errors.New("github unavailable")),
 			syncjob.WrapStageError("feeds", errors.New("feeds unavailable")),
 			syncjob.WrapStageError("github", errors.New("github still unavailable")),
+			semanticrefresh.NewError(
+				semanticrefresh.ErrorCancelled,
+				store.SemanticRefreshRun{},
+				"",
+				semanticrefresh.Debt{},
+				errors.New("shutdown detail"),
+			),
 		),
 	})
 	if len(outcomes) != 2 {

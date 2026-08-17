@@ -465,6 +465,59 @@ func TestRunScheduledSyncAllSourceAndSemanticFailuresRemainJoined(t *testing.T) 
 	}
 }
 
+func TestSyncSchedulerSourceFailureAndSemanticCancellationNotifySourceFailure(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
+
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	sourceErr := syncjob.WrapStageError("github", errors.New("github unavailable"))
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		return syncjob.Stats{}, sourceErr
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	deps := successfulSyncSemanticDeps(func(
+		context.Context,
+		semanticrefresh.RunLedger,
+		semanticrefresh.StageExecutor,
+		semanticrefresh.Request,
+	) (semanticrefresh.Result, error) {
+		cancel()
+		return semanticrefresh.Result{}, nil
+	})
+	s := newSyncScheduler(cfg, schedulerSyncConfig{
+		Enabled:  true,
+		Interval: time.Hour,
+		Flags:    scheduledSyncSemanticTestFlags(),
+	}, io.Discard)
+	s.runSync = func(ctx context.Context, cfg config.Config, flags syncAllFlags, logOut io.Writer) error {
+		return runScheduledSyncAllUnlockedWithSemanticDeps(ctx, cfg, flags, logOut, deps)
+	}
+	var observed []string
+	s.postRun = func(_ context.Context, settled scheduledSyncOutcome) {
+		for _, outcome := range classifyScheduledSyncOutcomes(settled) {
+			observed = append(observed, string(outcome.Status)+":"+string(outcome.FailureType))
+		}
+	}
+
+	s.runAndPost(ctx, "source-plus-semantic-cancellation")
+
+	if len(observed) != 1 || observed[0] != "failure:sync.stage.github.failed" {
+		t.Fatalf("notifications = %v, want one github failure", observed)
+	}
+	if status := s.Status(); status.LastStatus != string(scheduledSyncStatusError) {
+		t.Fatalf("scheduler status = %#v, want error", status)
+	}
+}
+
 func TestRunScheduledSyncAllCancellationSkipsSemanticRefresh(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

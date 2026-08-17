@@ -70,7 +70,7 @@ func classifyScheduledSyncOutcomes(settled scheduledSyncOutcome) []notify.Outcom
 		outcome.Status = notify.OutcomeSuccess
 		return []notify.Outcome{outcome}
 	}
-	if settled.Status == scheduledSyncStatusCancelled || isClassifiedCancellation(settled.Err) {
+	if settled.Status == scheduledSyncStatusCancelled || isCancellationOnly(settled.Err) {
 		outcome.Status = notify.OutcomeCancelled
 		return []notify.Outcome{outcome}
 	}
@@ -100,6 +100,33 @@ func isClassifiedCancellation(err error) bool {
 	}
 	var refreshErr *semanticrefresh.RefreshError
 	return errors.As(err, &refreshErr) && refreshErr.Code == semanticrefresh.ErrorCancelled
+}
+
+func isCancellationOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !isCancellationOnly(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if refreshErr, ok := err.(*semanticrefresh.RefreshError); ok {
+		return refreshErr.Code == semanticrefresh.ErrorCancelled
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if cause := wrapped.Unwrap(); cause != nil {
+			return isCancellationOnly(cause)
+		}
+	}
+	return isClassifiedCancellation(err)
 }
 
 func classifyScheduledFailure(err error) notify.FailureType {
@@ -154,6 +181,9 @@ func classifyScheduledFailure(err error) notify.FailureType {
 
 func classifyScheduledFailureTypes(err error) []notify.FailureType {
 	if err == nil {
+		return nil
+	}
+	if isCancellationOnly(err) {
 		return nil
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
