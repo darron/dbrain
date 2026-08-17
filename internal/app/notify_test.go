@@ -84,6 +84,29 @@ func TestRemoteSchedulerHardFailureNotifiesBeforePostSyncAudit(t *testing.T) {
 	}
 }
 
+func TestRemoteSchedulerNotifiesEveryDistinctStageFailure(t *testing.T) {
+	var observed []notify.FailureType
+	notifier := fakeNotificationObserver{observe: func(_ context.Context, outcome notify.Outcome) error {
+		observed = append(observed, outcome.FailureType)
+		if len(observed) == 1 {
+			return errors.New("provider delivery failed")
+		}
+		return nil
+	}}
+	settled := failedScheduledOutcome()
+	settled.Err = errors.Join(
+		syncjob.WrapStageError("github", errors.New("github unavailable")),
+		syncjob.WrapStageError("feeds", errors.New("feeds unavailable")),
+		syncjob.WrapStageError("github", errors.New("github still unavailable")),
+	)
+
+	composePostRun(notifier, nil, io.Discard)(t.Context(), settled)
+	want := []notify.FailureType{"sync.stage.github.failed", "sync.stage.feeds.failed"}
+	if !slices.Equal(observed, want) {
+		t.Fatalf("observed failure types = %v, want %v", observed, want)
+	}
+}
+
 func TestNotificationWiringSupportsEitherOrNeitherPostRunDependency(t *testing.T) {
 	var calls []string
 	notifier := fakeNotificationObserver{observe: func(context.Context, notify.Outcome) error {

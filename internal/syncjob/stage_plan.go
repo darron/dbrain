@@ -2,6 +2,7 @@ package syncjob
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/darron/dbrain/internal/config"
@@ -152,17 +153,29 @@ func runSyncStagePlan(ctx context.Context, cfg config.Config, st *store.Store, o
 }
 
 func runSyncStagePlanWithPlan(ctx context.Context, cfg config.Config, st *store.Store, opts stageOptions, stats *Stats, plan []syncStage) error {
+	var stageErrors []error
 	for _, stage := range plan {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !stage.Enabled(opts) {
 			continue
 		}
+		// After is an ordering constraint validated by validateSyncStagePlan, not
+		// a success gate: later enabled stages still drain their own work after
+		// an ordinary upstream stage error.
 		if err := stage.Run(ctx, cfg, st, opts, stats); err != nil {
-			emitSyncStageMetrics(opts.Common.Metrics, opts, stats, stage.ID, err)
-			return WrapStageError(string(stage.ID), err)
+			stageErr := WrapStageError(string(stage.ID), err)
+			emitSyncStageMetrics(opts.Common.Metrics, opts, stats, stage.ID, stageErr)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			stageErrors = append(stageErrors, stageErr)
+			continue
 		}
 		emitSyncStageMetrics(opts.Common.Metrics, opts, stats, stage.ID, nil)
 	}
-	return nil
+	return errors.Join(stageErrors...)
 }
 
 func validateSyncStagePlan(plan []syncStage) error {

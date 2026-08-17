@@ -36,6 +36,8 @@ func TestCatalogGeneratesOnlyKnownSyncStages(t *testing.T) {
 	}{
 		{"apple_notes", "sync.stage.apple_notes.failed", true},
 		{"safari_tabs", "sync.stage.safari_tabs.failed", true},
+		{"bluesky_bookmarks", "sync.stage.bluesky_bookmarks.failed", true},
+		{"mastodon_bookmarks", "sync.stage.mastodon_bookmarks.failed", true},
 		{"x_frontier", "sync.stage.x_frontier.failed", true},
 		{"x_media", "sync.stage.x_media.failed", true},
 		{"x_photo_ocr", "sync.stage.x_photo_ocr.failed", true},
