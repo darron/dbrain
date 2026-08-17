@@ -1,6 +1,6 @@
 package syncjob
 
-// StageError preserves the sync stage that produced a fatal error while
+// StageError preserves the sync stage that produced an error while
 // retaining the original error text and unwrap chain.
 type StageError struct {
 	stage syncStageID

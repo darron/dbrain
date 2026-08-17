@@ -70,6 +70,7 @@ var notificationMetricFailureTypes = map[string]struct{}{
 	"sync.store.open.failed": {}, "sync.store.close.failed": {}, "sync.options.failed": {},
 	"sync.output.failed": {}, "sync.apple_notes.permission_denied": {}, "sync.unknown": {},
 	"sync.stage.apple_notes.failed": {}, "sync.stage.safari_tabs.failed": {},
+	"sync.stage.bluesky_bookmarks.failed": {}, "sync.stage.mastodon_bookmarks.failed": {},
 	"sync.stage.x_frontier.failed": {}, "sync.stage.x_media.failed": {},
 	"sync.stage.x_photo_ocr.failed": {}, "sync.stage.github.failed": {},
 	"sync.stage.youtube.failed": {}, "sync.stage.feeds.failed": {},

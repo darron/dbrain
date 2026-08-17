@@ -24,6 +24,8 @@ const (
 var knownSyncStages = []string{
 	"apple_notes",
 	"safari_tabs",
+	"bluesky_bookmarks",
+	"mastodon_bookmarks",
 	"x_frontier",
 	"x_media",
 	"x_photo_ocr",

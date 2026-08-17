@@ -2,6 +2,7 @@ package syncjob
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/darron/dbrain/internal/itemcategorize"
@@ -619,7 +620,34 @@ func completedStageCount(stats Stats) int {
 }
 
 func erroredStageCount(runErr error) int {
-	if runErr != nil {
+	if runErr == nil {
+		return 0
+	}
+	if joined, ok := runErr.(interface{ Unwrap() []error }); ok {
+		count := 0
+		for _, child := range joined.Unwrap() {
+			count += stageErrorCount(child)
+		}
+		if count > 0 {
+			return count
+		}
+	}
+	return 1
+}
+
+func stageErrorCount(err error) int {
+	if err == nil {
+		return 0
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		count := 0
+		for _, child := range joined.Unwrap() {
+			count += stageErrorCount(child)
+		}
+		return count
+	}
+	var stageErr *StageError
+	if errors.As(err, &stageErr) {
 		return 1
 	}
 	return 0

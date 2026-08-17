@@ -503,7 +503,7 @@ func TestSyncFamilySemanticAdmissionSkipsWritableDependencies(t *testing.T) {
 	}
 }
 
-func TestSyncFamilySourceFailureSkipsSemanticAdmission(t *testing.T) {
+func TestSyncFamilySourceFailureContinuesSemanticAdmission(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -557,17 +557,113 @@ func TestSyncFamilySourceFailureSkipsSemanticAdmission(t *testing.T) {
 	if !errors.Is(err, sourceErr) {
 		t.Fatalf("ExecuteContext error = %v, want source error", err)
 	}
-	if len(semanticCalls) != 0 {
-		t.Fatalf("semantic calls = %#v, want none", semanticCalls)
+	if semanticCalls["resolve"] != 1 || semanticCalls["capability"] != 1 {
+		t.Fatalf("semantic calls = %#v, want one admission", semanticCalls)
 	}
-	if stdout.Len() != 0 {
-		t.Fatalf("stdout = %q, want empty source failure output", stdout.String())
+	if !strings.Contains(stdout.String(), `"semantic"`) {
+		t.Fatalf("stdout = %q, want semantic result output", stdout.String())
+	}
+	document := decodeOneSyncJSONDocument(t, stdout.Bytes())
+	var runError string
+	if err := json.Unmarshal(document["run_error"], &runError); err != nil {
+		t.Fatalf("decode source run error: %v", err)
+	}
+	if runError != sourceErr.Error() {
+		t.Fatalf("run_error = %q, want %q", runError, sourceErr)
 	}
 	released, lockErr := acquireSyncAllLock(cfg, "source-error-probe")
 	if lockErr != nil {
 		t.Fatalf("source failure left coarse sync lock held: %v", lockErr)
 	}
 	_ = released.Close()
+}
+
+func TestSyncFamilySourceAndSemanticFailuresRemainJoined(t *testing.T) {
+	root := t.TempDir()
+	sourceErr := errors.New("source sync failed")
+	semanticErr := semanticrefresh.NewError(
+		semanticrefresh.ErrorEmbedding,
+		store.SemanticRefreshRun{RunID: "source-plus-semantic", Stage: store.SemanticRefreshEmbedding},
+		"",
+		semanticrefresh.Debt{},
+		errors.New("private semantic failure"),
+	)
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		return syncSemanticTestStats(), sourceErr
+	}
+	refreshes := 0
+	deps := successfulSyncSemanticDeps(func(
+		context.Context,
+		semanticrefresh.RunLedger,
+		semanticrefresh.StageExecutor,
+		semanticrefresh.Request,
+	) (semanticrefresh.Result, error) {
+		refreshes++
+		return semanticrefresh.Result{}, semanticErr
+	})
+
+	cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, deps)
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceUsage = true
+	cmd.SetArgs(syncSemanticTestArgs(true))
+
+	err := cmd.ExecuteContext(t.Context())
+	if !errors.Is(err, sourceErr) || !errors.Is(err, semanticErr) {
+		t.Fatalf("joined execution error = %v, want source and semantic causes", err)
+	}
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) || !exitErr.Silent {
+		t.Fatalf("execution error = %#v, want silent JSON ExitError", err)
+	}
+	if refreshes != 1 {
+		t.Fatalf("semantic refreshes = %d, want 1", refreshes)
+	}
+	document := decodeOneSyncJSONDocument(t, stdout.Bytes())
+	if _, exists := document["semantic_error"]; !exists {
+		t.Fatal("joined source and semantic failure omitted semantic_error")
+	}
+	var runError string
+	if err := json.Unmarshal(document["run_error"], &runError); err != nil {
+		t.Fatalf("decode joined source run error: %v", err)
+	}
+	if runError != sourceErr.Error() {
+		t.Fatalf("run_error = %q, want %q", runError, sourceErr)
+	}
+}
+
+func TestSyncFamilySourceCancellationSkipsSemanticAdmission(t *testing.T) {
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	runSyncAll = func(ctx context.Context, _ config.Config, _ *store.Store, _ syncjob.Options) (syncjob.Stats, error) {
+		cancel()
+		return syncjob.Stats{}, ctx.Err()
+	}
+	semanticCalls := 0
+	cmd := newSyncSemanticTestCommand(t, &rootOptions{root: root}, semanticRefreshDeps{
+		resolve: func(string) (semanticconfig.Config, error) {
+			semanticCalls++
+			return semanticRefreshTestConfig(semanticconfig.ModeOff), nil
+		},
+	})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceUsage = true
+	cmd.SetArgs(syncSemanticTestArgs(true))
+
+	err := cmd.ExecuteContext(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error = %v", err)
+	}
+	if semanticCalls != 0 {
+		t.Fatalf("semantic admissions after cancellation = %d, want 0", semanticCalls)
+	}
 }
 
 func TestSyncFamilyJSONSuccessFlattensSourceStatsAndSemanticResult(t *testing.T) {
@@ -898,10 +994,11 @@ func TestSyncFamilySemanticProgressFailureDoesNotRenderCompletion(t *testing.T) 
 
 func TestSyncFamilySupportedBrokenAndCancellationReturnTypedNonzeroErrors(t *testing.T) {
 	tests := []struct {
-		name     string
-		deps     semanticRefreshDeps
-		context  func() context.Context
-		wantCode string
+		name          string
+		deps          semanticRefreshDeps
+		context       func() context.Context
+		wantCode      string
+		wantCancelled bool
 	}{
 		{
 			name: "supported broken",
@@ -937,7 +1034,7 @@ func TestSyncFamilySupportedBrokenAndCancellationReturnTypedNonzeroErrors(t *tes
 				cancel()
 				return ctx
 			},
-			wantCode: semanticrefresh.ErrorCancelled,
+			wantCancelled: true,
 		},
 	}
 	for _, test := range tests {
@@ -954,6 +1051,12 @@ func TestSyncFamilySupportedBrokenAndCancellationReturnTypedNonzeroErrors(t *tes
 			cmd.SilenceUsage = true
 			cmd.SetArgs(syncSemanticTestArgs(true))
 			err := cmd.ExecuteContext(test.context())
+			if test.wantCancelled {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancelled execution error = %v, want context cancellation", err)
+				}
+				return
+			}
 			var exitErr *ExitError
 			if !errors.As(err, &exitErr) || exitErr.Code != 1 || !exitErr.Silent {
 				t.Fatalf("ExecuteContext error = %#v, want silent exit code 1", err)
@@ -1107,8 +1210,8 @@ func TestSyncFamilyExecutionStateDoesNotLeakAcrossBareRepeatedOrFailedRuns(t *te
 	if !errors.Is(err, sourceErr) {
 		t.Fatalf("failed execution error = %v, want source error", err)
 	}
-	if refreshes != 2 {
-		t.Fatalf("source failure reused stale completion; refreshes = %d, want 2", refreshes)
+	if refreshes != 3 {
+		t.Fatalf("source failure reused stale completion; refreshes = %d, want 3", refreshes)
 	}
 }
 

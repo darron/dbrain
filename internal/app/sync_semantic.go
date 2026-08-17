@@ -13,6 +13,7 @@ import (
 type syncCommandCompleted struct {
 	cfg          config.Config
 	stats        syncjob.Stats
+	runErr       error
 	jsonOut      bool
 	semanticGC   bool
 	lock         *runlock.Lock

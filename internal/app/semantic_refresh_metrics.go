@@ -122,9 +122,7 @@ func emitFullSyncCompletion(
 	result semanticrefresh.Result,
 	runErr error,
 ) error {
-	emitErr := emitSemanticRefreshMetrics(run, result, runErr)
-	syncjob.EmitRunCompleted(run, stats, runErr)
-	return emitErr
+	return emitFullSyncCompletionWithGCAndRunError(run, stats, result, nil, runErr, runErr)
 }
 
 func emitFullSyncCompletionWithGC(
@@ -134,7 +132,18 @@ func emitFullSyncCompletionWithGC(
 	gc *syncSemanticGCResult,
 	runErr error,
 ) error {
-	emitErr := emitSemanticRefreshMetrics(run, result, runErr)
+	return emitFullSyncCompletionWithGCAndRunError(run, stats, result, gc, runErr, runErr)
+}
+
+func emitFullSyncCompletionWithGCAndRunError(
+	run metrics.RunContext,
+	stats syncjob.Stats,
+	result semanticrefresh.Result,
+	gc *syncSemanticGCResult,
+	semanticErr error,
+	runErr error,
+) error {
+	emitErr := emitSemanticRefreshMetrics(run, result, semanticErr)
 	emitErr = errors.Join(emitErr, emitSyncSemanticGCMetrics(run, gc))
 	syncjob.EmitRunCompleted(run, stats, runErr)
 	return emitErr

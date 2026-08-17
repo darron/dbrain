@@ -126,12 +126,15 @@ func TestRunAutomaticSemanticGCClassifiesAdmissionTimeoutAndOperationalError(t *
 func TestSyncAllAutomaticSemanticGCRunsBeforeTerminalMetricsAndIsNonFatal(t *testing.T) {
 	for _, test := range []struct {
 		name       string
+		sourceErr  error
 		gcErr      error
 		wantStatus syncSemanticGCStatus
 		wantError  string
+		wantRunErr string
 	}{
-		{name: "success", wantStatus: syncSemanticGCStatusOK},
-		{name: "operational error", gcErr: errors.New("injected unlink failure"), wantStatus: syncSemanticGCStatusError, wantError: "filesystem_unlink"},
+		{name: "success", wantStatus: syncSemanticGCStatusOK, wantRunErr: "ok"},
+		{name: "operational error", gcErr: errors.New("injected unlink failure"), wantStatus: syncSemanticGCStatusError, wantError: "filesystem_unlink", wantRunErr: "ok"},
+		{name: "source error does not block GC", sourceErr: errors.New("source sync failed"), wantStatus: syncSemanticGCStatusOK, wantRunErr: "error"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -148,7 +151,7 @@ sync_all:
 			oldRunSyncAll := runSyncAll
 			t.Cleanup(func() { runSyncAll = oldRunSyncAll })
 			runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
-				return syncSemanticTestStats(), nil
+				return syncSemanticTestStats(), test.sourceErr
 			}
 
 			deps := successfulSyncSemanticDeps(func(
@@ -187,8 +190,13 @@ sync_all:
 			cmd.SetErr(io.Discard)
 			cmd.SilenceUsage = true
 			cmd.SetArgs(syncSemanticTestArgs(true))
-			if err := cmd.ExecuteContext(t.Context()); err != nil {
-				t.Fatalf("automatic GC changed successful sync exit: %v", err)
+			execErr := cmd.ExecuteContext(t.Context())
+			if test.sourceErr == nil {
+				if execErr != nil {
+					t.Fatalf("automatic GC changed successful sync exit: %v", execErr)
+				}
+			} else if !errors.Is(execErr, test.sourceErr) {
+				t.Fatalf("source failure = %v, want %v", execErr, test.sourceErr)
 			}
 			if gcCalls != 1 {
 				t.Fatalf("automatic GC calls=%d", gcCalls)
@@ -213,7 +221,7 @@ sync_all:
 					t.Fatalf("event %d=%#v want=%s", index, events[index], event)
 				}
 			}
-			if events[2]["status"] != string(test.wantStatus) || events[3]["status"] != "ok" {
+			if events[2]["status"] != string(test.wantStatus) || events[3]["status"] != test.wantRunErr {
 				t.Fatalf("terminal statuses: gc=%#v sync=%#v", events[2], events[3])
 			}
 		})
@@ -321,6 +329,62 @@ sync_all:
 		if events[index]["event"] != event {
 			t.Fatalf("event %d=%#v want=%s", index, events[index], event)
 		}
+	}
+}
+
+func TestScheduledSyncAllAutomaticSemanticGCContinuesAfterSourceError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`
+metrics:
+  enabled: true
+  path: scheduled-automatic-semantic-gc-source-error.jsonl
+  strict: true
+sync_all:
+  semantic_gc: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	storefixture.PrepareCurrent(t, cfg.DBPath)
+	oldRunSyncAll := runSyncAll
+	t.Cleanup(func() { runSyncAll = oldRunSyncAll })
+	sourceErr := syncjob.WrapStageError("github", errors.New("github unavailable"))
+	runSyncAll = func(context.Context, config.Config, *store.Store, syncjob.Options) (syncjob.Stats, error) {
+		return syncSemanticTestStats(), sourceErr
+	}
+	deps := successfulSyncSemanticDeps(func(
+		context.Context,
+		semanticrefresh.RunLedger,
+		semanticrefresh.StageExecutor,
+		semanticrefresh.Request,
+	) (semanticrefresh.Result, error) {
+		return completedSyncSemanticResult(), nil
+	})
+	gcCalls := 0
+	deps.semanticGC = syncSemanticGCDeps{
+		now: time.Now,
+		run: func(context.Context, config.Config, semanticgc.Options) (semanticgc.Result, syncSemanticGCFailurePhase, error) {
+			gcCalls++
+			return semanticgc.Result{Applied: true}, "", nil
+		},
+	}
+	var output bytes.Buffer
+	err = runScheduledSyncAllUnlockedWithSemanticDeps(t.Context(), cfg, scheduledSyncSemanticTestFlags(), &output, deps)
+	if !errors.Is(err, sourceErr) {
+		t.Fatalf("scheduled source error = %v, want %v", err, sourceErr)
+	}
+	if gcCalls != 1 || !strings.Contains(output.String(), "scheduler semantic GC: status=ok") {
+		t.Fatalf("GC calls=%d output=%q", gcCalls, output.String())
+	}
+	events := readAppMetricEvents(t, filepath.Join(root, "logs", "scheduled-automatic-semantic-gc-source-error.jsonl"))
+	if len(events) != 4 || events[1]["status"] != "ok" || events[2]["status"] != "ok" || events[3]["status"] != "error" {
+		t.Fatalf("terminal events=%#v", events)
 	}
 }
 

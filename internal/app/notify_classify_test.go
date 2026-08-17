@@ -28,6 +28,37 @@ func TestClassifyScheduledFailureAppleNotesPermission(t *testing.T) {
 	}
 }
 
+func TestClassifyScheduledSyncOutcomesPreservesEveryDistinctJoinedFailure(t *testing.T) {
+	started := time.Date(2026, 8, 3, 23, 35, 8, 0, time.UTC)
+	finished := started.Add(2 * time.Minute)
+	outcomes := classifyScheduledSyncOutcomes(scheduledSyncOutcome{
+		Status:     scheduledSyncStatusError,
+		StartedAt:  started,
+		FinishedAt: finished,
+		Err: errors.Join(
+			syncjob.WrapStageError("github", errors.New("github unavailable")),
+			syncjob.WrapStageError("feeds", errors.New("feeds unavailable")),
+			syncjob.WrapStageError("github", errors.New("github still unavailable")),
+			semanticrefresh.NewError(
+				semanticrefresh.ErrorCancelled,
+				store.SemanticRefreshRun{},
+				"",
+				semanticrefresh.Debt{},
+				errors.New("shutdown detail"),
+			),
+		),
+	})
+	if len(outcomes) != 2 {
+		t.Fatalf("classified outcomes = %#v", outcomes)
+	}
+	want := []notify.FailureType{"sync.stage.github.failed", "sync.stage.feeds.failed"}
+	for index, outcome := range outcomes {
+		if outcome.Status != notify.OutcomeFailure || outcome.FailureType != want[index] {
+			t.Fatalf("outcome %d = %#v; want failure type %q", index, outcome, want[index])
+		}
+	}
+}
+
 func TestClassifyScheduledFailureKnownBoundaries(t *testing.T) {
 	started := time.Date(2026, 8, 3, 23, 35, 8, 0, time.UTC)
 	finished := started.Add(2 * time.Minute)

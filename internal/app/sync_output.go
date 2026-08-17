@@ -19,12 +19,14 @@ type syncSemanticResultOutput struct {
 	syncjob.Stats
 	Semantic   semanticRefreshResultOutput `json:"semantic"`
 	SemanticGC *syncSemanticGCResult       `json:"semantic_gc,omitempty"`
+	RunError   string                      `json:"run_error,omitempty"`
 }
 
 type syncSemanticErrorOutput struct {
 	syncjob.Stats
 	Semantic      semanticRefreshResultOutput   `json:"semantic"`
 	SemanticError *semanticrefresh.RefreshError `json:"semantic_error"`
+	RunError      string                        `json:"run_error,omitempty"`
 }
 
 func writeSyncSemanticResultJSON(
@@ -33,24 +35,44 @@ func writeSyncSemanticResultJSON(
 	result semanticrefresh.Result,
 	gc ...*syncSemanticGCResult,
 ) error {
+	return writeSyncSemanticResultJSONWithRunError(dst, stats, result, nil, gc...)
+}
+
+func writeSyncSemanticResultJSONWithRunError(
+	dst io.Writer,
+	stats syncjob.Stats,
+	result semanticrefresh.Result,
+	runErr error,
+	gc ...*syncSemanticGCResult,
+) error {
 	return writeJSON(dst, syncSemanticResultOutput{
 		Stats:      stats,
 		Semantic:   newSemanticRefreshResultOutput(result),
 		SemanticGC: firstSyncSemanticGCResult(gc),
+		RunError:   syncRunErrorText(runErr),
 	})
 }
 
-func writeSyncSemanticErrorJSON(
+func writeSyncSemanticErrorJSONWithRunError(
 	dst io.Writer,
 	stats syncjob.Stats,
 	result semanticrefresh.Result,
 	refreshErr *semanticrefresh.RefreshError,
+	runErr error,
 ) error {
 	return writeJSON(dst, syncSemanticErrorOutput{
 		Stats:         stats,
 		Semantic:      newSemanticRefreshResultOutput(result),
 		SemanticError: refreshErr,
+		RunError:      syncRunErrorText(runErr),
 	})
+}
+
+func syncRunErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func writeSyncStats(dst interface{ Write([]byte) (int, error) }, stats syncjob.Stats) error {

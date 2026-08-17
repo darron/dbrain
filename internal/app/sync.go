@@ -33,6 +33,14 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 			defer func() {
 				returnErr = errors.Join(returnErr, completed.close())
 			}()
+			if ctxErr := cmd.Context().Err(); ctxErr != nil {
+				runErr := completed.runErr
+				if runErr == nil {
+					runErr = ctxErr
+				}
+				syncjob.EmitRunCompleted(completed.metrics, completed.stats, runErr)
+				return runErr
+			}
 			progressOut := cmd.ErrOrStderr()
 			if completed.ui != nil {
 				progressOut = completed.ui
@@ -42,20 +50,22 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 			metricsErr := emitSemanticRefreshStarted(completed.metrics, semanticStartedAt)
 			refreshDeps := deps
 			refreshDeps.startedAt = semanticStartedAt
-			result, err := runConfiguredSemanticRefresh(
+			result, semanticErr := runConfiguredSemanticRefresh(
 				cmd.Context(),
 				completed.cfg,
 				refreshDeps,
 				reporter.Callback(),
 			)
-			err = errors.Join(err, reporter.Finish(err == nil))
+			semanticErr = errors.Join(semanticErr, reporter.Finish(semanticErr == nil))
 			completedDeps := completeSemanticRefreshDeps(deps)
 			gcResult := maybeRunAutomaticSemanticGC(
-				cmd.Context(), completed.cfg, completed.semanticGC, result, err, completedDeps.semanticGC,
+				cmd.Context(), completed.cfg, completed.semanticGC, result,
+				semanticErr, completedDeps.semanticGC,
 			)
 			elapsed := result.Duration
 			completed.stats = completeSyncStatsWithSemanticGC(completed.stats, result, gcResult)
-			metricsErr = errors.Join(metricsErr, emitFullSyncCompletionWithGC(completed.metrics, completed.stats, result, gcResult, err))
+			runErr := errors.Join(completed.runErr, semanticErr)
+			metricsErr = errors.Join(metricsErr, emitFullSyncCompletionWithGCAndRunError(completed.metrics, completed.stats, result, gcResult, semanticErr, runErr))
 			if completed.closeMetrics != nil {
 				metricsErr = errors.Join(metricsErr, completed.closeMetrics())
 				completed.closeMetrics = nil
@@ -64,40 +74,50 @@ func newSyncCommandWithSemanticDeps(root *rootOptions, deps semanticRefreshDeps)
 				completed.ui.Close()
 				completed.ui = nil
 			}
-			if err != nil {
+			if semanticErr != nil {
 				var refreshErr *semanticrefresh.RefreshError
-				if !errors.As(err, &refreshErr) {
-					return errors.Join(err, metricsErr)
+				if !errors.As(semanticErr, &refreshErr) {
+					return errors.Join(runErr, metricsErr)
 				}
 				if completed.jsonOut {
-					if writeErr := writeSyncSemanticErrorJSON(
+					if writeErr := writeSyncSemanticErrorJSONWithRunError(
 						cmd.OutOrStdout(),
 						completed.stats,
 						result,
 						refreshErr,
+						completed.runErr,
 					); writeErr != nil {
 						return errors.Join(writeErr, metricsErr)
 					}
-					return &ExitError{Code: 1, Err: errors.Join(refreshErr, metricsErr), Silent: true}
+					return &ExitError{Code: 1, Err: errors.Join(runErr, metricsErr), Silent: true}
 				}
 				if writeErr := writeSyncStatsWithSemantic(cmd.OutOrStdout(), completed.stats, result, refreshErr); writeErr != nil {
 					return errors.Join(writeErr, metricsErr)
 				}
 				return &ExitError{
 					Code:   1,
-					Err:    errors.Join(semanticRefreshHumanError{refreshErr: refreshErr, elapsed: elapsed}, metricsErr),
+					Err:    errors.Join(semanticRefreshHumanError{refreshErr: refreshErr, elapsed: elapsed}, completed.runErr, metricsErr),
 					Silent: false,
 				}
 			}
 			if metricsErr != nil {
-				return metricsErr
+				return errors.Join(runErr, metricsErr)
 			}
 
 			if completed.jsonOut {
-				return writeSyncSemanticResultJSON(cmd.OutOrStdout(), completed.stats, result, gcResult)
+				if err := writeSyncSemanticResultJSONWithRunError(cmd.OutOrStdout(), completed.stats, result, completed.runErr, gcResult); err != nil {
+					return err
+				}
+				if completed.runErr != nil {
+					return &ExitError{Code: 1, Err: completed.runErr, Silent: true}
+				}
+				return nil
 			}
 			if err := writeSyncStatsWithSemantic(cmd.OutOrStdout(), completed.stats, result, nil, gcResult); err != nil {
 				return err
+			}
+			if completed.runErr != nil {
+				return completed.runErr
 			}
 			return nil
 		},
@@ -177,17 +197,17 @@ func newSyncAllCommandWithCompletion(root *rootOptions, completion *syncCommandC
 			}
 			options.Metrics = metricsRun
 			options.ParentOwnsRunCompletion = completion != nil
-			stats, err := runSyncAll(cmd.Context(), cfg, st, options)
-			if err != nil {
+			stats, runErr := runSyncAll(cmd.Context(), cfg, st, options)
+			if runErr != nil && (completion == nil || cmd.Context().Err() != nil) {
 				if completion != nil {
-					syncjob.EmitRunCompleted(metricsRun, stats, err)
+					syncjob.EmitRunCompleted(metricsRun, stats, runErr)
 				}
 				if closeErr := closeMetrics(); closeErr != nil {
 					closeMetrics = func() error { return nil }
-					return errors.Join(err, closeErr)
+					return errors.Join(runErr, closeErr)
 				}
 				closeMetrics = func() error { return nil }
-				return err
+				return runErr
 			}
 
 			if closeErr := closeSyncStore(st); closeErr != nil {
@@ -205,6 +225,7 @@ func newSyncAllCommandWithCompletion(root *rootOptions, completion *syncCommandC
 				completion.record(syncCommandCompleted{
 					cfg:          cfg,
 					stats:        stats,
+					runErr:       runErr,
 					jsonOut:      resolvedFlags.jsonOut,
 					semanticGC:   resolvedFlags.semanticGC,
 					lock:         lock,
@@ -216,6 +237,9 @@ func newSyncAllCommandWithCompletion(root *rootOptions, completion *syncCommandC
 				syncUI = nil
 				closeMetrics = func() error { return nil }
 				return nil
+			}
+			if runErr != nil {
+				return runErr
 			}
 			if syncUI != nil {
 				syncUI.Close()

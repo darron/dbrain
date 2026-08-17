@@ -74,6 +74,35 @@ func TestEmitFullSyncCompletionKeepsSemanticEventsUnderParentRun(t *testing.T) {
 	}
 }
 
+func TestEmitFullSyncCompletionSeparatesSemanticAndSourceErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := metrics.RunContext{RunID: "sync-parent", Command: "sync all", Invocation: "cli", Sink: sink}
+	result := semanticrefresh.Result{Outcome: semanticrefresh.OutcomeCompleted}
+	stats := syncSemanticTestStats()
+	sourceErr := errors.New("source stage failed")
+	if err := emitFullSyncCompletionWithGCAndRunError(run, stats, result, nil, nil, sourceErr); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events := readAppMetricEvents(t, path)
+	if len(events) != 2 || events[0]["event"] != "semantic.refresh.completed" || events[1]["event"] != "sync.run.completed" {
+		t.Fatalf("events=%#v", events)
+	}
+	if events[0]["status"] != "ok" {
+		t.Fatalf("semantic terminal metric=%#v", events[0])
+	}
+	if events[1]["status"] != "error" {
+		t.Fatalf("sync terminal metric=%#v", events[1])
+	}
+}
+
 func TestEmitFullSyncCompletionWithGCEmitsStageBeforeSuccessfulTerminalRun(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "metrics.jsonl")
 	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: path, Detail: metrics.DetailStage, Strict: true})

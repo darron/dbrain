@@ -49,6 +49,18 @@ func (e *scheduledSyncBoundaryError) Error() string { return e.cause.Error() }
 func (e *scheduledSyncBoundaryError) Unwrap() error { return e.cause }
 
 func classifyScheduledSyncOutcome(settled scheduledSyncOutcome) notify.Outcome {
+	outcomes := classifyScheduledSyncOutcomes(settled)
+	if len(outcomes) > 0 {
+		return outcomes[0]
+	}
+	return notify.Outcome{
+		Operation:  notify.OperationScheduledSyncAll,
+		StartedAt:  settled.StartedAt,
+		FinishedAt: settled.FinishedAt,
+	}
+}
+
+func classifyScheduledSyncOutcomes(settled scheduledSyncOutcome) []notify.Outcome {
 	outcome := notify.Outcome{
 		Operation:  notify.OperationScheduledSyncAll,
 		StartedAt:  settled.StartedAt,
@@ -56,21 +68,30 @@ func classifyScheduledSyncOutcome(settled scheduledSyncOutcome) notify.Outcome {
 	}
 	if settled.Status == scheduledSyncStatusOK {
 		outcome.Status = notify.OutcomeSuccess
-		return outcome
+		return []notify.Outcome{outcome}
 	}
-	if settled.Status == scheduledSyncStatusCancelled || isClassifiedCancellation(settled.Err) {
+	if settled.Status == scheduledSyncStatusCancelled || isCancellationOnly(settled.Err) {
 		outcome.Status = notify.OutcomeCancelled
-		return outcome
+		return []notify.Outcome{outcome}
 	}
 	outcome.Status = notify.OutcomeFailure
-	outcome.FailureType = classifyScheduledFailure(settled.Err)
-	definition, ok := notify.LookupFailure(outcome.FailureType)
-	if !ok {
-		definition, _ = notify.LookupFailure(notify.FailureUnknown)
-		outcome.FailureType = notify.FailureUnknown
+	failureTypes := classifyScheduledFailureTypes(settled.Err)
+	if len(failureTypes) == 0 {
+		failureTypes = []notify.FailureType{notify.FailureUnknown}
 	}
-	outcome.ErrorCode = definition.ErrorCode
-	return outcome
+	outcomes := make([]notify.Outcome, 0, len(failureTypes))
+	for _, failureType := range failureTypes {
+		classified := outcome
+		classified.FailureType = failureType
+		definition, ok := notify.LookupFailure(failureType)
+		if !ok {
+			definition, _ = notify.LookupFailure(notify.FailureUnknown)
+			classified.FailureType = notify.FailureUnknown
+		}
+		classified.ErrorCode = definition.ErrorCode
+		outcomes = append(outcomes, classified)
+	}
+	return outcomes
 }
 
 func isClassifiedCancellation(err error) bool {
@@ -79,6 +100,33 @@ func isClassifiedCancellation(err error) bool {
 	}
 	var refreshErr *semanticrefresh.RefreshError
 	return errors.As(err, &refreshErr) && refreshErr.Code == semanticrefresh.ErrorCancelled
+}
+
+func isCancellationOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !isCancellationOnly(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if refreshErr, ok := err.(*semanticrefresh.RefreshError); ok {
+		return refreshErr.Code == semanticrefresh.ErrorCancelled
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if cause := wrapped.Unwrap(); cause != nil {
+			return isCancellationOnly(cause)
+		}
+	}
+	return isClassifiedCancellation(err)
 }
 
 func classifyScheduledFailure(err error) notify.FailureType {
@@ -129,4 +177,34 @@ func classifyScheduledFailure(err error) notify.FailureType {
 		}
 	}
 	return notify.FailureUnknown
+}
+
+func classifyScheduledFailureTypes(err error) []notify.FailureType {
+	if err == nil {
+		return nil
+	}
+	if isCancellationOnly(err) {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		failureTypes := make([]notify.FailureType, 0, len(joined.Unwrap()))
+		for _, child := range joined.Unwrap() {
+			for _, failureType := range classifyScheduledFailureTypes(child) {
+				if !containsFailureType(failureTypes, failureType) {
+					failureTypes = append(failureTypes, failureType)
+				}
+			}
+		}
+		return failureTypes
+	}
+	return []notify.FailureType{classifyScheduledFailure(err)}
+}
+
+func containsFailureType(failureTypes []notify.FailureType, want notify.FailureType) bool {
+	for _, failureType := range failureTypes {
+		if failureType == want {
+			return true
+		}
+	}
+	return false
 }

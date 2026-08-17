@@ -34,8 +34,10 @@ func composePostRun(notifier notificationObserver, auditor postSyncAuditor, logO
 	}
 	return func(ctx context.Context, settled scheduledSyncOutcome) {
 		if notifier != nil {
-			if err := notifier.Observe(ctx, classifyScheduledSyncOutcome(settled)); err != nil {
-				logNotificationError(logOut, err)
+			for _, outcome := range classifyScheduledSyncOutcomes(settled) {
+				if err := notifier.Observe(ctx, outcome); err != nil {
+					logNotificationError(logOut, err)
+				}
 			}
 		}
 		if auditor != nil {
