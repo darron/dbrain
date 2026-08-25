@@ -32,7 +32,7 @@ const (
 	DefaultTimeout          = 30 * time.Minute
 	DefaultProgressInterval = 5 * time.Second
 	DefaultProgressBytes    = 32 * 1024 * 1024
-	DefaultMaxBytes         = 256 * 1024 * 1024
+	DefaultMaxBytes         = 4 * 1024 * 1024 * 1024
 )
 
 type Stats struct {
