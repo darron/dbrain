@@ -212,13 +212,13 @@ func TestDownloadRefUsesFourGiBDefaultLimit(t *testing.T) {
 		wantStatus    string
 	}{
 		{
-			name:          "at limit",
+			name:          "declared content length at limit",
 			contentLength: DefaultMaxBytes,
 			body:          fakeJPEGBytes(),
 			wantStatus:    model.MediaDownloadStatusDownloaded,
 		},
 		{
-			name:          "over limit",
+			name:          "declared content length over limit",
 			contentLength: DefaultMaxBytes + 1,
 			body:          []byte("not read"),
 			wantStatus:    model.MediaDownloadStatusBlocked,

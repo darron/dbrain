@@ -9,8 +9,8 @@ development date for the change set.
 
 - **Large media support**: Raised the default media response limit from 256 MiB
   to 4 GiB so large video assets can be downloaded and enriched again. The
-  existing explicit `MaxBytes` option remains available to callers that need a
-  narrower bound.
+  downloader retains an explicit `MaxBytes` override for internal callers that
+  need a narrower bound.
 
 ### Database pool diagnostics (2026-08-15)
 
