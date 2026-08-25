@@ -197,6 +197,70 @@ func TestDownloadRefRejectsDeclaredBodyOverConfiguredLimit(t *testing.T) {
 	assertNoMediaFiles(t, cfg.MediaDir)
 }
 
+func TestDownloadRefUsesFourGiBDefaultLimit(t *testing.T) {
+	t.Parallel()
+
+	const wantDefaultMaxBytes int64 = 4 * 1024 * 1024 * 1024
+	if DefaultMaxBytes != wantDefaultMaxBytes {
+		t.Fatalf("DefaultMaxBytes = %d, want %d", DefaultMaxBytes, wantDefaultMaxBytes)
+	}
+
+	tests := []struct {
+		name          string
+		contentLength int64
+		body          []byte
+		wantStatus    string
+	}{
+		{
+			name:          "declared content length at limit",
+			contentLength: DefaultMaxBytes,
+			body:          fakeJPEGBytes(),
+			wantStatus:    model.MediaDownloadStatusDownloaded,
+		},
+		{
+			name:          "declared content length over limit",
+			contentLength: DefaultMaxBytes + 1,
+			body:          []byte("not read"),
+			wantStatus:    model.MediaDownloadStatusBlocked,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := config.Load(t.TempDir())
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := cfg.EnsureDirs(); err != nil {
+				t.Fatalf("EnsureDirs: %v", err)
+			}
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					Header:        http.Header{"content-type": []string{"image/jpeg"}},
+					Body:          io.NopCloser(bytes.NewReader(test.body)),
+					ContentLength: test.contentLength,
+				}, nil
+			})}
+
+			result, err := downloadRef(context.Background(), client, cfg, model.ItemMediaRef{
+				RemoteURL: "https://media.example/default-limit.jpg",
+				MediaType: "photo",
+			}, "x", progressOptions{})
+			if err != nil {
+				t.Fatalf("downloadRef: %v", err)
+			}
+			if result.Status != test.wantStatus {
+				t.Fatalf("result status = %q, want %q (result=%#v)", result.Status, test.wantStatus, result)
+			}
+			if test.wantStatus == model.MediaDownloadStatusBlocked && !strings.Contains(result.Error, fmt.Sprintf("exceeds %d", wantDefaultMaxBytes)) {
+				t.Fatalf("blocked result = %#v", result)
+			}
+		})
+	}
+}
+
 func TestDownloadRefTreatsRequestTimeoutAsRetryable(t *testing.T) {
 	cfg, err := config.Load(t.TempDir())
 	if err != nil {
