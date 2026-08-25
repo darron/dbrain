@@ -13,6 +13,13 @@ development date for the change set.
 - **Go 1.27 local builds**: Updated the indirect JSON experiment dependency to
   the revision compatible with the current standard-library JSON v2 APIs.
 
+### Media download ceiling (2026-08-24)
+
+- **Large media support**: Raised the default media response limit from 256 MiB
+  to 4 GiB so large video assets can be downloaded and enriched again. The
+  downloader retains an explicit `MaxBytes` override for internal callers that
+  need a narrower bound.
+
 ### Database pool diagnostics (2026-08-15)
 
 - **Request-level contention evidence**: Web and MCP access logs now include
