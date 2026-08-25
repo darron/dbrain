@@ -75,6 +75,16 @@ func TestLinkCaptureQueueDoesNotWaitForSemanticLease(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	// The admission pool is lazy. Warm its first connection before measuring
+	// lease independence so cold SQLite connection setup is not mistaken for
+	// semantic-lock contention.
+	admissionDB, err := st.linkCaptureDB()
+	if err != nil {
+		t.Fatalf("open link capture admission db: %v", err)
+	}
+	if err := admissionDB.PingContext(t.Context()); err != nil {
+		t.Fatalf("ping link capture admission db: %v", err)
+	}
 	exclusive, err := st.semanticLockScope.AcquireMaintenanceExclusive(t.Context(), "test-link-capture")
 	if err != nil {
 		t.Fatalf("acquire exclusive lease: %v", err)

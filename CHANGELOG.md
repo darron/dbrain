@@ -5,6 +5,14 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Build and test stability (2026-08-25)
+
+- **Reliable deferred-link lease coverage**: The admission independence test
+  now warms its lazy SQLite pool before measuring semantic-lock contention,
+  preventing cold connection setup from causing false timing failures.
+- **Go 1.27 local builds**: Updated the indirect JSON experiment dependency to
+  the revision compatible with the current standard-library JSON v2 APIs.
+
 ### Database pool diagnostics (2026-08-15)
 
 - **Request-level contention evidence**: Web and MCP access logs now include
