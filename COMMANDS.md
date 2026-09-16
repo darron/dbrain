@@ -1279,7 +1279,7 @@ dbrain --no-caffeinate extract sources --limit 50 --length short --timeout 5m
 ```
 
 Summary-provider errors are persisted against the extracted content and the
-summary implementation identity. Each failed candidate receives a 12-hour
+summary implementation identity. Each failed candidate receives a 6-hour
 cooldown, while untried summary candidates retain priority over due retries.
 The standalone command processes its requested batch and reports per-source
 errors; the repeated `worker sources` command stops with

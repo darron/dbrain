@@ -31,10 +31,7 @@ func processPreflightTerminal(processCtx sourceProcessContext) (sourceProcessRes
 			result.Err = err
 			return result, true
 		}
-		result.Stats.SourcesExtracted += waybackStats.SourcesExtracted
-		result.Stats.SourcesSummarized += waybackStats.SourcesSummarized
-		result.Stats.SourcesUnchanged += waybackStats.SourcesUnchanged
-		result.Stats.Errors += waybackStats.Errors
+		mergeStats(&result.Stats, waybackStats)
 		result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 		result.TouchedSourceID = source.ID
 		return result, true
@@ -113,10 +110,7 @@ func processFeedLinkedHTTPExtract(processCtx sourceProcessContext) (sourceProces
 		result.Err = err
 		return result, true
 	}
-	result.Stats.SourcesExtracted += stats.SourcesExtracted
-	result.Stats.SourcesSummarized += stats.SourcesSummarized
-	result.Stats.SourcesUnchanged += stats.SourcesUnchanged
-	result.Stats.Errors += stats.Errors
+	mergeStats(&result.Stats, stats)
 	result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 	result.TouchedSourceID = source.ID
 	return result, true
@@ -246,10 +240,7 @@ func processHTTPReaderFallback(processCtx sourceProcessContext) (sourceProcessRe
 			result.Err = err
 			return result, true
 		}
-		result.Stats.SourcesExtracted += readerStats.SourcesExtracted
-		result.Stats.SourcesSummarized += readerStats.SourcesSummarized
-		result.Stats.SourcesUnchanged += readerStats.SourcesUnchanged
-		result.Stats.Errors += readerStats.Errors
+		mergeStats(&result.Stats, readerStats)
 		result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 		result.TouchedSourceID = source.ID
 		return result, true

@@ -54,10 +54,7 @@ func processDirectSummaryExtract(processCtx sourceProcessContext) (sourceProcess
 		result.Err = err
 		return result, true
 	}
-	result.Stats.SourcesExtracted += extractStats.SourcesExtracted
-	result.Stats.SourcesSummarized += extractStats.SourcesSummarized
-	result.Stats.SourcesUnchanged += extractStats.SourcesUnchanged
-	result.Stats.Errors += extractStats.Errors
+	mergeStats(&result.Stats, extractStats)
 	result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 
 	result.TouchedSourceID = source.ID
@@ -169,10 +166,7 @@ func processExtractRunError(processCtx sourceProcessContext, runErr error, logMe
 			result.Err = err
 			return result
 		}
-		result.Stats.SourcesExtracted += fallbackStats.SourcesExtracted
-		result.Stats.SourcesSummarized += fallbackStats.SourcesSummarized
-		result.Stats.SourcesUnchanged += fallbackStats.SourcesUnchanged
-		result.Stats.Errors += fallbackStats.Errors
+		mergeStats(&result.Stats, fallbackStats)
 		result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 		result.TouchedSourceID = source.ID
 		return result

@@ -29,6 +29,9 @@ func sourceSummaryResult(rootDir string, source model.SourceDocument, summary mo
 func recordSummaryOutcome(stats *Stats, sourceResult *SourceResult, update SourceResult, changed bool) {
 	if update.SummaryStatus == model.SourceSummaryStatusError {
 		stats.Errors++
+		if changed {
+			stats.SummaryRetriesDeferred++
+		}
 	}
 	if changed && update.SummaryStatus == model.SourceSummaryStatusOK {
 		stats.SourcesSummarized++

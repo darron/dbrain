@@ -1810,6 +1810,7 @@ func TestSaveSourceSummaryTracksRetryStateAndCooldown(t *testing.T) {
 		Tool:          "summarize",
 		ToolVersion:   "test-summary",
 	}
+	failureStarted := time.Now().UTC()
 	changed, err := st.SaveSourceSummary(ctx, sourceID, failure)
 	if err != nil || !changed {
 		t.Fatalf("first SaveSourceSummary changed=%t err=%v", changed, err)
@@ -1821,6 +1822,10 @@ func TestSaveSourceSummaryTracksRetryStateAndCooldown(t *testing.T) {
 	if first.SummaryFailureCount != 1 || first.SummaryContentHash != first.ContentHash ||
 		first.SummaryFirstFailedAt.IsZero() || first.SummaryLastFailedAt.IsZero() || first.SummaryNextAttemptAt.IsZero() {
 		t.Fatalf("summary retry state not persisted: %+v", first)
+	}
+	if first.SummaryNextAttemptAt.Before(failureStarted.Add(6*time.Hour-time.Minute)) ||
+		first.SummaryNextAttemptAt.After(failureStarted.Add(6*time.Hour+time.Minute)) {
+		t.Fatalf("expected six-hour summary retry cooldown, got failure_started=%s next_attempt_at=%s", failureStarted, first.SummaryNextAttemptAt)
 	}
 
 	pending, err := st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "test-summary")

@@ -155,11 +155,11 @@ func TestRunSourcesStopsWhenEligibleBacklogDoesNotMove(t *testing.T) {
 	}
 }
 
-func TestRunSourcesReportsDeferredSummaryFailuresAfterAWorkPass(t *testing.T) {
+func TestRunSourcesReportsDeferredSummaryFailuresAfterFailureOnlyWorkPass(t *testing.T) {
 	t.Parallel()
 
 	backlogs := []store.BacklogStats{
-		{SourceSummaryPending: 1},
+		{SourceSummaryPending: 1, SourceSummaryRetryDeferred: 1},
 		{SourceSummaryRetryDeferred: 1},
 		{SourceSummaryRetryDeferred: 1},
 	}
@@ -176,7 +176,7 @@ func TestRunSourcesReportsDeferredSummaryFailuresAfterAWorkPass(t *testing.T) {
 		context.Background(),
 		backlogFn,
 		func(context.Context, int) (sourceenrich.Stats, error) {
-			return sourceenrich.Stats{SourcesQueued: 1, Errors: 1}, nil
+			return sourceenrich.Stats{SourcesQueued: 1, Errors: 1, SummaryRetriesDeferred: 1}, nil
 		},
 		SourceOptions{Now: func() time.Time { return time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC) }},
 	)
@@ -186,6 +186,84 @@ func TestRunSourcesReportsDeferredSummaryFailuresAfterAWorkPass(t *testing.T) {
 	}
 	if stats.FinalBacklog.SourceSummaryRetryDeferred != 1 {
 		t.Fatalf("expected deferred retry debt in final backlog, got %+v", stats.FinalBacklog)
+	}
+}
+
+func TestRunSourcesDoesNotReportDeferredSummaryFailuresAfterSuccessfulWork(t *testing.T) {
+	t.Parallel()
+
+	backlogs := []store.BacklogStats{
+		{SourceSummaryPending: 10},
+		{SourceSummaryRetryDeferred: 1},
+		{SourceSummaryRetryDeferred: 1},
+	}
+	backlogCalls := 0
+	backlogFn := func(context.Context) (store.BacklogStats, error) {
+		current := backlogs[backlogCalls]
+		if backlogCalls < len(backlogs)-1 {
+			backlogCalls++
+		}
+		return current, nil
+	}
+	runCalls := 0
+
+	stats, err := RunSources(
+		context.Background(),
+		backlogFn,
+		func(context.Context, int) (sourceenrich.Stats, error) {
+			runCalls++
+			return sourceenrich.Stats{SourcesQueued: 10, SourcesSummarized: 9, Errors: 1, SummaryRetriesDeferred: 1}, nil
+		},
+		SourceOptions{Now: func() time.Time { return time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC) }},
+	)
+
+	if err != nil || stats.StoppedReason != "queue_drained" {
+		t.Fatalf("expected healthy work pass to drain despite deferred retry debt, calls=%d stats=%+v err=%v", runCalls, stats, err)
+	}
+	if runCalls != 1 || stats.SourcesSummarized != 9 || stats.Errors != 1 {
+		t.Fatalf("unexpected successful work pass: calls=%d stats=%+v", runCalls, stats)
+	}
+	if stats.FinalBacklog.SourceSummaryRetryDeferred != 1 {
+		t.Fatalf("expected deferred retry debt in final backlog, got %+v", stats.FinalBacklog)
+	}
+}
+
+func TestRunSourcesIgnoresPreexistingDeferredSummaryFailuresAfterSuccessfulWork(t *testing.T) {
+	t.Parallel()
+
+	backlogs := []store.BacklogStats{
+		{SourceSummaryPending: 1, SourceSummaryRetryDeferred: 1},
+		{SourceSummaryRetryDeferred: 1},
+		{SourceSummaryRetryDeferred: 1},
+	}
+	backlogCalls := 0
+	backlogFn := func(context.Context) (store.BacklogStats, error) {
+		current := backlogs[backlogCalls]
+		if backlogCalls < len(backlogs)-1 {
+			backlogCalls++
+		}
+		return current, nil
+	}
+	runCalls := 0
+
+	stats, err := RunSources(
+		context.Background(),
+		backlogFn,
+		func(context.Context, int) (sourceenrich.Stats, error) {
+			runCalls++
+			return sourceenrich.Stats{SourcesQueued: 1, SourcesSummarized: 1}, nil
+		},
+		SourceOptions{Now: func() time.Time { return time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC) }},
+	)
+
+	if err != nil || stats.StoppedReason != "queue_drained" {
+		t.Fatalf("expected healthy retry run to drain around preexisting debt, calls=%d stats=%+v err=%v", runCalls, stats, err)
+	}
+	if runCalls != 1 || stats.SourcesSummarized != 1 || stats.Errors != 0 {
+		t.Fatalf("unexpected healthy retry run: calls=%d stats=%+v", runCalls, stats)
+	}
+	if stats.FinalBacklog.SourceSummaryRetryDeferred != 1 {
+		t.Fatalf("expected preexisting deferred retry debt in final backlog, got %+v", stats.FinalBacklog)
 	}
 }
 
@@ -213,7 +291,7 @@ func TestRunSourcesBoundsFailureOnlySummaryCycles(t *testing.T) {
 		backlogFn,
 		func(context.Context, int) (sourceenrich.Stats, error) {
 			runCalls++
-			return sourceenrich.Stats{SourcesQueued: 1, Errors: 1}, nil
+			return sourceenrich.Stats{SourcesQueued: 1, Errors: 1, SummaryRetriesDeferred: 1}, nil
 		},
 		SourceOptions{Now: func() time.Time { return time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC) }},
 	)

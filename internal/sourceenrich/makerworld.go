@@ -161,10 +161,7 @@ func processMakerWorldAPIExtract(processCtx sourceProcessContext) (sourceProcess
 		result.Err = err
 		return result, true
 	}
-	result.Stats.SourcesExtracted += stats.SourcesExtracted
-	result.Stats.SourcesSummarized += stats.SourcesSummarized
-	result.Stats.SourcesUnchanged += stats.SourcesUnchanged
-	result.Stats.Errors += stats.Errors
+	mergeStats(&result.Stats, stats)
 	result.SourceResult = mergeSourceResult(result.SourceResult, sourceResult)
 	result.TouchedSourceID = source.ID
 	return result, true

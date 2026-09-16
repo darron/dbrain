@@ -9,7 +9,7 @@ import (
 
 const (
 	sourceExtractErrorRetryCooldown = 12 * time.Hour
-	sourceSummaryErrorRetryCooldown = 12 * time.Hour
+	sourceSummaryErrorRetryCooldown = 6 * time.Hour
 )
 
 type sourceEnrichmentPolicy struct {
@@ -63,8 +63,8 @@ func (p sourceEnrichmentPolicy) extractBacklogWhere() (string, []any) {
 			)
 		)
 	)`, []any{
-		p.now.Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
-	}
+			p.now.Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
+		}
 }
 
 func (p sourceEnrichmentPolicy) summaryBacklogWhere() (string, []any) {

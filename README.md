@@ -457,7 +457,7 @@ the scheduled sync: if it finds eligible source work but a bounded sequence of
 summary-failure passes makes no useful durable progress, it returns a typed
 `sources` stage failure and the configured notification providers alert on the
 settled run. Summary failures are stored with candidate-scoped state and a
-12-hour retry cooldown, so the worker reports deferred retry debt instead of
+6-hour retry cooldown, so the worker reports deferred retry debt instead of
 spinning on the same provider outage. Editing a checkout or sample config also
 does not activate an installed process; release, installation, production
 configuration, setting `notifications.enabled: true`, and service restart

@@ -74,12 +74,27 @@ func WithConfiguredSourceOrigin(opts Options, origin string) Options {
 }
 
 type Stats struct {
-	SourcesQueued     int `json:"sources_queued"`
-	SourcesExtracted  int `json:"sources_extracted"`
-	SourcesSummarized int `json:"sources_summarized"`
-	SourcesRendered   int `json:"sources_rendered"`
-	SourcesUnchanged  int `json:"sources_unchanged"`
-	Errors            int `json:"errors"`
+	SourcesQueued          int `json:"sources_queued"`
+	SourcesExtracted       int `json:"sources_extracted"`
+	SourcesSummarized      int `json:"sources_summarized"`
+	SourcesRendered        int `json:"sources_rendered"`
+	SourcesUnchanged       int `json:"sources_unchanged"`
+	SummaryRetriesDeferred int `json:"summary_retries_deferred"`
+	Errors                 int `json:"errors"`
+}
+
+// mergeStats adds per-source work counters without merging SourcesQueued,
+// which is owned by the batch that selected the candidates.
+func mergeStats(dst *Stats, src Stats) {
+	if dst == nil {
+		return
+	}
+	dst.SourcesExtracted += src.SourcesExtracted
+	dst.SourcesSummarized += src.SourcesSummarized
+	dst.SourcesRendered += src.SourcesRendered
+	dst.SourcesUnchanged += src.SourcesUnchanged
+	dst.SummaryRetriesDeferred += src.SummaryRetriesDeferred
+	dst.Errors += src.Errors
 }
 
 type SourceResult struct {

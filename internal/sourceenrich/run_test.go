@@ -1698,6 +1698,9 @@ exit 1
 	if stats.Errors != 1 {
 		t.Fatalf("expected persisted summary failure to count as one error, got %+v", stats)
 	}
+	if stats.SummaryRetriesDeferred != 1 {
+		t.Fatalf("expected persisted summary failure to count as one deferred retry, got %+v", stats)
+	}
 
 	source, err := st.GetSourceByID(context.Background(), sourceID)
 	if err != nil {

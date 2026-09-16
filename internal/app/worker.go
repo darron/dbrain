@@ -135,6 +135,7 @@ func writeWorkerSourceStats(dst interface{ Write([]byte) (int, error) }, stats w
 		{"Sources summarized", stats.SourcesSummarized},
 		{"Sources rendered", stats.SourcesRendered},
 		{"Source unchanged writes", stats.SourcesUnchanged},
+		{"Summary retries deferred", stats.SummaryRetriesDeferred},
 		{"Errors", stats.Errors},
 		{"Stopped", stats.StoppedReason},
 		{"Final source extraction pending", stats.FinalBacklog.SourceExtractionPending},
