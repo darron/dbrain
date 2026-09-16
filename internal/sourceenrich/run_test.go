@@ -1644,6 +1644,73 @@ func TestRunSourceIDsUsesStoredExtractForStaleSummary(t *testing.T) {
 	}
 }
 
+func TestRunSourceIDsCountsPersistedSummaryFailure(t *testing.T) {
+	root := t.TempDir()
+	cfg, st := openSourceEnrichProcessOrderStore(t, root)
+	defer func() { _ = st.Close() }()
+
+	binary := filepath.Join(root, "bin", "summary-failure")
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		t.Fatalf("create summary failure bin dir: %v", err)
+	}
+	if err := os.WriteFile(binary, []byte(`#!/bin/sh
+if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+  echo "summary-failure-test"
+  exit 0
+fi
+echo "summary provider unavailable" >&2
+exit 1
+`), 0o755); err != nil {
+		t.Fatalf("write summary failure binary: %v", err)
+	}
+
+	now := time.Now().UTC()
+	sourceID := upsertProcessOrderSource(t, st, model.SourceCandidate{
+		SourceKey:     "src:summary-failure-count",
+		OriginalURL:   "https://example.com/summary-failure-count",
+		CanonicalURL:  "https://example.com/summary-failure-count",
+		NormalizedURL: "https://example.com/summary-failure-count",
+		SourceType:    "web",
+		Domain:        "example.com",
+		NotePath:      vault.SourceNoteRelativePath("web", "summary-failure-count"),
+	})
+	if _, err := st.SaveSourceExtraction(context.Background(), sourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/summary-failure-count",
+		FinalURL:     "https://example.com/summary-failure-count",
+		Content:      "stored content for summary failure",
+		Status:       model.SourceExtractStatusOK,
+		FetchedAt:    now,
+		Tool:         "test-extract",
+		ToolVersion:  "test-extract-v1",
+	}, "summary-failure-content"); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+
+	stats, _, err := RunSourceIDs(context.Background(), cfg, st, []int64{sourceID}, Options{
+		Summarize: true,
+		Model:     "cli/test/summary-failure",
+		Binary:    binary,
+		Timeout:   time.Second,
+	})
+	if err != nil {
+		t.Fatalf("RunSourceIDs: %v", err)
+	}
+	if stats.Errors != 1 {
+		t.Fatalf("expected persisted summary failure to count as one error, got %+v", stats)
+	}
+	if stats.SummaryRetriesDeferred != 1 {
+		t.Fatalf("expected persisted summary failure to count as one deferred retry, got %+v", stats)
+	}
+
+	source, err := st.GetSourceByID(context.Background(), sourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.SummaryStatus != model.SourceSummaryStatusError || source.SummaryFailureCount != 1 || source.SummaryNextAttemptAt.IsZero() {
+		t.Fatalf("expected persisted summary retry state, got %+v", source)
+	}
+}
+
 func TestRunSourceIDsUsesPreferredCLIProviderForGenericSummary(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := config.Load(root)

@@ -312,7 +312,7 @@ func syncSummaryRows(stats syncjob.Stats) [][]string {
 	}
 	if stats.Sources != nil {
 		s := stats.Sources.Stats
-		rows = append(rows, []string{"Sources", formatSyncDuration(stats.Sources.Duration), fmt.Sprintf("cycles=%d work_cycles=%d queued=%d extracted=%d", s.Cycles, s.WorkCycles, s.SourcesQueued, s.SourcesExtracted), fmt.Sprintf("summarized=%d rendered=%d unchanged=%d idle_polls=%d stopped=%s", s.SourcesSummarized, s.SourcesRendered, s.SourcesUnchanged, s.IdlePolls, s.StoppedReason), strconv.Itoa(s.Errors)})
+		rows = append(rows, []string{"Sources", formatSyncDuration(stats.Sources.Duration), fmt.Sprintf("cycles=%d work_cycles=%d queued=%d extracted=%d", s.Cycles, s.WorkCycles, s.SourcesQueued, s.SourcesExtracted), fmt.Sprintf("summarized=%d rendered=%d unchanged=%d idle_polls=%d stopped=%s summary_retry_deferred=%d", s.SourcesSummarized, s.SourcesRendered, s.SourcesUnchanged, s.IdlePolls, s.StoppedReason, s.FinalBacklog.SourceSummaryRetryDeferred), strconv.Itoa(s.Errors)})
 	}
 	if stats.Categorize != nil {
 		s := stats.Categorize.Stats

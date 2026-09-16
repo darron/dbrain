@@ -32,6 +32,13 @@ func (s *Store) ListSourcesForEnrichment(ctx context.Context, limit int, force b
 			CASE WHEN extract_status = '' THEN 0 WHEN extract_status = '` + model.SourceExtractStatusError + `' THEN 1 WHEN ` + sourceMakerWorldAPIRepairWhere() + ` THEN 1 ELSE 2 END,
 			CASE WHEN extract_status = '` + model.SourceExtractStatusError + `' THEN extract_failure_count ELSE 0 END ASC,
 			extract_last_failed_at ASC,
+			CASE
+				WHEN extract_status IN ('` + model.SourceExtractStatusOK + `', '` + model.SourceExtractStatusEmpty + `') AND summary_status = '' THEN 0
+				WHEN extract_status IN ('` + model.SourceExtractStatusOK + `', '` + model.SourceExtractStatusEmpty + `') AND summary_status = '` + model.SourceSummaryStatusError + `' THEN 1
+				ELSE 2
+			END,
+			CASE WHEN summary_status = '` + model.SourceSummaryStatusError + `' THEN summary_failure_count ELSE 0 END ASC,
+			summary_last_failed_at ASC,
 			extracted_at ASC,
 			id DESC
 		LIMIT ?`

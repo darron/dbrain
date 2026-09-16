@@ -1784,6 +1784,210 @@ func TestSaveSourceExtractionTracksFailureCountsAndResetsOnSuccess(t *testing.T)
 	}
 }
 
+func TestSaveSourceSummaryTracksRetryStateAndCooldown(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceID := insertTestSource(t, st, "src:summary-retry-state", "https://example.com/summary-retry-state")
+	if _, err := st.SaveSourceExtraction(ctx, sourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/summary-retry-state",
+		FinalURL:     "https://example.com/summary-retry-state",
+		Content:      "durable source content",
+		Status:       model.SourceExtractStatusOK,
+		FetchedAt:    time.Now().UTC(),
+		Tool:         "summarize",
+		ToolVersion:  "test-extract",
+	}, "summary-retry-hash"); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+
+	failure := model.SummaryResult{
+		Status:        model.SourceSummaryStatusError,
+		Error:         "summary provider unavailable",
+		Model:         "test/model",
+		PromptVersion: "dbrain-v1",
+		Tool:          "summarize",
+		ToolVersion:   "test-summary",
+	}
+	failureStarted := time.Now().UTC()
+	changed, err := st.SaveSourceSummary(ctx, sourceID, failure)
+	if err != nil || !changed {
+		t.Fatalf("first SaveSourceSummary changed=%t err=%v", changed, err)
+	}
+	first, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("get first summary failure: %v", err)
+	}
+	if first.SummaryFailureCount != 1 || first.SummaryContentHash != first.ContentHash ||
+		first.SummaryFirstFailedAt.IsZero() || first.SummaryLastFailedAt.IsZero() || first.SummaryNextAttemptAt.IsZero() {
+		t.Fatalf("summary retry state not persisted: %+v", first)
+	}
+	if first.SummaryNextAttemptAt.Before(failureStarted.Add(6*time.Hour-time.Minute)) ||
+		first.SummaryNextAttemptAt.After(failureStarted.Add(6*time.Hour+time.Minute)) {
+		t.Fatalf("expected six-hour summary retry cooldown, got failure_started=%s next_attempt_at=%s", failureStarted, first.SummaryNextAttemptAt)
+	}
+
+	pending, err := st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "test-summary")
+	if err != nil {
+		t.Fatalf("list cooled-down summary: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected summary failure to leave cooldown, got %+v", pending)
+	}
+	backlog, err := st.Backlog(ctx, "dbrain-v1", "summarize", "test-summary")
+	if err != nil {
+		t.Fatalf("backlog after summary failure: %v", err)
+	}
+	if backlog.SourceSummaryPending != 0 || backlog.SourceSummaryRetryDeferred != 1 || backlog.Drained {
+		t.Fatalf("unexpected summary retry backlog: %+v", backlog)
+	}
+
+	old := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET summary_next_attempt_at = ? WHERE id = ?`, old, sourceID); err != nil {
+		t.Fatalf("age summary retry: %v", err)
+	}
+	pending, err = st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "test-summary")
+	if err != nil {
+		t.Fatalf("list due summary retry: %v", err)
+	}
+	if got := sourceKeys(pending); !sameStringSet(got, []string{"src:summary-retry-state"}) {
+		t.Fatalf("expected due summary retry, got %v", got)
+	}
+
+	if _, err := st.SaveSourceSummary(ctx, sourceID, failure); err != nil {
+		t.Fatalf("second SaveSourceSummary: %v", err)
+	}
+	second, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("get second summary failure: %v", err)
+	}
+	if second.SummaryFailureCount != 2 || !second.SummaryFirstFailedAt.Equal(first.SummaryFirstFailedAt) {
+		t.Fatalf("expected same-candidate retry count to advance, got first=%+v second=%+v", first, second)
+	}
+
+	if _, err := st.SaveSourceExtraction(ctx, sourceID, model.ExtractResult{
+		CanonicalURL: "https://example.com/summary-retry-state",
+		FinalURL:     "https://example.com/summary-retry-state",
+		Content:      "replacement source content",
+		Status:       model.SourceExtractStatusOK,
+		FetchedAt:    time.Now().UTC(),
+		Tool:         "summarize",
+		ToolVersion:  "test-extract",
+	}, "summary-retry-hash-v2"); err != nil {
+		t.Fatalf("replace source extraction: %v", err)
+	}
+	pending, err = st.ListSourcesForEnrichment(ctx, 10, false, true, "dbrain-v1", "summarize", "test-summary")
+	if err != nil {
+		t.Fatalf("list changed summary candidate: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected changed content to bypass old cooldown, got %+v", pending)
+	}
+
+	if _, err := st.SaveSourceSummary(ctx, sourceID, model.SummaryResult{
+		Text:          "recovered summary",
+		Status:        model.SourceSummaryStatusOK,
+		Model:         "test/model",
+		PromptVersion: "dbrain-v1",
+		Tool:          "summarize",
+		ToolVersion:   "test-summary",
+		FetchedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("save recovered summary: %v", err)
+	}
+	recovered, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("get recovered summary: %v", err)
+	}
+	if recovered.SummaryFailureCount != 0 || !recovered.SummaryFirstFailedAt.IsZero() ||
+		!recovered.SummaryLastFailedAt.IsZero() || !recovered.SummaryNextAttemptAt.IsZero() {
+		t.Fatalf("expected summary retry state reset after success, got %+v", recovered)
+	}
+}
+
+func TestSaveSourceSummaryDoesNotDeferExtractionFailures(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	sourceID := insertTestSource(t, st, "src:summary-after-extract-failure", "https://example.com/summary-after-extract-failure")
+	if _, err := st.SaveSourceExtraction(ctx, sourceID, model.ExtractResult{
+		Status:      model.SourceExtractStatusError,
+		Error:       "source unavailable",
+		FetchedAt:   time.Now().UTC(),
+		Tool:        "summarize",
+		ToolVersion: "test-extract",
+	}, ""); err != nil {
+		t.Fatalf("SaveSourceExtraction: %v", err)
+	}
+
+	if _, err := st.SaveSourceSummary(ctx, sourceID, model.SummaryResult{
+		Status:        model.SourceSummaryStatusError,
+		Error:         "source unavailable",
+		PromptVersion: "dbrain-v1",
+		Tool:          "summarize",
+		ToolVersion:   "test-summary",
+	}); err != nil {
+		t.Fatalf("SaveSourceSummary: %v", err)
+	}
+	source, err := st.GetSourceByID(ctx, sourceID)
+	if err != nil {
+		t.Fatalf("GetSourceByID: %v", err)
+	}
+	if source.SummaryFailureCount != 0 || !source.SummaryFirstFailedAt.IsZero() ||
+		!source.SummaryLastFailedAt.IsZero() || !source.SummaryNextAttemptAt.IsZero() {
+		t.Fatalf("extraction failure must not create summary retry debt: %+v", source)
+	}
+}
+
+func TestListSourcesForEnrichmentPrioritizesUntriedSummaryOverDueRetry(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	ctx := context.Background()
+	insertReady := func(sourceKey string) int64 {
+		t.Helper()
+		id := insertTestSource(t, st, sourceKey, "https://example.com/"+strings.TrimPrefix(sourceKey, "src:"))
+		if _, err := st.SaveSourceExtraction(ctx, id, model.ExtractResult{
+			CanonicalURL: "https://example.com/" + strings.TrimPrefix(sourceKey, "src:"),
+			FinalURL:     "https://example.com/" + strings.TrimPrefix(sourceKey, "src:"),
+			Content:      "summary candidate content",
+			Status:       model.SourceExtractStatusOK,
+			FetchedAt:    time.Now().UTC(),
+			Tool:         "summarize",
+			ToolVersion:  "test-extract",
+		}, "hash-"+sourceKey); err != nil {
+			t.Fatalf("save extraction %s: %v", sourceKey, err)
+		}
+		return id
+	}
+
+	failedID := insertReady("src:due-summary-retry")
+	if _, err := st.SaveSourceSummary(ctx, failedID, model.SummaryResult{
+		Status:        model.SourceSummaryStatusError,
+		Error:         "provider unavailable",
+		Model:         "test/model",
+		PromptVersion: "dbrain-v1",
+		Tool:          "summarize",
+		ToolVersion:   "test-summary",
+	}); err != nil {
+		t.Fatalf("save failed summary: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE sources SET summary_next_attempt_at = ? WHERE id = ?`, time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), failedID); err != nil {
+		t.Fatalf("age failed summary: %v", err)
+	}
+	insertReady("src:untried-summary")
+
+	pending, err := st.ListSourcesForEnrichment(ctx, 1, false, true, "dbrain-v1", "summarize", "test-summary")
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if got := sourceKeys(pending); !sameStringSet(got, []string{"src:untried-summary"}) {
+		t.Fatalf("expected untried summary first, got %v", got)
+	}
+}
+
 func TestSaveSourceUserTagsPropagatesFTSDeleteError(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()

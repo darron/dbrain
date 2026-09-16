@@ -535,6 +535,88 @@ func TestRunSkipsSourceSummaryMetricWhenSummaryNotCreated(t *testing.T) {
 	}
 }
 
+func TestRunEmitsFailedSourceSummaryDetailMetrics(t *testing.T) {
+	cfg, st := testSyncStore(t)
+	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sink, err := metrics.Open(metrics.Config{Enabled: true, Path: metricsPath, Detail: metrics.DetailItem})
+	if err != nil {
+		t.Fatalf("metrics.Open: %v", err)
+	}
+
+	origWorker := runSourceWorker
+	origPending := runSourceEnrichPending
+	t.Cleanup(func() {
+		runSourceWorker = origWorker
+		runSourceEnrichPending = origPending
+	})
+
+	runSourceWorker = func(ctx context.Context, _ worker.SourceBacklogFunc, process worker.SourceRunFunc, _ worker.SourceOptions) (worker.SourceStats, error) {
+		stats, err := process(ctx, 1)
+		return worker.SourceStats{WorkCycles: 1, Errors: stats.Errors}, err
+	}
+	runSourceEnrichPending = func(_ context.Context, _ config.Config, _ *store.Store, opts sourceenrich.Options) (sourceenrich.Stats, []int64, error) {
+		if opts.OnSourceResult == nil {
+			t.Fatal("expected source result callback")
+		}
+		opts.OnSourceResult(sourceenrich.SourceResult{
+			SourceID:           100,
+			SourceKey:          "src:secret-failed-summary-key",
+			Duration:           1500 * time.Millisecond,
+			SummaryStatus:      model.SourceSummaryStatusError,
+			SummaryModel:       "omlx/qwen3.5-coder",
+			SummaryTool:        "omlx-direct",
+			SummaryToolVersion: "test-version",
+			SummaryProvider:    "omlx",
+			SummaryAPIModel:    "qwen3.5-coder",
+			SummaryTransport:   "openai_chat_completions",
+			Error:              "summary provider unavailable",
+		})
+		return sourceenrich.Stats{SourcesQueued: 1, Errors: 1}, []int64{100}, nil
+	}
+
+	_, err = Run(context.Background(), cfg, st, Options{
+		SourcesEnabled: true,
+		Summarize:      true,
+		Model:          "omlx/qwen3.5-coder",
+		Metrics: metrics.RunContext{
+			RunID:      "sync_test_00000000",
+			Command:    "sync all",
+			Invocation: "cli",
+			Sink:       sink,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("metrics close: %v", err)
+	}
+
+	events := readSyncMetricEvents(t, metricsPath)
+	if got := metricEventNames(events); !slices.Equal(got, []string{
+		"sync.run.started",
+		"summary.source.completed",
+		"sync.stage.completed",
+		"sync.run.completed",
+	}) {
+		t.Fatalf("metric events = %v", got)
+	}
+	sourceEvent := events[1]
+	if sourceEvent["status"] != model.SourceSummaryStatusError || sourceEvent["subject_key"] != nil {
+		t.Fatalf("unexpected failed source metric: %#v", sourceEvent)
+	}
+	if errorObject, ok := sourceEvent["error"].(map[string]any); !ok || errorObject["message"] != "summary provider unavailable" {
+		t.Fatalf("failed source metric error = %#v", sourceEvent["error"])
+	}
+	raw, err := os.ReadFile(metricsPath)
+	if err != nil {
+		t.Fatalf("read metrics: %v", err)
+	}
+	if strings.Contains(string(raw), "src:secret-failed-summary-key") {
+		t.Fatalf("metrics leaked raw source key:\n%s", raw)
+	}
+}
+
 func TestRunEmitsCategorizeStageMetricsOnError(t *testing.T) {
 	cfg, st := testSyncStore(t)
 	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")

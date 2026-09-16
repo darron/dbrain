@@ -1278,6 +1278,17 @@ dbrain extract sources --limit 50 --concurrency 4 --length short
 dbrain --no-caffeinate extract sources --limit 50 --length short --timeout 5m
 ```
 
+Summary-provider errors are persisted against the extracted content and the
+summary implementation identity. Each failed candidate receives a 6-hour
+cooldown, while untried summary candidates retain priority over due retries.
+The standalone command processes its requested batch and reports per-source
+errors; the repeated `worker sources` command stops with
+`stopped=backlog_stalled` after a bounded failure-only/no-progress pass and
+reports deferred retry debt. After the cooldown, a later invocation can retry
+the candidate. In scheduled `sync all`, the source-stage error is typed and
+reaches the configured hard-failure notification providers; manual commands
+return nonzero output without sending notifications.
+
 ### `dbrain worker sources`
 
 Requires `summarize`. This is the long-running source-backlog worker: it

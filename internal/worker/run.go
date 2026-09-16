@@ -15,6 +15,45 @@ type SourceBacklogFunc func(context.Context) (store.BacklogStats, error)
 
 type SourceRunFunc func(context.Context, int) (sourceenrich.Stats, error)
 
+const sourceSummaryFailureOnlyCycleLimit = 3
+
+// ErrSourceBacklogStalled identifies a source worker that found eligible work
+// but exhausted a bounded pass without successful durable advancement. A
+// retryable failure may still move a candidate into deferred retry state; the
+// worker treats repeated failure-only batches as stalled after its bound. The
+// sentinel is intentionally independent of provider error text so the
+// scheduled notification classifier can use the existing sources-stage type.
+var ErrSourceBacklogStalled = errors.New("source backlog stalled")
+
+type SourceBacklogStalledError struct {
+	Attempted              int
+	Succeeded              int
+	Errors                 int
+	SummaryRetriesDeferred int
+	FinalBacklog           store.BacklogStats
+}
+
+func (e *SourceBacklogStalledError) Error() string {
+	if e == nil {
+		return ErrSourceBacklogStalled.Error()
+	}
+	return fmt.Sprintf(
+		"%s: attempted=%d succeeded=%d errors=%d summary_retries_deferred=%d eligible_extraction=%d eligible_summary=%d deferred_summary=%d",
+		ErrSourceBacklogStalled,
+		e.Attempted,
+		e.Succeeded,
+		e.Errors,
+		e.SummaryRetriesDeferred,
+		e.FinalBacklog.SourceExtractionPending,
+		e.FinalBacklog.SourceSummaryPending,
+		e.FinalBacklog.SourceSummaryRetryDeferred,
+	)
+}
+
+func (e *SourceBacklogStalledError) Unwrap() error {
+	return ErrSourceBacklogStalled
+}
+
 type SourceOptions struct {
 	Watch         bool
 	PollInterval  time.Duration
@@ -27,22 +66,23 @@ type SourceOptions struct {
 }
 
 type SourceStats struct {
-	Cycles             int                `json:"cycles"`
-	WorkCycles         int                `json:"work_cycles"`
-	IdlePolls          int                `json:"idle_polls"`
-	SourcesQueued      int                `json:"sources_queued"`
-	SourcesExtracted   int                `json:"sources_extracted"`
-	SourcesSummarized  int                `json:"sources_summarized"`
-	SourcesRendered    int                `json:"sources_rendered"`
-	SourcesUnchanged   int                `json:"sources_unchanged"`
-	Errors             int                `json:"errors"`
-	StoppedReason      string             `json:"stopped_reason"`
-	FinalBacklog       store.BacklogStats `json:"final_backlog"`
-	StartedAt          time.Time          `json:"started_at,omitempty"`
-	CompletedAt        time.Time          `json:"completed_at,omitempty"`
-	Duration           time.Duration      `json:"duration"`
-	LastWorkCompleted  time.Time          `json:"last_work_completed,omitempty"`
-	LastIdleObservedAt time.Time          `json:"last_idle_observed_at,omitempty"`
+	Cycles                 int                `json:"cycles"`
+	WorkCycles             int                `json:"work_cycles"`
+	IdlePolls              int                `json:"idle_polls"`
+	SourcesQueued          int                `json:"sources_queued"`
+	SourcesExtracted       int                `json:"sources_extracted"`
+	SourcesSummarized      int                `json:"sources_summarized"`
+	SourcesRendered        int                `json:"sources_rendered"`
+	SourcesUnchanged       int                `json:"sources_unchanged"`
+	SummaryRetriesDeferred int                `json:"summary_retries_deferred"`
+	Errors                 int                `json:"errors"`
+	StoppedReason          string             `json:"stopped_reason"`
+	FinalBacklog           store.BacklogStats `json:"final_backlog"`
+	StartedAt              time.Time          `json:"started_at,omitempty"`
+	CompletedAt            time.Time          `json:"completed_at,omitempty"`
+	Duration               time.Duration      `json:"duration"`
+	LastWorkCompleted      time.Time          `json:"last_work_completed,omitempty"`
+	LastIdleObservedAt     time.Time          `json:"last_idle_observed_at,omitempty"`
 }
 
 func RunSources(ctx context.Context, backlogFn SourceBacklogFunc, runFn SourceRunFunc, opts SourceOptions) (SourceStats, error) {
@@ -64,6 +104,7 @@ func RunSources(ctx context.Context, backlogFn SourceBacklogFunc, runFn SourceRu
 
 	stats := SourceStats{StartedAt: opts.Now()}
 	var idleSince time.Time
+	failureOnlyCycles := 0
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -115,6 +156,7 @@ func RunSources(ctx context.Context, backlogFn SourceBacklogFunc, runFn SourceRu
 			stats.SourcesSummarized += batchStats.SourcesSummarized
 			stats.SourcesRendered += batchStats.SourcesRendered
 			stats.SourcesUnchanged += batchStats.SourcesUnchanged
+			stats.SummaryRetriesDeferred += batchStats.SummaryRetriesDeferred
 			stats.Errors += batchStats.Errors
 			stats.LastWorkCompleted = opts.Now()
 			if err != nil {
@@ -122,8 +164,38 @@ func RunSources(ctx context.Context, backlogFn SourceBacklogFunc, runFn SourceRu
 				stats.FinalBacklog = latestBacklog(ctx, backlogFn, stats.FinalBacklog)
 				return finalizeSourceStats(stats, opts.Now), err
 			}
+			afterBacklog, err := backlogFn(ctx)
+			if err != nil {
+				stats.StoppedReason = "backlog_error"
+				return finalizeSourceStats(stats, opts.Now), fmt.Errorf("load source backlog after cycle: %w", err)
+			}
+			stats.FinalBacklog = afterBacklog
+			if !sourceBacklogProgressed(backlog, afterBacklog, batchStats) {
+				stats.StoppedReason = "backlog_stalled"
+				return finalizeSourceStats(stats, opts.Now), newSourceBacklogStalledError(stats)
+			}
+			if batchStats.Errors > 0 &&
+				batchStats.SourcesExtracted == 0 &&
+				batchStats.SourcesSummarized == 0 &&
+				batchStats.SummaryRetriesDeferred > 0 {
+				failureOnlyCycles++
+				if failureOnlyCycles >= sourceSummaryFailureOnlyCycleLimit {
+					stats.StoppedReason = "backlog_stalled"
+					return finalizeSourceStats(stats, opts.Now), newSourceBacklogStalledError(stats)
+				}
+			} else {
+				failureOnlyCycles = 0
+			}
 			debugLog(opts.Logger, "worker source cycle completed", "sources_queued", batchStats.SourcesQueued, "sources_extracted", batchStats.SourcesExtracted, "sources_summarized", batchStats.SourcesSummarized, "sources_rendered", batchStats.SourcesRendered, "errors", batchStats.Errors)
 			continue
+		}
+
+		if stats.WorkCycles > 0 &&
+			stats.SourcesExtracted == 0 &&
+			stats.SourcesSummarized == 0 &&
+			stats.SummaryRetriesDeferred > 0 {
+			stats.StoppedReason = "backlog_stalled"
+			return finalizeSourceStats(stats, opts.Now), newSourceBacklogStalledError(stats)
 		}
 
 		now := opts.Now()
@@ -152,6 +224,24 @@ func RunSources(ctx context.Context, backlogFn SourceBacklogFunc, runFn SourceRu
 
 func hasSourceBacklog(backlog store.BacklogStats) bool {
 	return backlog.SourceExtractionPending > 0 || backlog.SourceSummaryPending > 0
+}
+
+func sourceBacklogProgressed(before store.BacklogStats, after store.BacklogStats, batch sourceenrich.Stats) bool {
+	if after.SourceExtractionPending < before.SourceExtractionPending ||
+		after.SourceSummaryPending < before.SourceSummaryPending {
+		return true
+	}
+	return batch.SummaryRetriesDeferred > 0 || batch.SourcesExtracted > 0 || batch.SourcesSummarized > 0
+}
+
+func newSourceBacklogStalledError(stats SourceStats) *SourceBacklogStalledError {
+	return &SourceBacklogStalledError{
+		Attempted:              stats.SourcesQueued,
+		Succeeded:              stats.SourcesExtracted + stats.SourcesSummarized,
+		Errors:                 stats.Errors,
+		SummaryRetriesDeferred: stats.SummaryRetriesDeferred,
+		FinalBacklog:           stats.FinalBacklog,
+	}
 }
 
 func latestBacklog(ctx context.Context, backlogFn SourceBacklogFunc, fallback store.BacklogStats) store.BacklogStats {

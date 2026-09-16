@@ -18,11 +18,7 @@ func runSources(ctx context.Context, cfg config.Config, st *store.Store, sources
 
 	results, err := processSourcesConcurrently(ctx, cfg, st, sources, opts, extractToolVersion, summaryToolVersion)
 	for _, result := range results {
-		stats.SourcesExtracted += result.Stats.SourcesExtracted
-		stats.SourcesSummarized += result.Stats.SourcesSummarized
-		stats.SourcesRendered += result.Stats.SourcesRendered
-		stats.SourcesUnchanged += result.Stats.SourcesUnchanged
-		stats.Errors += result.Stats.Errors
+		mergeStats(&stats, result.Stats)
 		if result.TouchedSourceID > 0 {
 			touchedSourceIDs[result.TouchedSourceID] = struct{}{}
 		}

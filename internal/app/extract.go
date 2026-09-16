@@ -193,6 +193,7 @@ func writeSourceEnrichStats(out interface {
 	_, _ = fmt.Fprintf(out, "Sources summarized: %d\n", stats.SourcesSummarized)
 	_, _ = fmt.Fprintf(out, "Sources rendered: %d\n", stats.SourcesRendered)
 	_, _ = fmt.Fprintf(out, "Source unchanged writes: %d\n", stats.SourcesUnchanged)
+	_, _ = fmt.Fprintf(out, "Summary retries deferred: %d\n", stats.SummaryRetriesDeferred)
 	_, _ = fmt.Fprintf(out, "Errors: %d\n", stats.Errors)
 	return nil
 }

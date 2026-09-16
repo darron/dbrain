@@ -37,6 +37,10 @@ func (s *Store) ensureSourceTables() error {
 			summary_prompt_version TEXT NOT NULL DEFAULT '',
 			summary_tool TEXT NOT NULL DEFAULT '',
 			summary_tool_version TEXT NOT NULL DEFAULT '',
+			summary_failure_count INTEGER NOT NULL DEFAULT 0,
+			summary_first_failed_at TEXT NOT NULL DEFAULT '',
+			summary_last_failed_at TEXT NOT NULL DEFAULT '',
+			summary_next_attempt_at TEXT NOT NULL DEFAULT '',
 			summarized_at TEXT NOT NULL DEFAULT '',
 			content_hash TEXT NOT NULL DEFAULT '',
 			note_path TEXT NOT NULL DEFAULT '',
@@ -88,6 +92,9 @@ func (s *Store) ensureSourceTables() error {
 	if err := s.ensureSourceSummaryVersionColumns(); err != nil {
 		return err
 	}
+	if err := s.ensureSourceSummaryRetrySchema(); err != nil {
+		return err
+	}
 
 	_, _ = s.db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS sources_fts USING fts5(
 		source_key UNINDEXED,
@@ -128,11 +135,27 @@ func (s *Store) ensureSourceColumns() error {
 		{Name: "summary_prompt_version", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "summary_tool", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "summary_tool_version", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_failure_count", Definition: "INTEGER NOT NULL DEFAULT 0"},
+		{Name: "summary_first_failed_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_last_failed_at", Definition: "TEXT NOT NULL DEFAULT ''"},
+		{Name: "summary_next_attempt_at", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "summarized_at", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "content_hash", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "note_path", Definition: "TEXT NOT NULL DEFAULT ''"},
 		{Name: "user_tags", Definition: "TEXT NOT NULL DEFAULT ''"},
 	})
+}
+
+func (s *Store) ensureSourceSummaryRetrySchema() error {
+	if err := s.ensureSourceColumns(); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_sources_summary_retry
+		ON sources(summary_status, summary_next_attempt_at)`); err != nil {
+		return fmt.Errorf("ensure source summary retry index: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) ensureSourceSummaryVersionColumns() error {

@@ -26,13 +26,15 @@ type ActivityStats struct {
 }
 
 type BacklogStats struct {
-	XHydrationPending             int           `json:"x_hydration_pending"`
-	LinkDiscoveryPending          int           `json:"link_discovery_pending"`
-	SourceExtractionPending       int           `json:"source_extraction_pending"`
-	SourceSummaryPending          int           `json:"source_summary_pending"`
-	SourceExtractionPendingByType []CountBucket `json:"source_extraction_pending_by_type"`
-	SourceSummaryPendingByType    []CountBucket `json:"source_summary_pending_by_type"`
-	Drained                       bool          `json:"drained"`
+	XHydrationPending                int           `json:"x_hydration_pending"`
+	LinkDiscoveryPending             int           `json:"link_discovery_pending"`
+	SourceExtractionPending          int           `json:"source_extraction_pending"`
+	SourceSummaryPending             int           `json:"source_summary_pending"`
+	SourceSummaryRetryDeferred       int           `json:"source_summary_retry_deferred"`
+	SourceExtractionPendingByType    []CountBucket `json:"source_extraction_pending_by_type"`
+	SourceSummaryPendingByType       []CountBucket `json:"source_summary_pending_by_type"`
+	SourceSummaryRetryDeferredByType []CountBucket `json:"source_summary_retry_deferred_by_type"`
+	Drained                          bool          `json:"drained"`
 }
 
 type PipelineStageRow struct {

@@ -452,7 +452,13 @@ outbox state lives under `<log_dir>/notifications/state.json`.
 
 This is not a process watchdog. Independent detection of process death,
 pre-readiness startup failure, or a stalled scheduler is deferred, as are the
-human acknowledgement/read receipts. Editing a checkout or sample config also
+human acknowledgement/read receipts. The source worker is an exception within
+the scheduled sync: if it finds eligible source work but a bounded sequence of
+summary-failure passes makes no useful durable progress, it returns a typed
+`sources` stage failure and the configured notification providers alert on the
+settled run. Summary failures are stored with candidate-scoped state and a
+6-hour retry cooldown, so the worker reports deferred retry debt instead of
+spinning on the same provider outage. Editing a checkout or sample config also
 does not activate an installed process; release, installation, production
 configuration, setting `notifications.enabled: true`, and service restart
 remain explicit operator steps.
@@ -1162,6 +1168,17 @@ final-attempt check before marking the source `dead` or `gone`. `sync all` will
 continue that retry progression naturally. For an urgent one-off row, use
 `dbrain extract sources --source <source_key> --force` to bypass cooldown for
 that specific source.
+
+Summary-provider failures use the same source candidate's extracted content,
+summary prompt, and summary tool identity to maintain durable retry state.
+Untried summary candidates are selected before due retries, and a summary
+failure is not immediately eligible again. Inspect `dbrain stats backlog` for
+`source_summary_retry_deferred`; a scheduled worker that cannot make durable
+progress exits its `sources` stage with `backlog_stalled`. Manual
+`dbrain worker sources` runs print the final eligible and deferred counts and
+return nonzero when they encounter a bounded stall, but do not send
+notifications. After the cooldown expires, a later invocation retries the
+deferred candidate.
 
 ## Operational Notes
 

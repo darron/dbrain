@@ -103,7 +103,7 @@ func (s *Store) Pipeline(ctx context.Context, promptVersion string, toolName str
 	}
 	readyForSummaryWhere := `extract_status IN ('` + model.SourceExtractStatusOK + `', '` + model.SourceExtractStatusEmpty + `') AND NOT ` + sourceExtractCoverageRepairWhere()
 	extractPendingWhere, extractPendingArgs := policy.extractBacklogWhere()
-	summaryStaleWhere, summaryArgs := sourceSummaryStaleWhere(policy.promptVersion, policy.toolName, policy.toolVersion)
+	summaryStaleWhere, summaryArgs := sourceSummaryStaleWhere(policy.now, policy.promptVersion, policy.toolName, policy.toolVersion)
 	summaryCurrent, err := s.countGroupedWhere(
 		ctx,
 		"sources",

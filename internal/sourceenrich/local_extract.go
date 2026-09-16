@@ -71,19 +71,22 @@ func processPreferredLocalExtract(processCtx sourceProcessContext) (sourceProces
 				result.Err = context.Canceled
 				return result, false, true
 			}
-			result.Stats.Errors++
 			debugLog(opts.Logger, "local source summarization failed", "source_key", source.SourceKey, "url", source.CanonicalURL, "error", err.Error())
-			if _, saveErr := st.SaveSourceSummary(ctx, source.ID, model.SummaryResult{
+			summary := model.SummaryResult{
 				Status:        model.SourceSummaryStatusError,
 				Error:         err.Error(),
 				Model:         opts.Model,
 				PromptVersion: SummaryPromptVersion,
 				Tool:          summarizecli.SummaryToolName(opts.Model),
 				ToolVersion:   processCtx.summaryToolVersion,
-			}); saveErr != nil {
+			}
+			changed, saveErr := st.SaveSourceSummary(ctx, source.ID, summary)
+			if saveErr != nil {
+				result.Stats.Errors++
 				result.Err = saveErr
 				return result, false, true
 			}
+			recordSummaryOutcome(&result.Stats, &result.SourceResult, sourceSummaryResult(cfg.RootDir, source, summary, changed), changed)
 			result.TouchedSourceID = source.ID
 			return result, false, true
 		}
@@ -91,12 +94,11 @@ func processPreferredLocalExtract(processCtx sourceProcessContext) (sourceProces
 		if changed, err := st.SaveSourceSummary(ctx, source.ID, runResult.Summary); err != nil {
 			result.Err = err
 			return result, false, true
-		} else if changed && runResult.Summary.Status == model.SourceSummaryStatusOK {
-			result.Stats.SourcesSummarized++
-			result.SourceResult = mergeSourceResult(result.SourceResult, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed))
-			debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
 		} else {
-			result.SourceResult = mergeSourceResult(result.SourceResult, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed))
+			recordSummaryOutcome(&result.Stats, &result.SourceResult, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed), changed)
+			if changed && runResult.Summary.Status == model.SourceSummaryStatusOK {
+				debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
+			}
 		}
 	}
 
@@ -147,18 +149,15 @@ func processStoredExtractSummary(processCtx sourceProcessContext) (sourceProcess
 		return result, true
 	}
 	debugLog(opts.Logger, "using stored extract for summary", "source_key", source.SourceKey, "url", source.CanonicalURL, "content_chars", len(storedExtract.Content))
-	if changed, status, summaryResult, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, processCtx.summaryToolVersion); err != nil {
+	if changed, _, summaryResult, err := summarizeFromExtract(ctx, cfg, st, source, storedExtract, opts, processCtx.summaryToolVersion); err != nil {
 		if isUserCancellation(ctx, err) {
 			result.Err = context.Canceled
 			return result, true
 		}
 		result.Err = err
 		return result, true
-	} else if changed && status == model.SourceSummaryStatusOK {
-		result.Stats.SourcesSummarized++
-		result.SourceResult = mergeSourceResult(result.SourceResult, summaryResult)
 	} else {
-		result.SourceResult = mergeSourceResult(result.SourceResult, summaryResult)
+		recordSummaryOutcome(&result.Stats, &result.SourceResult, summaryResult, changed)
 	}
 	result.TouchedSourceID = source.ID
 	return result, true

@@ -16,10 +16,22 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 		}
 
 		if result.Status == model.SourceSummaryStatusError {
+			now := time.Now().UTC()
+			failureCount, firstFailedAt, lastFailedAt, nextAttemptAt := 0, "", "", ""
+			if isSourceSummaryReady(current.ExtractStatus) {
+				failureCount, firstFailedAt, lastFailedAt, nextAttemptAt = nextSourceSummaryFailureState(current, result, now)
+			}
 			changed := current.SummaryStatus != result.Status ||
 				current.SummaryError != result.Error ||
+				current.SummaryModel != result.Model ||
+				current.SummaryContentHash != current.ContentHash ||
+				current.SummaryPromptVersion != result.PromptVersion ||
 				current.SummaryTool != result.Tool ||
-				current.SummaryToolVersion != result.ToolVersion
+				current.SummaryToolVersion != result.ToolVersion ||
+				current.SummaryFailureCount != failureCount ||
+				storedTimeString(current.SummaryFirstFailedAt) != firstFailedAt ||
+				storedTimeString(current.SummaryLastFailedAt) != lastFailedAt ||
+				storedTimeString(current.SummaryNextAttemptAt) != nextAttemptAt
 			if !changed {
 				return false, nil
 			}
@@ -27,15 +39,29 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 				UPDATE sources
 				SET summary_status = ?,
 					summary_error = ?,
+					summary_model = ?,
+					summary_content_hash = ?,
+					summary_prompt_version = ?,
 					summary_tool = ?,
 					summary_tool_version = ?,
+					summary_failure_count = ?,
+					summary_first_failed_at = ?,
+					summary_last_failed_at = ?,
+					summary_next_attempt_at = ?,
 					updated_at = ?
 				WHERE id = ?`,
 				result.Status,
 				result.Error,
+				result.Model,
+				current.ContentHash,
+				result.PromptVersion,
 				result.Tool,
 				result.ToolVersion,
-				time.Now().UTC().Format(time.RFC3339),
+				failureCount,
+				firstFailedAt,
+				lastFailedAt,
+				nextAttemptAt,
+				now.Format(time.RFC3339),
 				sourceID,
 			); err != nil {
 				return false, fmt.Errorf("save source summary error %d: %w", sourceID, err)
@@ -57,6 +83,10 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 			current.SummaryPromptVersion != result.PromptVersion ||
 			current.SummaryTool != result.Tool ||
 			current.SummaryToolVersion != result.ToolVersion ||
+			current.SummaryFailureCount != 0 ||
+			!current.SummaryFirstFailedAt.IsZero() ||
+			!current.SummaryLastFailedAt.IsZero() ||
+			!current.SummaryNextAttemptAt.IsZero() ||
 			current.SummarizedAt.UTC().Format(time.RFC3339) != summarizedAt
 
 		if !changed {
@@ -75,6 +105,10 @@ func (s *Store) SaveSourceSummary(ctx context.Context, sourceID int64, result mo
 				summary_prompt_version = ?,
 				summary_tool = ?,
 				summary_tool_version = ?,
+				summary_failure_count = 0,
+				summary_first_failed_at = '',
+				summary_last_failed_at = '',
+				summary_next_attempt_at = '',
 				summarized_at = ?,
 				updated_at = ?
 			WHERE id = ?`,

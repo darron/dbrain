@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -94,13 +95,12 @@ func newWorkerSourcesCommand(root *rootOptions) *cobra.Command {
 					Logger:        logger,
 				},
 			)
-			if err != nil {
-				return err
-			}
 			if jsonOut {
-				return writeJSON(cmd.OutOrStdout(), stats)
+				writeErr := writeJSON(cmd.OutOrStdout(), stats)
+				return errors.Join(err, writeErr)
 			}
-			return writeWorkerSourceStats(cmd.OutOrStdout(), stats)
+			writeErr := writeWorkerSourceStats(cmd.OutOrStdout(), stats)
+			return errors.Join(err, writeErr)
 		},
 	}
 
@@ -135,10 +135,12 @@ func writeWorkerSourceStats(dst interface{ Write([]byte) (int, error) }, stats w
 		{"Sources summarized", stats.SourcesSummarized},
 		{"Sources rendered", stats.SourcesRendered},
 		{"Source unchanged writes", stats.SourcesUnchanged},
+		{"Summary retries deferred", stats.SummaryRetriesDeferred},
 		{"Errors", stats.Errors},
 		{"Stopped", stats.StoppedReason},
 		{"Final source extraction pending", stats.FinalBacklog.SourceExtractionPending},
 		{"Final source summary pending", stats.FinalBacklog.SourceSummaryPending},
+		{"Final source summary retry deferred", stats.FinalBacklog.SourceSummaryRetryDeferred},
 		{"Started at", formatWorkerTime(stats.StartedAt)},
 		{"Completed at", formatWorkerTime(stats.CompletedAt)},
 		{"Duration", stats.Duration},
