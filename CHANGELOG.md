@@ -5,6 +5,16 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Source worker stall visibility (2026-09-16)
+
+- **Bounded source retries**: Summary-provider failures now persist
+  candidate-scoped retry state with a cooldown and prioritize untried work.
+  The repeated source worker stops with a typed `backlog_stalled` failure when
+  eligible work cannot make durable progress, exposes eligible/deferred counts
+  in CLI, JSON, backlog, and sync output, and lets scheduled sync notifications
+  surface the settled `sources` stage failure. Manual worker runs report the
+  failure without sending notifications.
+
 ### Build and test stability (2026-08-25)
 
 - **Reliable deferred-link lease coverage**: The admission independence test

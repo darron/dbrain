@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	currentSchemaVersion                       = 31
+	currentSchemaVersion                       = 32
 	auditProvenanceMigrationVersion            = 12
 	auditProvenanceMigrationName               = "audit_provenance_v1"
 	retrievalMigrationVersion                  = 13
@@ -50,6 +50,8 @@ const (
 	mastodonSyncStateName                      = "mastodon_sync_state_v1"
 	linkCaptureQueueVersion                    = 31
 	linkCaptureQueueName                       = "link_capture_queue_v1"
+	sourceSummaryRetryVersion                  = 32
+	sourceSummaryRetryName                     = "source_summary_retry_state_v1"
 )
 
 type schemaMigration struct {
@@ -310,6 +312,13 @@ var schemaMigrations = []schemaMigration{
 			return s.ensureLinkCaptureQueueSchema()
 		},
 	},
+	{
+		Version: sourceSummaryRetryVersion,
+		Name:    sourceSummaryRetryName,
+		Run: func(s *Store) error {
+			return s.ensureSourceSummaryRetrySchema()
+		},
+	},
 }
 
 func newRetrievalDatabaseID() (string, error) {
@@ -386,6 +395,11 @@ func (s *Store) migrate(reporter MigrationReporter) error {
 		return err
 	}
 	if err := s.ensureLinkCaptureQueueSchema(); err != nil {
+		return err
+	}
+	// Repair the source summary retry invariant even when migration metadata
+	// was stamped before its columns or index were fully created.
+	if err := s.ensureSourceSummaryRetrySchema(); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {

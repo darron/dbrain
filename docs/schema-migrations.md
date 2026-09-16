@@ -66,6 +66,8 @@ Current migration history:
 | 28      | `retrieval_projection_staging_expected_purge_epoch` | Persist the expected purge epoch for staged retrieval projections. |
 | 29      | `retrieval_segmented_dirty_trigger_repair` | Repair segmented retrieval dirty triggers after the v29 projection mutation. |
 | 30      | `mastodon_sync_state_v1` | Add per-account, per-origin Mastodon bookmark synchronization state with opaque resumable cursors, explicit incremental partial-page mode, bounded diagnostics, and stamped table/index repair. |
+| 31      | `link_capture_queue_v1` | Add durable link-capture admission state for deferred link discovery. |
+| 32      | `source_summary_retry_state_v1` | Persist candidate-scoped source summary failure state, cooldown timestamps, and the retry index used to stop repeated provider failures from spinning. |
 
 Version 1 is the adoption baseline, not a permanent "current schema" label.
 The current schema version is the highest registered migration version.

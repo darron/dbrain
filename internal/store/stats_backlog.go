@@ -47,10 +47,21 @@ func (s *Store) Backlog(ctx context.Context, promptVersion string, toolName stri
 		stats.SourceSummaryPending += bucket.Count
 	}
 
+	deferredWhere, deferredArgs := policy.summaryRetryDeferredWhere()
+	deferredBuckets, err := s.countGroupedWhere(ctx, "sources", "source_type", deferredWhere, deferredArgs...)
+	if err != nil {
+		return BacklogStats{}, err
+	}
+	stats.SourceSummaryRetryDeferredByType = deferredBuckets
+	for _, bucket := range deferredBuckets {
+		stats.SourceSummaryRetryDeferred += bucket.Count
+	}
+
 	stats.Drained = stats.XHydrationPending == 0 &&
 		stats.LinkDiscoveryPending == 0 &&
 		stats.SourceExtractionPending == 0 &&
-		stats.SourceSummaryPending == 0
+		stats.SourceSummaryPending == 0 &&
+		stats.SourceSummaryRetryDeferred == 0
 
 	return stats, nil
 }

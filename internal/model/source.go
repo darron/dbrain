@@ -32,6 +32,10 @@ type SourceDocument struct {
 	SummaryPromptVersion string    `json:"summary_prompt_version"`
 	SummaryTool          string    `json:"summary_tool"`
 	SummaryToolVersion   string    `json:"summary_tool_version"`
+	SummaryFailureCount  int       `json:"summary_failure_count"`
+	SummaryFirstFailedAt time.Time `json:"summary_first_failed_at"`
+	SummaryLastFailedAt  time.Time `json:"summary_last_failed_at"`
+	SummaryNextAttemptAt time.Time `json:"summary_next_attempt_at"`
 	SummarizedAt         time.Time `json:"summarized_at"`
 	ContentHash          string    `json:"content_hash"`
 	NotePath             string    `json:"note_path"`

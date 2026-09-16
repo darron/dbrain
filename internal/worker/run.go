@@ -15,6 +15,43 @@ type SourceBacklogFunc func(context.Context) (store.BacklogStats, error)
 
 type SourceRunFunc func(context.Context, int) (sourceenrich.Stats, error)
 
+const sourceSummaryFailureOnlyCycleLimit = 3
+
+// ErrSourceBacklogStalled identifies a source worker that found eligible work
+// but exhausted a bounded pass without successful durable advancement. A
+// retryable failure may still move a candidate into deferred retry state; the
+// worker treats repeated failure-only batches as stalled after its bound. The
+// sentinel is intentionally independent of provider error text so the
+// scheduled notification classifier can use the existing sources-stage type.
+var ErrSourceBacklogStalled = errors.New("source backlog stalled")
+
+type SourceBacklogStalledError struct {
+	Attempted    int
+	Succeeded    int
+	Errors       int
+	FinalBacklog store.BacklogStats
+}
+
+func (e *SourceBacklogStalledError) Error() string {
+	if e == nil {
+		return ErrSourceBacklogStalled.Error()
+	}
+	return fmt.Sprintf(
+		"%s: attempted=%d succeeded=%d errors=%d eligible_extraction=%d eligible_summary=%d deferred_summary=%d",
+		ErrSourceBacklogStalled,
+		e.Attempted,
+		e.Succeeded,
+		e.Errors,
+		e.FinalBacklog.SourceExtractionPending,
+		e.FinalBacklog.SourceSummaryPending,
+		e.FinalBacklog.SourceSummaryRetryDeferred,
+	)
+}
+
+func (e *SourceBacklogStalledError) Unwrap() error {
+	return ErrSourceBacklogStalled
+}
+
 type SourceOptions struct {
 	Watch         bool
 	PollInterval  time.Duration
@@ -64,6 +101,7 @@ func RunSources(ctx context.Context, backlogFn SourceBacklogFunc, runFn SourceRu
 
 	stats := SourceStats{StartedAt: opts.Now()}
 	var idleSince time.Time
+	failureOnlyCycles := 0
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -122,8 +160,35 @@ func RunSources(ctx context.Context, backlogFn SourceBacklogFunc, runFn SourceRu
 				stats.FinalBacklog = latestBacklog(ctx, backlogFn, stats.FinalBacklog)
 				return finalizeSourceStats(stats, opts.Now), err
 			}
+			afterBacklog, err := backlogFn(ctx)
+			if err != nil {
+				stats.StoppedReason = "backlog_error"
+				return finalizeSourceStats(stats, opts.Now), fmt.Errorf("load source backlog after cycle: %w", err)
+			}
+			stats.FinalBacklog = afterBacklog
+			if !sourceBacklogProgressed(backlog, afterBacklog, batchStats) {
+				stats.StoppedReason = "backlog_stalled"
+				return finalizeSourceStats(stats, opts.Now), newSourceBacklogStalledError(stats)
+			}
+			if batchStats.Errors > 0 &&
+				batchStats.SourcesExtracted == 0 &&
+				batchStats.SourcesSummarized == 0 &&
+				afterBacklog.SourceSummaryRetryDeferred > backlog.SourceSummaryRetryDeferred {
+				failureOnlyCycles++
+				if failureOnlyCycles >= sourceSummaryFailureOnlyCycleLimit {
+					stats.StoppedReason = "backlog_stalled"
+					return finalizeSourceStats(stats, opts.Now), newSourceBacklogStalledError(stats)
+				}
+			} else {
+				failureOnlyCycles = 0
+			}
 			debugLog(opts.Logger, "worker source cycle completed", "sources_queued", batchStats.SourcesQueued, "sources_extracted", batchStats.SourcesExtracted, "sources_summarized", batchStats.SourcesSummarized, "sources_rendered", batchStats.SourcesRendered, "errors", batchStats.Errors)
 			continue
+		}
+
+		if stats.WorkCycles > 0 && backlog.SourceSummaryRetryDeferred > 0 {
+			stats.StoppedReason = "backlog_stalled"
+			return finalizeSourceStats(stats, opts.Now), newSourceBacklogStalledError(stats)
 		}
 
 		now := opts.Now()
@@ -152,6 +217,24 @@ func RunSources(ctx context.Context, backlogFn SourceBacklogFunc, runFn SourceRu
 
 func hasSourceBacklog(backlog store.BacklogStats) bool {
 	return backlog.SourceExtractionPending > 0 || backlog.SourceSummaryPending > 0
+}
+
+func sourceBacklogProgressed(before store.BacklogStats, after store.BacklogStats, batch sourceenrich.Stats) bool {
+	if after.SourceExtractionPending < before.SourceExtractionPending ||
+		after.SourceSummaryPending < before.SourceSummaryPending ||
+		after.SourceSummaryRetryDeferred > before.SourceSummaryRetryDeferred {
+		return true
+	}
+	return batch.SourcesExtracted > 0 || batch.SourcesSummarized > 0
+}
+
+func newSourceBacklogStalledError(stats SourceStats) *SourceBacklogStalledError {
+	return &SourceBacklogStalledError{
+		Attempted:    stats.SourcesQueued,
+		Succeeded:    stats.SourcesExtracted + stats.SourcesSummarized,
+		Errors:       stats.Errors,
+		FinalBacklog: stats.FinalBacklog,
+	}
 }
 
 func latestBacklog(ctx context.Context, backlogFn SourceBacklogFunc, fallback store.BacklogStats) store.BacklogStats {

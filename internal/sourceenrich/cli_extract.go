@@ -136,12 +136,11 @@ func processDefaultCLIExtract(processCtx sourceProcessContext) sourceProcessResu
 		if changed, err := st.SaveSourceSummary(ctx, source.ID, runResult.Summary); err != nil {
 			result.Err = err
 			return result
-		} else if changed && runResult.Summary.Status == model.SourceSummaryStatusOK {
-			result.Stats.SourcesSummarized++
-			result.SourceResult = mergeSourceResult(result.SourceResult, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed))
-			debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
 		} else {
-			result.SourceResult = mergeSourceResult(result.SourceResult, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed))
+			recordSummaryOutcome(&result.Stats, &result.SourceResult, sourceSummaryResult(cfg.RootDir, source, runResult.Summary, changed), changed)
+			if changed && runResult.Summary.Status == model.SourceSummaryStatusOK {
+				debugLog(opts.Logger, "source summary saved", "source_key", source.SourceKey, "url", source.CanonicalURL, "summary_chars", len(runResult.Summary.Text), "model", runResult.Summary.Model, "tool", runResult.Summary.Tool)
+			}
 		}
 	}
 

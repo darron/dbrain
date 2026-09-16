@@ -88,6 +88,6 @@ func (s *Server) toolStatsBacklog(ctx context.Context) (map[string]interface{}, 
 	if err != nil {
 		return nil, err
 	}
-	text := fmt.Sprintf("Queue drained: %t\nSource extraction pending: %d\nSource summary pending: %d", stats.Drained, stats.SourceExtractionPending, stats.SourceSummaryPending)
+	text := fmt.Sprintf("Queue drained: %t\nSource extraction pending: %d\nSource summary pending: %d\nSource summary retry deferred: %d", stats.Drained, stats.SourceExtractionPending, stats.SourceSummaryPending, stats.SourceSummaryRetryDeferred)
 	return toolOKResult(text, stats), nil
 }

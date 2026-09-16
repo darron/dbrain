@@ -26,6 +26,16 @@ func sourceSummaryResult(rootDir string, source model.SourceDocument, summary mo
 	return result
 }
 
+func recordSummaryOutcome(stats *Stats, sourceResult *SourceResult, update SourceResult, changed bool) {
+	if update.SummaryStatus == model.SourceSummaryStatusError {
+		stats.Errors++
+	}
+	if changed && update.SummaryStatus == model.SourceSummaryStatusOK {
+		stats.SourcesSummarized++
+	}
+	*sourceResult = mergeSourceResult(*sourceResult, update)
+}
+
 func summaryProviderFields(rootDir string, modelName string) (string, string, string) {
 	reg, err := llmprovider.RegistryForRoot(rootDir)
 	if err != nil {

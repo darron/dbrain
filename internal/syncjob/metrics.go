@@ -406,7 +406,7 @@ func emitSourceSummaryMetric(run metrics.RunContext, result sourceenrich.SourceR
 	if !detailIncludesItem(run) {
 		return
 	}
-	if !result.SummaryCreated {
+	if !result.SummaryCreated && result.SummaryStatus != model.SourceSummaryStatusError {
 		return
 	}
 	status := summaryMetricStatus(result)

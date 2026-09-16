@@ -276,7 +276,7 @@ func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotent
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 10 ||
+	if len(events) != 12 ||
 		events[0].Phase != MigrationStarted ||
 		events[1].Phase != MigrationApplied ||
 		events[0].Version != semanticRefreshRunsArchiveMigrationVersion ||
@@ -306,8 +306,14 @@ func TestSemanticRefreshRunsArchiveMigrationUpgradesGenuineV26DatabaseIdempotent
 		events[8].Version != linkCaptureQueueVersion ||
 		events[9].Version != linkCaptureQueueVersion ||
 		events[8].Name != linkCaptureQueueName ||
-		events[9].Name != linkCaptureQueueName {
-		t.Fatalf("v27-v31 migration events=%+v", events)
+		events[9].Name != linkCaptureQueueName ||
+		events[10].Phase != MigrationStarted ||
+		events[11].Phase != MigrationApplied ||
+		events[10].Version != sourceSummaryRetryVersion ||
+		events[11].Version != sourceSummaryRetryVersion ||
+		events[10].Name != sourceSummaryRetryName ||
+		events[11].Name != sourceSummaryRetryName {
+		t.Fatalf("v27-v32 migration events=%+v", events)
 	}
 	got, err := st.LatestSemanticRefreshRun(t.Context(), "profile-a")
 	if err != nil || got == nil {
@@ -2300,6 +2306,66 @@ func TestOpenRepairsLegacyMediaSchemaBeforeCreatingRetryIndex(t *testing.T) {
 	var indexName string
 	if err := st.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_media_assets_download_retry'`).Scan(&indexName); err != nil {
 		t.Fatalf("expected retry index after schema repair: %v", err)
+	}
+	assertCurrentSchemaMigration(t, st.db)
+}
+
+func TestOpenRepairsSourceSummaryRetrySchema(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "brain.db")
+	st := openCurrentTestStoreAtPath(t, path)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close current store: %v", err)
+	}
+
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatalf("open sqlite directly: %v", err)
+	}
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_sources_summary_retry`); err != nil {
+		t.Fatalf("drop source summary retry index: %v", err)
+	}
+	for _, column := range []string{
+		"summary_next_attempt_at",
+		"summary_last_failed_at",
+		"summary_first_failed_at",
+		"summary_failure_count",
+	} {
+		if _, err := db.Exec(`ALTER TABLE sources DROP COLUMN ` + column); err != nil {
+			t.Fatalf("drop legacy source column %s: %v", column, err)
+		}
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = ?`, sourceSummaryRetryVersion); err != nil {
+		t.Fatalf("delete source summary retry migration: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = ` + fmt.Sprint(currentSchemaVersion-1)); err != nil {
+		t.Fatalf("set old user_version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite directly: %v", err)
+	}
+
+	st = openCurrentTestStoreAtPath(t, path)
+	defer func() { _ = st.Close() }()
+
+	for _, column := range []string{
+		"summary_failure_count",
+		"summary_first_failed_at",
+		"summary_last_failed_at",
+		"summary_next_attempt_at",
+	} {
+		var found int
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sources') WHERE name = ?`, column).Scan(&found); err != nil {
+			t.Fatalf("check source column %s: %v", column, err)
+		}
+		if found != 1 {
+			t.Fatalf("expected sources.%s to be repaired, found=%d", column, found)
+		}
+	}
+	var indexName string
+	if err := st.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_sources_summary_retry'`).Scan(&indexName); err != nil {
+		t.Fatalf("expected source summary retry index after schema repair: %v", err)
 	}
 	assertCurrentSchemaMigration(t, st.db)
 }

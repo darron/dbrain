@@ -7,7 +7,10 @@ import (
 	"github.com/darron/dbrain/internal/model"
 )
 
-const sourceExtractErrorRetryCooldown = 12 * time.Hour
+const (
+	sourceExtractErrorRetryCooldown = 12 * time.Hour
+	sourceSummaryErrorRetryCooldown = 12 * time.Hour
+)
 
 type sourceEnrichmentPolicy struct {
 	now           time.Time
@@ -37,6 +40,15 @@ func isExtractFailureStatus(status string) bool {
 	}
 }
 
+func isSourceSummaryReady(status string) bool {
+	switch strings.TrimSpace(status) {
+	case model.SourceExtractStatusOK, model.SourceExtractStatusEmpty:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p sourceEnrichmentPolicy) extractBacklogWhere() (string, []any) {
 	return `(
 		extract_status = ''
@@ -51,13 +63,36 @@ func (p sourceEnrichmentPolicy) extractBacklogWhere() (string, []any) {
 			)
 		)
 	)`, []any{
-			p.now.Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
-		}
+		p.now.Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
+	}
 }
 
 func (p sourceEnrichmentPolicy) summaryBacklogWhere() (string, []any) {
-	staleWhere, args := sourceSummaryStaleWhere(p.promptVersion, p.toolName, p.toolVersion)
+	staleWhere, args := sourceSummaryStaleWhere(p.now, p.promptVersion, p.toolName, p.toolVersion)
 	return `extract_status IN ('` + model.SourceExtractStatusOK + `', '` + model.SourceExtractStatusEmpty + `') AND ` + staleWhere, args
+}
+
+func (p sourceEnrichmentPolicy) summaryRetryDeferredWhere() (string, []any) {
+	parts := []string{
+		`extract_status IN ('` + model.SourceExtractStatusOK + `', '` + model.SourceExtractStatusEmpty + `')`,
+		`summary_status = '` + model.SourceSummaryStatusError + `'`,
+		`summary_content_hash = content_hash`,
+		`summary_next_attempt_at != '' AND summary_next_attempt_at > ?`,
+	}
+	args := []any{p.now.Format(time.RFC3339)}
+	if p.promptVersion != "" {
+		parts = append(parts, "summary_prompt_version = ?")
+		args = append(args, p.promptVersion)
+	}
+	if p.toolName != "" {
+		parts = append(parts, "summary_tool = ?")
+		args = append(args, p.toolName)
+	}
+	if p.toolVersion != "" {
+		parts = append(parts, "summary_tool_version = ?")
+		args = append(args, p.toolVersion)
+	}
+	return strings.Join(parts, " AND "), args
 }
 
 func (p sourceEnrichmentPolicy) candidateWhere(summarize bool) (string, []any) {
@@ -152,11 +187,14 @@ func sourceSummaryCoverageRepairWhere() string {
 	)`
 }
 
-func sourceSummaryStaleWhere(promptVersion string, toolName string, toolVersion string) (string, []any) {
-	parts := []string{
-		"(summary_status = '' OR summary_status = '" + model.SourceSummaryStatusError + "' OR summary_content_hash != content_hash OR " + sourceSummaryCoverageRepairWhere(),
+func sourceSummaryStaleWhere(now time.Time, promptVersion string, toolName string, toolVersion string) (string, []any) {
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
-	args := []any{}
+	parts := []string{
+		"(summary_status = '' OR (summary_status = '" + model.SourceSummaryStatusError + "' AND (summary_next_attempt_at = '' OR summary_next_attempt_at <= ?)) OR summary_content_hash != content_hash OR " + sourceSummaryCoverageRepairWhere(),
+	}
+	args := []any{now.UTC().Format(time.RFC3339)}
 	if strings.TrimSpace(promptVersion) != "" {
 		parts[0] += " OR summary_prompt_version != ?"
 		args = append(args, promptVersion)

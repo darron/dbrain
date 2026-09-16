@@ -29,6 +29,10 @@ func (s *Store) invalidateLinkedXArticleSourcesTx(ctx context.Context, tx *sql.T
 			summary_prompt_version = '',
 			summary_tool = '',
 			summary_tool_version = '',
+			summary_failure_count = 0,
+			summary_first_failed_at = '',
+			summary_last_failed_at = '',
+			summary_next_attempt_at = '',
 			summarized_at = '',
 			content_hash = '',
 			updated_at = ?

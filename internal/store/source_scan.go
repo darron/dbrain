@@ -8,12 +8,13 @@ const sourceSelectColumns = `
 	extract_first_failed_at, extract_last_failed_at, extracted_at,
 	extract_tool, extract_tool_version,
 	summary_text, summary_json, summary_status, summary_error, summary_model, summary_content_hash, summary_prompt_version,
-	summary_tool, summary_tool_version, summarized_at,
+	summary_tool, summary_tool_version, summary_failure_count, summary_first_failed_at, summary_last_failed_at, summary_next_attempt_at, summarized_at,
 	content_hash, note_path, user_tags, created_at, updated_at`
 
 func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.SourceDocument) error {
 	var extractedAt, summarizedAt, createdAt, updatedAt string
 	var extractFirstFailedAt, extractLastFailedAt string
+	var summaryFirstFailedAt, summaryLastFailedAt, summaryNextAttemptAt string
 	if err := scanner.Scan(
 		&source.ID,
 		&source.SourceKey,
@@ -44,6 +45,10 @@ func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.Sour
 		&source.SummaryPromptVersion,
 		&source.SummaryTool,
 		&source.SummaryToolVersion,
+		&source.SummaryFailureCount,
+		&summaryFirstFailedAt,
+		&summaryLastFailedAt,
+		&summaryNextAttemptAt,
 		&summarizedAt,
 		&source.ContentHash,
 		&source.NotePath,
@@ -57,6 +62,9 @@ func scanSource(scanner interface{ Scan(dest ...any) error }, source *model.Sour
 	source.ExtractedAt = parseStoredTime(extractedAt)
 	source.ExtractFirstFailedAt = parseStoredTime(extractFirstFailedAt)
 	source.ExtractLastFailedAt = parseStoredTime(extractLastFailedAt)
+	source.SummaryFirstFailedAt = parseStoredTime(summaryFirstFailedAt)
+	source.SummaryLastFailedAt = parseStoredTime(summaryLastFailedAt)
+	source.SummaryNextAttemptAt = parseStoredTime(summaryNextAttemptAt)
 	source.SummarizedAt = parseStoredTime(summarizedAt)
 	source.CreatedAt = parseStoredTime(createdAt)
 	source.UpdatedAt = parseStoredTime(updatedAt)

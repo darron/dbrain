@@ -51,13 +51,10 @@ func persistExtractAndSummaryFromExtract(ctx context.Context, cfg config.Config,
 		return stats, sourceResult, nil
 	}
 
-	if changed, status, summaryResult, err := summarizeFromExtract(ctx, cfg, st, source, extract, opts, summaryToolVersion); err != nil {
+	if changed, _, summaryResult, err := summarizeFromExtract(ctx, cfg, st, source, extract, opts, summaryToolVersion); err != nil {
 		return stats, sourceResult, err
-	} else if changed && status == model.SourceSummaryStatusOK {
-		stats.SourcesSummarized++
-		sourceResult = mergeSourceResult(sourceResult, summaryResult)
 	} else {
-		sourceResult = mergeSourceResult(sourceResult, summaryResult)
+		recordSummaryOutcome(&stats, &sourceResult, summaryResult, changed)
 	}
 
 	return stats, sourceResult, nil

@@ -128,6 +128,104 @@ func TestRunSourcesReturnsRunError(t *testing.T) {
 	}
 }
 
+func TestRunSourcesStopsWhenEligibleBacklogDoesNotMove(t *testing.T) {
+	t.Parallel()
+
+	backlog := store.BacklogStats{SourceSummaryPending: 3}
+	runCalls := 0
+	stats, err := RunSources(
+		context.Background(),
+		func(context.Context) (store.BacklogStats, error) { return backlog, nil },
+		func(context.Context, int) (sourceenrich.Stats, error) {
+			runCalls++
+			return sourceenrich.Stats{SourcesQueued: 3, Errors: 3}, nil
+		},
+		SourceOptions{Now: func() time.Time { return time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC) }},
+	)
+
+	var stalled *SourceBacklogStalledError
+	if !errors.As(err, &stalled) || !errors.Is(err, ErrSourceBacklogStalled) {
+		t.Fatalf("expected typed stalled error, got %T: %v", err, err)
+	}
+	if runCalls != 1 || stats.StoppedReason != "backlog_stalled" || stats.FinalBacklog.SourceSummaryPending != 3 {
+		t.Fatalf("unexpected stalled worker state: calls=%d stats=%+v", runCalls, stats)
+	}
+	if stalled.Attempted != 3 || stalled.Errors != 3 || stalled.Succeeded != 0 {
+		t.Fatalf("unexpected stalled diagnostics: %+v", stalled)
+	}
+}
+
+func TestRunSourcesReportsDeferredSummaryFailuresAfterAWorkPass(t *testing.T) {
+	t.Parallel()
+
+	backlogs := []store.BacklogStats{
+		{SourceSummaryPending: 1},
+		{SourceSummaryRetryDeferred: 1},
+		{SourceSummaryRetryDeferred: 1},
+	}
+	var backlogCalls int
+	backlogFn := func(context.Context) (store.BacklogStats, error) {
+		current := backlogs[backlogCalls]
+		if backlogCalls < len(backlogs)-1 {
+			backlogCalls++
+		}
+		return current, nil
+	}
+
+	stats, err := RunSources(
+		context.Background(),
+		backlogFn,
+		func(context.Context, int) (sourceenrich.Stats, error) {
+			return sourceenrich.Stats{SourcesQueued: 1, Errors: 1}, nil
+		},
+		SourceOptions{Now: func() time.Time { return time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC) }},
+	)
+
+	if !errors.Is(err, ErrSourceBacklogStalled) || stats.StoppedReason != "backlog_stalled" {
+		t.Fatalf("expected deferred failure to stop as stalled, stats=%+v err=%v", stats, err)
+	}
+	if stats.FinalBacklog.SourceSummaryRetryDeferred != 1 {
+		t.Fatalf("expected deferred retry debt in final backlog, got %+v", stats.FinalBacklog)
+	}
+}
+
+func TestRunSourcesBoundsFailureOnlySummaryCycles(t *testing.T) {
+	t.Parallel()
+
+	backlogs := []store.BacklogStats{
+		{SourceSummaryPending: 4},
+		{SourceSummaryPending: 3, SourceSummaryRetryDeferred: 1},
+		{SourceSummaryPending: 3, SourceSummaryRetryDeferred: 1},
+		{SourceSummaryPending: 2, SourceSummaryRetryDeferred: 2},
+		{SourceSummaryPending: 2, SourceSummaryRetryDeferred: 2},
+		{SourceSummaryPending: 1, SourceSummaryRetryDeferred: 3},
+	}
+	backlogCalls := 0
+	backlogFn := func(context.Context) (store.BacklogStats, error) {
+		current := backlogs[backlogCalls]
+		backlogCalls++
+		return current, nil
+	}
+	runCalls := 0
+
+	stats, err := RunSources(
+		context.Background(),
+		backlogFn,
+		func(context.Context, int) (sourceenrich.Stats, error) {
+			runCalls++
+			return sourceenrich.Stats{SourcesQueued: 1, Errors: 1}, nil
+		},
+		SourceOptions{Now: func() time.Time { return time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC) }},
+	)
+
+	if !errors.Is(err, ErrSourceBacklogStalled) || stats.StoppedReason != "backlog_stalled" {
+		t.Fatalf("expected bounded failure-only pass to stop as stalled, stats=%+v err=%v", stats, err)
+	}
+	if runCalls != sourceSummaryFailureOnlyCycleLimit || stats.FinalBacklog.SourceSummaryRetryDeferred != 3 {
+		t.Fatalf("unexpected failure-only bound: calls=%d limit=%d stats=%+v", runCalls, sourceSummaryFailureOnlyCycleLimit, stats)
+	}
+}
+
 func TestRunSourcesStopsAtMaxSources(t *testing.T) {
 	t.Parallel()
 
