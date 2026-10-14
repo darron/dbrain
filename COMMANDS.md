@@ -493,6 +493,13 @@ dbrain install --yes --summary-model ollama/dbrain:2026042701 --categorize-model
 Direct X bookmark import path. Requires a supported browser profile with valid
 X cookies. Chrome/Chromium is the best-tested path.
 
+If cookie-store access reports `operation not permitted` on macOS, grant Full
+Disk Access to the app/executable associated with this run and fully quit and
+reopen it before retrying. When using Rex, check Rex and its Rex Server helper;
+permissions verified from another terminal or the launchd service do not prove
+that a Rex-launched import can read the same browser store. A Keychain error
+requires separate decryption/access troubleshooting.
+
 ```sh
 dbrain import x-bookmarks --limit 25
 ```

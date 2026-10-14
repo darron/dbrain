@@ -196,10 +196,20 @@ Optional hosted services:
 - **OpenRouter**: `DBRAIN_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY` for hosted categorization, OCR, and model calls.
 - **S3-compatible storage / Cloudflare R2**: R2/S3 env or config values for media and SQLite archives.
 
-Apple Notes import is local and direct-SQLite. On macOS it may require granting
-Full Disk Access to the `dbrain` binary or, more reliably for local builds, to
-the terminal or IDE app launching it. Rebuilding `bin/dbrain` may invalidate a
-binary-specific permission grant.
+Apple Notes and Safari tab imports read protected local SQLite stores. X and
+YouTube imports also need access to the selected browser's cookie store. On
+macOS, `operation not permitted` while opening or copying one of these stores
+means access was denied before the importer could read it; it does not establish
+that a login cookie is absent or expired.
+
+Grant Full Disk Access in System Settings > Privacy & Security to the app or
+executable macOS associates with the failing run, then fully quit and reopen
+that app before retrying. For Rex, check the Rex app and, if access still fails,
+its Rex Server helper. A successful run from Terminal or the launchd service
+does not verify permissions for a Rex-launched run. Rebuilding `bin/dbrain` may
+invalidate a binary-specific permission grant. dbrain cannot grant these
+permissions automatically. Browser Keychain/decryption errors are separate
+from cookie-store filesystem access errors.
 
 For development in this checkout without touching installed state:
 

@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### X browser cookie access diagnostics (2026-10-13)
+
+- **Actionable permission failures**: X cookie lookup now distinguishes denied
+  browser-store access from a missing login cookie, including warning-only
+  failures from the cookie reader. Diagnostics explain macOS Full Disk Access
+  for the actual launching app/executable, including Rex and its server helper;
+  successful fallback profiles remain usable. Recovery instructions and
+  synthetic regression coverage require no live browser or Keychain access.
+
 ### Source worker stall visibility (2026-09-16)
 
 - **Bounded source retries**: Summary-provider failures now persist
