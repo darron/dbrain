@@ -81,6 +81,7 @@ func TestReportStoreUsesPrivateFixedDailyPathsAndExactProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 14, 1, 2, 3, 0, time.UTC)
+	store.now = func() time.Time { return now }
 	fast := testStoredReport(t, ProfileFast, now, StatusPass)
 	standard := testStoredReport(t, ProfileStandard, now.Add(time.Minute), StatusUnknown)
 	if err := store.Save(fast); err != nil {
@@ -130,6 +131,7 @@ func TestReportStoreRotatesUTCAndIsolatesMalformedLines(t *testing.T) {
 	}
 	first := testStoredReport(t, ProfileFast, time.Date(2026, 7, 14, 23, 59, 59, 0, time.UTC), StatusPass)
 	second := testStoredReport(t, ProfileFast, time.Date(2026, 7, 15, 0, 0, 1, 0, time.UTC), StatusUnknown)
+	store.now = func() time.Time { return second.CompletedAt }
 	if err := store.Save(first); err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +167,7 @@ func TestReportStoreSeparatesUnterminatedTailBeforeSavingValidReport(t *testing.
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 14, 5, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
 	path := filepath.Join(logDir, "audit", "reports", "2026-07-14.jsonl")
 	if err := os.WriteFile(path, []byte(`{"crash_truncated":`), 0o600); err != nil {
 		t.Fatal(err)
@@ -258,6 +261,7 @@ func TestReportStoreSkipsTrailingGarbageAndRepairsPrivateModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 14, 4, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
 	valid := testStoredReport(t, ProfileFast, now, StatusPass)
 	if err := store.Save(valid); err != nil {
 		t.Fatal(err)
@@ -439,6 +443,7 @@ func TestReportReaderOpenedBeforeWriterSeesLaterReports(t *testing.T) {
 		t.Fatalf("NewReportStore: %v", err)
 	}
 	report := testStoredReport(t, ProfileStandard, time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC), StatusPass)
+	writer.now = func() time.Time { return report.CompletedAt }
 	if err := writer.Save(report); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

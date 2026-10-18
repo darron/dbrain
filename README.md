@@ -148,7 +148,11 @@ when you want the whole install colocated under one directory.
 
 The end-user Homebrew requirements are installed before `dbrain install` in the
 quickstart above. For development in this checkout, install the Go toolchain,
-task runner, linter, and inspection tools separately:
+task runner, linter, and inspection tools separately.
+
+Use Go 1.27.2 or newer and golangci-lint 2.15.0. All CI, candidate, and stable
+release builds select the Go version from `go.mod`; keep that directive current
+with stable Go releases and use the same toolchain for local validation.
 
 ```sh
 brew install go go-task/tap/go-task golangci-lint sqlite yt-dlp ffmpeg node deno ollama tesseract whisper-cpp

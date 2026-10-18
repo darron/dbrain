@@ -1,6 +1,6 @@
 module github.com/darron/dbrain
 
-go 1.26.1
+go 1.27.2
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.6

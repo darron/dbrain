@@ -339,7 +339,9 @@ func TestAcquireContextCancellationDoesNotWaitForCoordinatorCleanup(t *testing.T
 		t.Fatalf("close coordinator: %v", err)
 	}
 	if !prompt {
-		<-result
+		if err := <-result; err != nil {
+			t.Logf("acquire after coordinator cleanup: %v", err)
+		}
 		t.Fatal("cancelled writer waited for indefinitely held coordinator cleanup")
 	}
 	if !errors.Is(acquireErr, context.Canceled) {
