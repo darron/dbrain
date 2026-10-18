@@ -11,6 +11,8 @@ development date for the change set.
   and devalue to 5.9.4, including refreshed embedded web assets.
 - **Current Go toolchain**: Raised the module and all CI/release builds to Go
   1.27.2, with golangci-lint 2.15.0 and the matching formatting and lint fixes.
+- **macOS release minimum**: All Darwin binaries now require macOS 13 Ventura
+  or later with Go 1.27; the native USearch deployment target is 13.0.
 - **Stable retention tests**: Fixed the audit report tests' clocks so dated
   fixtures remain valid as the calendar advances, preserving the production
   90-day retention policy and its dedicated coverage.

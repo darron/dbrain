@@ -7,7 +7,7 @@ vars:
   USEARCH_COMMIT: "cc23bbaf21ef52313c5a495adbc40cbd733cdcfb"
   USEARCH_SOURCE_URL: "https://proxy.golang.org/github.com/unum-cloud/usearch/@v/v2.26.0+incompatible.zip"
   USEARCH_SOURCE_SHA256: "54f280b044757a391a6905b0850ad96789b6b2ce7c20ec9511b3b4628e27b0bd"
-  USEARCH_MACOS_DEPLOYMENT_TARGET: "12.0"
+  USEARCH_MACOS_DEPLOYMENT_TARGET: "13.0"
   USEARCH_BUILD_ROOT: "/private/tmp/dbrain-usearch-v2.26.0-darwin-arm64"
   USEARCH_STAGE_DIR: "{{.USEARCH_BUILD_ROOT}}/stage"
   USEARCH_RACE_PACKAGES: "./cmd/devtools/semantic_usearch_bakeoff ./cmd/devtools/semantic_usearch_segment_flush ./internal/annbakeoff ./internal/app ./internal/brainresearch ./internal/semanticbuild ./internal/semanticindex ./internal/semanticruntime"

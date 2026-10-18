@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	usearchVersion          = "2.26.0"
-	usearchCommit           = "cc23bbaf21ef52313c5a495adbc40cbd733cdcfb"
-	usearchSourceURL        = "https://proxy.golang.org/github.com/unum-cloud/usearch/@v/v2.26.0+incompatible.zip"
-	usearchSourceSHA256     = "54f280b044757a391a6905b0850ad96789b6b2ce7c20ec9511b3b4628e27b0bd"
-	usearchDeploymentTarget = "12.0"
+	usearchVersion      = "2.26.0"
+	usearchCommit       = "cc23bbaf21ef52313c5a495adbc40cbd733cdcfb"
+	usearchSourceURL    = "https://proxy.golang.org/github.com/unum-cloud/usearch/@v/v2.26.0+incompatible.zip"
+	usearchSourceSHA256 = "54f280b044757a391a6905b0850ad96789b6b2ce7c20ec9511b3b4628e27b0bd"
+	// Go 1.27 requires macOS 13; native packaging must not claim an older floor.
+	usearchDeploymentTarget = "13.0"
 )
 
 func TestUSearchPackagingTaskPolicy(t *testing.T) {
