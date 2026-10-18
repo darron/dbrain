@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Dependency refresh and deterministic audit tests (2026-10-18)
+
+- **Web tooling**: Updated source-map-js to 1.2.2.
+- **Stable retention tests**: Fixed the audit report tests' clocks so dated
+  fixtures remain valid as the calendar advances, preserving the production
+  90-day retention policy and its dedicated coverage.
+
 ### Source worker stall visibility (2026-09-16)
 
 - **Bounded source retries**: Summary-provider failures now persist
