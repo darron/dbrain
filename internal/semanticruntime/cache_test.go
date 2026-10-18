@@ -542,7 +542,9 @@ func TestManagerShutdownDeadlineIsNotBlockedByRetainGuard(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		unblock()
-		<-shutdownDone
+		if err := <-shutdownDone; err != nil {
+			t.Logf("Shutdown after unblocking retain guard: %v", err)
+		}
 		t.Fatal("Shutdown deadline was blocked by RetainLoadGuard")
 	}
 

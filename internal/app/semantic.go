@@ -245,7 +245,7 @@ func newSemanticChunkCommand(root *rootOptions, deps semanticDeps) *cobra.Comman
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			chunkOpts := semanticbuild.ChunkOptions{Limit: limit, AfterSourceKey: afterSourceKey, UntilIdle: untilIdle, MaxDuration: maxDuration}
+			chunkOpts := semanticbuild.ChunkOptions{Limit: limit, AfterSourceKey: afterSourceKey, UntilIdle: untilIdle, MaxDuration: maxDuration} //nolint:staticcheck // Forward the deprecated flag to the shared rejection validator.
 			if !jsonOut {
 				chunkOpts.Progress = func(snapshot semanticbuild.ChunkProgress) error {
 					return writeSemanticProgressSnapshot(cmd.OutOrStdout(), snapshot.Progress)

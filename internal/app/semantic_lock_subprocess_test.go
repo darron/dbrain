@@ -735,16 +735,16 @@ func (s semanticLockSearcher) Search(
 	semanticindex.SearchOptions,
 ) ([]semanticindex.Hit, semanticindex.Status, error) {
 	return []semanticindex.Hit{{
-			ChunkID:  "chunk-1",
-			Rank:     1,
-			Distance: 0.1,
-		}}, semanticindex.Status{
-			State:        semanticindex.StateSearched,
-			Backend:      semanticindex.BackendExact,
-			ProfileID:    s.profileID,
-			GenerationID: os.Getenv(semanticLockHelperGeneration),
-			Scanned:      1,
-		}, nil
+		ChunkID:  "chunk-1",
+		Rank:     1,
+		Distance: 0.1,
+	}}, semanticindex.Status{
+		State:        semanticindex.StateSearched,
+		Backend:      semanticindex.BackendExact,
+		ProfileID:    s.profileID,
+		GenerationID: os.Getenv(semanticLockHelperGeneration),
+		Scanned:      1,
+	}, nil
 }
 
 type semanticLockHydrator struct {

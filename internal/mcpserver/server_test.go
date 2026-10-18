@@ -555,7 +555,9 @@ func TestAuditFastReturnsBoundedTimeoutWhenRunnerIgnoresContext(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		releaseRunner()
-		<-done
+		if err := <-done; err != nil {
+			t.Logf("Serve after releasing runner: %v", err)
+		}
 		t.Fatal("dbrain_audit did not enforce its fixed ten-second wall-clock deadline")
 	}
 
