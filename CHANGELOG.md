@@ -7,8 +7,8 @@ development date for the change set.
 
 ### Dependency refresh, Go upgrade, and deterministic audit tests (2026-10-18)
 
-- **Web dependencies**: Updated source-map-js to 1.2.2 and DOMPurify to 3.4.16,
-  including refreshed embedded web assets.
+- **Web dependencies**: Updated source-map-js to 1.2.2, DOMPurify to 3.4.16,
+  and devalue to 5.9.4, including refreshed embedded web assets.
 - **Current Go toolchain**: Raised the module and all CI/release builds to Go
   1.27.2, with golangci-lint 2.15.0 and the matching formatting and lint fixes.
 - **Stable retention tests**: Fixed the audit report tests' clocks so dated
