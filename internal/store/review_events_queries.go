@@ -59,16 +59,16 @@ func reviewCursorWhere(cursor ReviewCursor) (string, []any) {
 				)
 			)
 		))`, []any{
-			eventAt,
-			eventAt,
-			cursor.EventKind,
-			cursor.EventKind,
-			cursor.EntityKind,
-			cursor.EntityKind,
-			cursor.EntityID,
-			cursor.EntityID,
-			cursor.EventStage,
-		}
+		eventAt,
+		eventAt,
+		cursor.EventKind,
+		cursor.EventKind,
+		cursor.EntityKind,
+		cursor.EntityKind,
+		cursor.EntityID,
+		cursor.EntityID,
+		cursor.EventStage,
+	}
 }
 
 func reviewCursorEventAtText(cursor ReviewCursor) string {

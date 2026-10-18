@@ -63,8 +63,8 @@ func (p sourceEnrichmentPolicy) extractBacklogWhere() (string, []any) {
 			)
 		)
 	)`, []any{
-			p.now.Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
-		}
+		p.now.Add(-sourceExtractErrorRetryCooldown).Format(time.RFC3339),
+	}
 }
 
 func (p sourceEnrichmentPolicy) summaryBacklogWhere() (string, []any) {
