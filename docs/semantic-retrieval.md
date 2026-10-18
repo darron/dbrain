@@ -200,7 +200,7 @@ default ten-minute reader grace remains in force.
 Runtime admission, resumable refresh, universal sync integration, and
 cross-process maintenance/generation locking are implemented. The Homebrew
 macOS arm64 artifact statically links checksum-pinned USearch v2.26.0, targets
-macOS 12.0 or later, and proves native capability during release and clean
+macOS 13.0 Ventura or later, and proves native capability during release and clean
 Homebrew installation. It has no external USearch dynamic-library dependency;
 Apple's system `libc++` remains dynamically linked.
 

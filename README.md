@@ -150,6 +150,9 @@ The end-user Homebrew requirements are installed before `dbrain install` in the
 quickstart above. For development in this checkout, install the Go toolchain,
 task runner, linter, and inspection tools separately.
 
+Starting with v0.8.22, macOS binaries require macOS 13 Ventura or later, the
+minimum supported by Go 1.27.
+
 Use Go 1.27.2 or newer and golangci-lint 2.15.0. All CI, candidate, and stable
 release builds select the Go version from `go.mod`; keep that directive current
 with stable Go releases and use the same toolchain for local validation.

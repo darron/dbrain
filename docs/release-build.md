@@ -114,10 +114,11 @@ required, and exercises the installed binary's native semantic capability.
 
 ## Native semantic release boundary
 
-The macOS arm64 archive is the first release artifact with native semantic ANN
+All Darwin release binaries require macOS 13 Ventura or later because they are
+built with Go 1.27. The macOS arm64 archive includes native semantic ANN
 support. It is built on the arm64 `macos-15` runner with CGO and the `usearch`
 build tag. USearch v2.26.0 is compiled from checksum-pinned source into a static
-archive with a macOS 12.0 deployment target. The release binary may dynamically
+archive with a macOS 13.0 deployment target. The release binary may dynamically
 link Apple's system `libc++`, but it must not depend on an external
 `libusearch_c.dylib`.
 
