@@ -112,6 +112,20 @@ updates `Formula/dbrain.rb`, and pushes a commit named
 formula, runs `brew test`, checks that no external USearch dynamic library is
 required, and exercises the installed binary's native semantic capability.
 
+## Tailscale control-plane compatibility
+
+Toolchain and embedded Tailscale upgrades must keep the SSH-policy map-response
+JSON regression tests in `internal/remote` passing. They exercise the actual
+`encoding/json` decoding path with Tailscale's wire types; Go 1.27 exposed an
+incompatible `format` tag in older Tailscale releases even when compilation and
+isolated binary smoke checks passed.
+
+The clean Homebrew installation smoke test does not join an existing tailnet.
+After upgrading a configured installation, confirm `dbrain tsnet status --json`
+reports reachable web/MCP endpoints and `dbrain launchd restart` can complete its
+service Full Disk Access probe. A node's online indicator alone does not prove
+application readiness.
+
 ## Native semantic release boundary
 
 All Darwin release binaries require macOS 13 Ventura or later because they are

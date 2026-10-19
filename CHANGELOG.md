@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Go 1.27 Tailscale startup compatibility (2026-10-18)
+
+- **Remote service startup**: Updated the embedded Tailscale dependency to
+  1.104.1, fixing Go 1.27 JSON decoding of tailnet SSH policies that prevented
+  `serve remote` from starting and caused repeated launchd restarts.
+- **Control-plane regression coverage**: Added real Tailscale map-response
+  decoding tests for SSH actions with omitted and numeric session durations.
+  These run without personal credentials or a live tailnet.
+
 ### Dependency refresh, Go upgrade, and deterministic audit tests (2026-10-18)
 
 - **Web dependencies**: Updated source-map-js to 1.2.2, DOMPurify to 3.4.16,
