@@ -208,6 +208,14 @@ Full Disk Access to the `dbrain` binary or, more reliably for local builds, to
 the terminal or IDE app launching it. Rebuilding `bin/dbrain` may invalidate a
 binary-specific permission grant.
 
+`dbrain launchd restart` checks protected-file access through the running
+service. If its web endpoint is unreachable, a successful foreground fallback
+probe does not establish the service's access. Check
+`dbrain tsnet status --json` and the launchd error log under the configured log directory for startup
+failures before changing permissions. A Tailscale dashboard showing the node
+online does not prove the dbrain web server is ready. To explicitly open the
+privacy pane, use `dbrain doctor full-disk-access`.
+
 For development in this checkout without touching installed state:
 
 ```sh
