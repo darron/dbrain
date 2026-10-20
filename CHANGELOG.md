@@ -5,6 +5,15 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Go certificate security update (2026-10-20)
+
+- **Certificate trust security**: Rebuild release binaries with Go 1.27.3 for
+  the urgent `crypto/x509` fix in CVE-2026-111943, which rejects certificate
+  chains containing the affected intermediate CA keys.
+- **Pinned CI toolchain**: PR, candidate, and stable release workflows use the
+  Go patch version in `go.mod` without automatic toolchain switching. Candidate
+  and stable packaging fail if a binary's recorded compiler differs from that pin.
+
 ### Go 1.27 Tailscale startup compatibility (2026-10-18)
 
 - **Remote service startup**: Updated the embedded Tailscale dependency to

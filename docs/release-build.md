@@ -53,6 +53,17 @@ Go-only, CLI-only, docs-only, and backend-only changes do not need
 `task web-build` unless they change an API contract or static data expected by
 the UI.
 
+## Pinned Go Toolchain
+
+`go.mod` selects Go 1.27.3, including the urgent `crypto/x509` certificate-trust
+fix for [CVE-2026-111943](https://go.dev/issue/82345). PR, candidate, and stable
+release workflows install that exact patch with `go-version-file` and set
+`GOTOOLCHAIN=local` to prevent automatic switching. Candidate and stable packaging
+also compare each binary's recorded compiler version with the `go.mod` pin,
+including the native Darwin arm64 binary. Update the pin and rebuild all release
+archives when Go ships a security fix; updating the host Go installation alone
+does not patch an already compiled binary.
+
 ## Release Checklist
 
 Before tagging or packaging a release that includes UI changes:

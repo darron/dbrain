@@ -218,6 +218,7 @@ tasks:
         SHELL="${SHELL:-/bin/sh}"
         GOCACHE={{.GOCACHE}}
         GOMODCACHE={{.GOMODCACHE}}
+        GOTOOLCHAIN=local
         go test -cover -race -timeout=20m ${TEST_PACKAGES:-./...}
 
   test-go:
