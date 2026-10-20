@@ -15,6 +15,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   prepare:
     name: Validate candidate
@@ -194,6 +197,7 @@ jobs:
           binary_name="dbrain"
 
           task build
+          test "$(go version -m bin/dbrain | awk 'NR == 1 {print $2}')" = "go$(awk '$1 == "go" {print $2}' go.mod)"
           test "${CGO_ENABLED}" = "0"
           go version -m bin/dbrain | grep -F "CGO_ENABLED=0"
           if go version -m bin/dbrain | grep -F -- "-tags=usearch"; then
@@ -295,6 +299,7 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           set -euo pipefail
+          test "$(go version -m bin/dbrain | awk 'NR == 1 {print $2}')" = "go$(awk '$1 == "go" {print $2}' go.mod)"
           archive_base="dbrain_${RELEASE_TAG}_darwin_arm64"
           package_dir="dist/${archive_base}"
           mkdir -p "${package_dir}"
