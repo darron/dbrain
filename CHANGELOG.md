@@ -5,6 +5,10 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Web build dependency update (2026-10-20)
+
+- **Embedded web UI**: Updated Vite to 8.3.4 and regenerated the bundled assets.
+
 ### Go certificate security update (2026-10-20)
 
 - **Certificate trust security**: Rebuild release binaries with Go 1.27.3 for
