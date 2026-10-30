@@ -5,6 +5,11 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Web sanitizer dependency update (2026-10-30)
+
+- **Embedded web UI**: Updated DOMPurify to 3.4.17 and regenerated the bundled
+  assets so local Go builds include the updated sanitizer.
+
 ### Web build dependency update (2026-10-20)
 
 - **Embedded web UI**: Updated Vite to 8.3.4 and regenerated the bundled assets.
