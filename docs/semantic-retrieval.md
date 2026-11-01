@@ -90,6 +90,12 @@ this is the deliberate fail-safe recall cost. Purge and provenance/profile
 repair paths still invalidate the root because their authority boundary is
 broader than an ordinary chunk delta.
 
+When compaction reduces a segment below 5,000 live vectors, those vectors return
+to exact L0 and remain searchable. The successor root may consist entirely of
+retained immutable segments, whose catalog membership is still proved during
+activation. This rewrite preserves the active snapshot revision; advancing it
+still requires new members. Demotion cannot remove the last native segment.
+
 The only valid two-lock order is maintenance before generation; lock upgrade is
 not supported. Exclusive waiters publish FIFO writer intent, so later source
 writers cannot starve refresh and later queries cannot starve activation.

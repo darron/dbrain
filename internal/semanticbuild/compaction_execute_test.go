@@ -101,6 +101,53 @@ func TestCompactRejectsLastSegmentToExactL0(t *testing.T) {
 	}
 }
 
+func TestCompactDemotesSingletonToExactL0AndRetainsRoot(t *testing.T) {
+	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})
+	profileID, err := profile.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := t.TempDir()
+	retained, err := semanticsegment.PublishSegment(cache, semanticsegment.SegmentInput{
+		DatabaseID: "db", ProfileID: profileID, Backend: "test", BackendVersion: "v1", DistanceMetric: "cosine", Dimensions: 2,
+		Members: []semanticsegment.Member{{Ordinal: 0, ChunkID: "retained", Revision: 1, VectorHash: "retained-vector"}},
+		Payload: func(w io.Writer) error { _, err := io.WriteString(w, "retained"); return err },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedRow := store.RetrievalIndexSegmentRow{SegmentHash: retained.Hash, ProfileID: profileID, Backend: "test", BackendVersion: "v1", Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 1, RelativeCachePath: retained.RelativePath, MembershipHash: retained.Manifest.MembersSHA256, PayloadHash: retained.Manifest.PayloadSHA256, ManifestHash: retained.Manifest.DescriptorSHA256}
+	rows := make([]store.RetrievalActiveSegmentMember, 0, 4_920)
+	for i := 0; i < 4_920; i++ {
+		rows = append(rows, store.RetrievalActiveSegmentMember{SegmentHash: "demoted", Ordinal: uint64(i), Embedding: store.RetrievalEmbeddingRow{ChunkID: fmt.Sprintf("l0-%d", i), ProfileID: profileID, Revision: 1, VectorHash: fmt.Sprintf("l0-vector-%d", i), Dimensions: 2}})
+	}
+	st := compactionFakeStore{
+		snapshot: store.RetrievalActiveSegmentCompactionSnapshot{Profile: store.RetrievalEmbeddingProfileRow{ProfileID: profileID, ActiveGenerationID: "root", PurgeEpoch: 1, ActiveSnapshotRevision: 1}, Segments: []store.RetrievalActiveSegmentCompactionSegment{
+			{RetrievalIndexSegmentRow: store.RetrievalIndexSegmentRow{SegmentHash: "demoted"}, CreatedOrder: 1, LiveCount: 4_920, TombstoneCount: 80},
+			{RetrievalIndexSegmentRow: retainedRow, CreatedOrder: 2, LiveCount: 1},
+		}},
+		streamRows: rows,
+		existing:   []store.RetrievalIndexSegmentRow{{SegmentHash: "demoted", ProfileID: profileID, Backend: "test", BackendVersion: "v1", Dimensions: 2, DistanceMetric: "cosine", IndexedChunkCount: 5_000, RelativeCachePath: "old"}, retainedRow},
+	}
+	result, err := Compact(context.Background(), &st, nil, CompactionOptions{Profile: profile, Backend: "test", BackendVersion: "v1", DistanceMetric: "cosine", CacheDir: cache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.completeCalls != 1 || st.completed.ActivationMode != store.RetrievalGenerationRewriteSnapshot || len(st.completed.Members) != 0 || len(st.completed.Segments) != 1 || st.completed.Segments[0].SegmentHash != retained.Hash {
+		t.Fatalf("completion=%+v", st.completed)
+	}
+	if result.Indexed != 1 || result.StreamedLiveMembers != 4_920 || len(result.ReplacementSegmentHashes) != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	root, err := semanticsegment.OpenRoot(cache, "db", profileID, result.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Manifest.Segments) != 1 || root.Manifest.Segments[0].Hash != retained.Hash {
+		t.Fatalf("root=%+v", root.Manifest)
+	}
+}
+
 func TestCompactPlansFromActiveSnapshot(t *testing.T) {
 	profile := Profile(embedding.Info{Provider: "fake", Model: "fake-v1", Dimensions: 2})
 	profileID, err := profile.ID()

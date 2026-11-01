@@ -384,6 +384,92 @@ func TestCompleteRetrievalIndexGenerationAllowsSameSnapshotRewrite(t *testing.T)
 	}
 }
 
+func TestCompleteRetrievalIndexGenerationDemotesSegmentWithoutNewMembers(t *testing.T) {
+	t.Parallel()
+	for _, corrupt := range []bool{false, true} {
+		t.Run(map[bool]string{false: "retains_proven_segment", true: "rejects_missing_retained_members"}[corrupt], func(t *testing.T) {
+			st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))
+			defer func() { _ = st.Close() }()
+			ctx := context.Background()
+			seedReadyRetrievalEmbeddings(t, st, "flush-profile", 2)
+			window, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			demoted := testRetrievalSegment("segment-demoted", 1)
+			retained := testRetrievalSegment("segment-retained", 1)
+			members := append(retrievalSegmentMembers(window.Rows[:1], demoted.SegmentHash),
+				retrievalSegmentMembers(window.Rows[1:], retained.SegmentHash)...)
+			if err := st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+				Generation: testCompletedGeneration("generation-initial", 2),
+				Segments:   []RetrievalIndexSegmentRow{demoted, retained}, Members: members,
+				SnapshotRevision: window.SnapshotRevision, ExpectedPurgeEpoch: window.Profile.PurgeEpoch,
+				ActivationMode: RetrievalGenerationAdvanceSnapshot,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if corrupt {
+				if _, err := st.db.Exec(`DELETE FROM retrieval_index_segment_members WHERE segment_hash=?`, retained.SegmentHash); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Demotion keeps the existing immutable segment and returns the other
+			// embedding to exact L0; no new segment memberships are created.
+			err = st.CompleteRetrievalIndexGeneration(ctx, CompleteRetrievalIndexGenerationInput{
+				Generation: testCompletedGeneration("generation-demoted", 1),
+				Segments:   []RetrievalIndexSegmentRow{retained}, SnapshotRevision: window.SnapshotRevision,
+				ExpectedActiveGenerationID: "generation-initial", ExpectedPurgeEpoch: window.Profile.PurgeEpoch,
+				ExpectedActiveSnapshotRevision: window.SnapshotRevision, ActivationMode: RetrievalGenerationRewriteSnapshot,
+			})
+			if corrupt {
+				if err == nil {
+					t.Fatal("activated root with missing retained membership")
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			profile, err := st.RetrievalEmbeddingProfile(ctx, "flush-profile")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if corrupt {
+				if profile.ActiveGenerationID != "generation-initial" {
+					t.Fatalf("failed rewrite changed active root: %+v", profile)
+				}
+				return
+			}
+			if profile.ActiveGenerationID != "generation-demoted" || profile.ActiveIndexedCount != 1 || profile.L0ReadyCount != 1 || profile.ActiveSnapshotRevision != 2 {
+				t.Fatalf("profile = %+v", profile)
+			}
+			remaining, err := st.NextRetrievalFlushWindow(ctx, "flush-profile", 2)
+			if err != nil || len(remaining.Rows) != 1 || remaining.Rows[0].ChunkID != window.Rows[0].ChunkID {
+				t.Fatalf("demoted embedding not preserved in exact L0: window=%+v err=%v", remaining, err)
+			}
+		})
+	}
+}
+
+func TestValidateGenerationCompletionRejectsEmptyRootOrUnprovedAdvance(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []RetrievalGenerationActivationMode{RetrievalGenerationAdvanceSnapshot, RetrievalGenerationRewriteSnapshot} {
+		t.Run(string(mode), func(t *testing.T) {
+			input := CompleteRetrievalIndexGenerationInput{
+				Generation:       testCompletedGeneration("replacement", 1),
+				Segments:         []RetrievalIndexSegmentRow{testRetrievalSegment("retained", 1)},
+				SnapshotRevision: 2, ExpectedActiveSnapshotRevision: 2, ActivationMode: mode,
+			}
+			if mode == RetrievalGenerationAdvanceSnapshot {
+				input.SnapshotRevision = 3
+			} else {
+				input.Segments = nil
+			}
+			if err := validateGenerationCompletionInput(input); err == nil {
+				t.Fatalf("accepted empty root or snapshot advance without new members: %+v", input)
+			}
+		})
+	}
+}
+
 func TestCompleteRetrievalIndexGenerationRejectsChangedActiveRoot(t *testing.T) {
 	t.Parallel()
 	st := openCurrentTestStoreAtPath(t, filepath.Join(t.TempDir(), "brain.db"))

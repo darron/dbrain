@@ -438,7 +438,11 @@ func validateGenerationCompletionInput(input CompleteRetrievalIndexGenerationInp
 	if generation.Dimensions <= 0 || strings.TrimSpace(generation.Backend) == "" || strings.TrimSpace(generation.BackendVersion) == "" || strings.TrimSpace(generation.DistanceMetric) == "" || strings.TrimSpace(generation.SourceManifestHash) == "" {
 		return fmt.Errorf("retrieval generation provenance is incomplete")
 	}
-	if len(input.Segments) == 0 || len(input.Members) == 0 || input.SnapshotRevision <= 0 {
+	// A compaction rewrite may just remove a segment, returning its live
+	// vectors to exact L0. It creates no memberships; retained immutable
+	// segments are still proved against the catalog in the transaction.
+	if len(input.Segments) == 0 || input.SnapshotRevision <= 0 ||
+		(len(input.Members) == 0 && input.ActivationMode != RetrievalGenerationRewriteSnapshot) {
 		return fmt.Errorf("retrieval generation segments, members, and snapshot revision are required")
 	}
 	switch input.ActivationMode {

@@ -5,6 +5,13 @@ development date for the change set.
 
 ## Recent Improvements
 
+### Semantic compaction recovery (2026-11-01)
+
+- **Segment demotion**: Allow compaction to publish a root containing only
+  retained, proven segments when a small segment moves back to exact L0. This
+  fixes refreshes repeatedly failing at compaction without losing embeddings.
+  Empty roots and snapshot advances without new members remain rejected.
+
 ### Web sanitizer dependency update (2026-10-30)
 
 - **Embedded web UI**: Updated DOMPurify to 3.4.17 and regenerated the bundled
